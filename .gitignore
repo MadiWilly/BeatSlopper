@@ -1,0 +1,16 @@
+# Rust
+/target
+**/target/
+Cargo.lock.bak
+**/*.rs.bk
+*.pdb
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local tooling
+/.claude/settings.local.json
