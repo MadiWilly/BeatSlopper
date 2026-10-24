@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M0 (Skeleton). Round-2 design A "Soft Console" picked; design/WINNER.md is the token source of truth.
+**Current milestone:** M1 (Keyboard piano). M0 tagged `m0`. design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -15,15 +15,15 @@
 - [x] Round 2 previews against the user's reference image: A "Soft Console", B "Glow Grid", C "Hush Console" + index.html
 - [x] User picked round-2 A ("Soft Console") -> design/WINNER.md written (Rust gate open)
 
-## M0: Skeleton
-- [ ] Cargo workspace (engine, neu, app) builds
-- [ ] App window opens in winning theme, OS light/dark detection + remembered toggle
-- [ ] engine: Engine::render offline; test tone
-- [ ] app: cpal output stream plays test tone via button
-- [ ] neu: theme tokens from WINNER.md, raised/inset dual-shadow painter, panel, button
-- [ ] --smoke-test CLI flag (about 60 frames, exit 0)
-- [ ] deny.toml license allowlist, cargo-deny passes
-- [ ] Gate green, tag m0
+## M0: Skeleton (done 2026-10-24, tag m0)
+- [x] Cargo workspace (engine, neu, app) builds
+- [x] App window opens in winning theme, OS light/dark detection + remembered toggle
+- [x] engine: Engine::render offline; test tone
+- [x] app: cpal output stream plays test tone via button
+- [x] neu: theme tokens from WINNER.md, raised/inset dual-shadow painter, panel, button
+- [x] --smoke-test CLI flag (about 60 frames, exit 0)
+- [x] deny.toml license allowlist, cargo-deny passes
+- [x] Gate green, tag m0
 
 ## M1: Keyboard piano
 - [ ] Key map A W S E D F T G Y H U J K O L P ; (about 1.5 octaves), Z/X octave shift
@@ -57,12 +57,11 @@
 - [ ] Gate green, tag m3, final summary written here
 
 ## Last gate result
-Not run yet (no Rust code exists in Phase 0).
+2026-10-24 M0: all green (fmt, clippy -D warnings, 53 tests, deny licenses ok, release build, smoke exit 0).
 
 ## Next action
-Start M0 per docs/PLAN.md "Loop procedure": cargo workspace (engine, neu, app), neu theme tokens
-from design/WINNER.md (round 2, Soft Console), offline render + test tone, cpal output,
---smoke-test, deny.toml. Spawn engine | neu | app subagents in parallel on disjoint crates.
+M1: engine voices + ADSR + NoteOn/NoteOff | neu piano_keys + stepper widgets | app input.rs key map
+(ignore key repeat) + keyboard panel wiring. Spawn three subagents in parallel, then gate.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)

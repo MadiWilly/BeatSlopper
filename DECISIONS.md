@@ -38,3 +38,9 @@ User picked A with no tweaks. `design/WINNER.md` is the token source of truth fo
 crate. Dark surface is charcoal `#262A31` (per the reference) rather than the brief's near-black
 starting value; orange/blue accents keep AA contrast. ON states use an accent-coloured glow
 shadow plus one dark shadow, staying within the two-shadows-per-element rule.
+
+## 2026-10-24: License allowlist includes font licenses
+`cargo deny check licenses` allows MIT, Apache-2.0 (+LLVM exception), BSD-2/3, ISC, Zlib,
+Unicode-3.0, BSL-1.0, OFL-1.1 and Ubuntu-font-1.0. The last two are needed only because
+`epaint_default_fonts` bundles the Ubuntu and Noto fonts; both licenses permit embedding and
+redistribution. No copyleft licenses are allowed.

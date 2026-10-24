@@ -1,0 +1,18 @@
+[package]
+name = "neu"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+description = "Neumorphic egui widget kit and theme tokens for BeatSlopper (design/WINNER.md)."
+
+[dependencies]
+egui.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+eframe.workspace = true
+
+[[example]]
+name = "gallery"
+path = "examples/gallery.rs"

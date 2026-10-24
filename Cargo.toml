@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine", "crates/neu", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license-file = "LICENSE"
+
+[workspace.dependencies]
+engine = { path = "crates/engine" }
+neu = { path = "crates/neu" }
+egui = "0.37"
+eframe = { version = "0.37", features = ["persistence"] }
+egui_kittest = "0.37"
+cpal = "0.18"
+rtrb = "0.4"
+hound = "3.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+debug = false
