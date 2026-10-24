@@ -17,10 +17,12 @@
     text-secondary           #A8A8A8
     knob-face gradient hi    #1D1F24   (two-stop linear, 145deg: hi -> lo)
     knob-face gradient lo    #111215
-    key-black fill           #0E0F12
+    key-black fill           #0E0F12   (black key: two-stop vertical gradient key-black-hi -> key-black at 60%)
+    key-black-hi             #22252B
     key-black text           #A8A8A8
+    key-white fill           knob-hi -> surface at 60% (two-stop vertical gradient)
     led-off / well fill      #0F1013
-    playhead column tint     #1C1E23
+    playhead column tint     #1C1E23   (off steps in the current column: tint + inset-sm)
 
   COLORS — LIGHT (prefers-color-scheme: light, or data-theme="light")
     surface (base)           #ECF0F5
@@ -33,8 +35,10 @@
     text-secondary           #5A6372
     knob-face gradient hi    #F7F9FC
     knob-face gradient lo    #DCE2EA
-    key-black fill           #3A414D
+    key-black fill           #3A414D   (gradient as in dark)
+    key-black-hi             #4C5566
     key-black text           #F2F2F2
+    key-white fill           knob-hi -> surface at 60%
     led-off / well fill      #D8DEE6
     playhead column tint     #F5F8FC
 
@@ -50,14 +54,15 @@
     panel 20px ; control/button/module 16px ; pad/step/key 14px ; small (keycap, mini btn, pip) 10px ; knob/LED 50%
 
   SPACING SCALE
-    4, 8, 12, 16, 20, 24 px   (page gutter 16, panel padding 20, module padding 14, module gap 12)
+    4, 8, 12, 16, 20, 24 px   (page gutter 16, panel padding 18, panel head 32 tall + 10 below, module padding 14, module gap 12)
 
   TYPE (system-ui stack, no web fonts)
     micro 11px/700 uppercase +0.10em (module titles, knob names)
     small 12px/700 (knob values, keycaps, step note names)
     body  13px/500
     button 14px/600
-    panel title 15px/700 uppercase +0.04em
+    panel title 16px/700 sentence case (Synth, FX Rack, Sequencer, Keyboard)
+    hint  12px/600 text-secondary, emphasised words in text-primary
     display 26px/700 tabular (BPM, octave)
 
   KNOBS (body diameter / tick-ring diameter)
@@ -70,11 +75,14 @@
     rotation range: -135deg .. +135deg
 
   OTHER SIZES
-    step cell 40x40, gap 6, extra 10px gap every 4 steps ; playhead pip 40x8
+    step cell 40x40, gap 6, extra 10px gap every 4 steps ; header column 40 wide: beat number (11px, at steps 1/5/9/13) over playhead pip 40x8
+    step states: off = raised-sm ; on = accent fill + inset-on ; accent = accent-hover fill + 10px on-accent dot ;
+                 current column: off -> tint + inset-sm, on -> accent-hover fill ; sequencer row 44 tall, header 30
     wave/target pads 40x40 (target pads 64x32) ; transport buttons 48 tall ; mini buttons 28x28
     BPM display well 110x48 ; theme toggle 92x40, thumb 28
-    ADSR slider track 18x96 (radius 9), thumb 30x16 (radius 8), fill inset 4
-    piano: white key 72x120 gap 6 ; black key 44x74 ; keycap 22x18
+    ADSR slider track 18x80 (radius 9), thumb 30x16 (radius 8), fill inset 4
+    piano: white key 72x108 gap 6 ; black key 44x66 ; keycap 22x18
+    window: content is ~1240x1100 ; default app window 1280x1100, minimum 1240x760 with vertical scroll
   ============================================================================
 -->
 <html lang="en">
@@ -88,7 +96,7 @@
     --accent: #FF7A1A; --accent-hi: #FF9440; --on-accent: #141821;
     --text: #F2F2F2; --text2: #A8A8A8;
     --knob-hi: #1D1F24; --knob-lo: #111215;
-    --key-black: #0E0F12; --key-black-text: #A8A8A8;
+    --key-black: #0E0F12; --key-black-hi: #22252B; --key-black-text: #A8A8A8;
     --led-off: #0F1013; --ph-fill: #1C1E23;
 
     --r-panel: 20px; --r-ctl: 16px; --r-pad: 14px; --r-sm: 10px;
@@ -108,7 +116,7 @@
       --accent: #1E5BFF; --accent-hi: #3368F5; --on-accent: #FFFFFF;
       --text: #141821; --text2: #5A6372;
       --knob-hi: #F7F9FC; --knob-lo: #DCE2EA;
-      --key-black: #3A414D; --key-black-text: #F2F2F2;
+      --key-black: #3A414D; --key-black-hi: #4C5566; --key-black-text: #F2F2F2;
       --led-off: #D8DEE6; --ph-fill: #F5F8FC;
       color-scheme: light;
     }
@@ -118,10 +126,11 @@
     --accent: #1E5BFF; --accent-hi: #3368F5; --on-accent: #FFFFFF;
     --text: #141821; --text2: #5A6372;
     --knob-hi: #F7F9FC; --knob-lo: #DCE2EA;
-    --key-black: #3A414D; --key-black-text: #F2F2F2;
+    --key-black: #3A414D; --key-black-hi: #4C5566; --key-black-text: #F2F2F2;
     --led-off: #D8DEE6; --ph-fill: #F5F8FC;
     color-scheme: light;
   }
+  @media (prefers-reduced-motion: reduce) { .toggle .thumb { transition: none; } }
 
   * { box-sizing: border-box; }
   html, body { margin: 0; }
@@ -149,10 +158,10 @@
 
   .panel {
     background: var(--bg); border-radius: var(--r-panel);
-    box-shadow: var(--sh-panel); padding: var(--sp-5);
+    box-shadow: var(--sh-panel); padding: 18px;
   }
-  .panel-head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); min-height: 36px; }
-  .panel-head h2 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .panel-head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: 10px; min-height: 32px; }
+  .panel-head h2 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0; }
   .panel-head .spacer { flex: 1; }
 
   .modules { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
@@ -256,6 +265,7 @@
   }
   .knob.sm .knob-body { box-shadow: var(--sh-raised-sm); }
   .knob.dragging .knob-body { box-shadow: var(--sh-raised-sm); }
+  .knob:hover .knob-val, .vslider:hover .knob-val { color: var(--accent); }
   .knob-ptr { position: absolute; inset: 0; transform: rotate(0deg); }
   .knob-ptr::after {
     content: ""; position: absolute; left: 50%; top: 4px; width: 6px; height: 32%;
@@ -268,7 +278,7 @@
 
   /* ---------- vertical sliders (ADSR) ---------- */
   .vslider { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 36px; touch-action: none; cursor: ns-resize; border-radius: var(--r-sm); }
-  .vs-track { position: relative; width: 18px; height: 96px; border-radius: 9px; background: var(--bg); box-shadow: var(--sh-inset); }
+  .vs-track { position: relative; width: 18px; height: 80px; border-radius: 9px; background: var(--bg); box-shadow: var(--sh-inset); }
   .vs-fill { position: absolute; left: 4px; right: 4px; bottom: 4px; border-radius: 5px; background: var(--accent); }
   .vs-thumb {
     position: absolute; left: 50%; width: 30px; height: 16px; margin-left: -15px; border-radius: 8px;
@@ -283,8 +293,9 @@
   .led-block .knob-val { font-size: 11px; }
 
   /* ---------- sequencer ---------- */
-  .seq-row { display: flex; align-items: center; gap: var(--sp-2); height: 46px; }
-  .seq-head { height: 22px; margin-bottom: 2px; }
+  .seq-row { display: flex; align-items: center; gap: var(--sp-2); height: 44px; }
+  .seq-head { height: 30px; margin-bottom: 2px; align-items: flex-end; }
+  .seq-head .seq-label { align-self: flex-end; padding-bottom: 2px; }
   .seq-label { width: 92px; font-size: 13px; font-weight: 700; }
   .seq-head .seq-label { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text2); }
   .sp-mini { width: 28px; } .sp-knob { width: 90px; }
@@ -297,23 +308,25 @@
     font-size: 12px; font-weight: 700; display: grid; place-items: center; padding: 0;
   }
   .step:hover { color: var(--accent); }
-  .step.ph:not(.on) { background: var(--ph-fill); }
+  .step.ph:not(.on) { background: var(--ph-fill); box-shadow: var(--sh-inset-sm); }
   .step.on, .step.on:hover { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-inset-on); }
-  .step.on.acc { background: var(--accent-hi); }
+  .step.on.acc, .step.on.ph { background: var(--accent-hi); }
   .step.drum.on.acc::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--on-accent); }
+  .pip-col { width: 40px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .beat { height: 14px; font-size: 11px; font-weight: 700; color: var(--text2); font-variant-numeric: tabular-nums; }
   .pip { width: 40px; height: 8px; border-radius: 4px; background: var(--led-off); box-shadow: var(--sh-inset-sm); }
   .pip.on { background: var(--accent); box-shadow: none; }
   .seq-rows { display: flex; flex-direction: column; gap: 2px; }
 
   /* ---------- piano ---------- */
   .keys-body { display: flex; align-items: flex-start; gap: var(--sp-6); }
-  .kb { position: relative; width: 774px; height: 120px; flex: 0 0 auto; }
+  .kb { position: relative; width: 774px; height: 108px; flex: 0 0 auto; }
   .key {
     position: absolute; top: 0; border: 0; cursor: pointer; padding: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px;
   }
-  .key.white { width: 72px; height: 120px; border-radius: var(--r-pad); background: var(--bg); color: var(--text); box-shadow: var(--sh-raised-sm); padding-bottom: 10px; }
-  .key.black { width: 44px; height: 74px; border-radius: var(--r-pad); background: var(--key-black); color: var(--key-black-text); box-shadow: var(--sh-raised-sm); padding-bottom: 8px; z-index: 2; }
+  .key.white { width: 72px; height: 108px; border-radius: var(--r-pad); background: linear-gradient(180deg, var(--knob-hi), var(--bg) 60%); color: var(--text); box-shadow: var(--sh-raised-sm); padding-bottom: 10px; }
+  .key.black { width: 44px; height: 66px; border-radius: var(--r-pad); background: linear-gradient(180deg, var(--key-black-hi), var(--key-black) 60%); color: var(--key-black-text); box-shadow: var(--sh-raised-sm); padding-bottom: 8px; z-index: 2; }
   .key .note { font-size: 11px; font-weight: 700; color: var(--text2); }
   .key.black .note { color: var(--key-black-text); }
   .key .cap { min-width: 22px; height: 18px; padding: 0 5px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; box-shadow: var(--sh-inset-sm); background: var(--bg); color: var(--text); }
@@ -333,7 +346,7 @@
   <!-- ================= TRANSPORT ================= -->
   <header class="panel transport" style="display:flex;align-items:center;gap:16px;padding:12px 20px;">
     <div style="font-size:15px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-right:8px;">
-      BeatSlopper <span style="color:var(--accent)">M3</span>
+      BeatSlopper
     </div>
     <button class="btn" id="play" aria-pressed="false">
       <svg viewBox="0 0 16 16"><path d="M3 2l11 6-11 6z"/></svg>Play
@@ -410,7 +423,7 @@
         <div class="module-title">Filter</div>
         <div class="module-body">
           <div class="knob lg" data-label="Cutoff" data-min="20" data-max="12000" data-value="2400" data-default="12000" data-unit="Hz"></div>
-          <div class="knob" data-label="Reso" data-min="0" data-max="100" data-value="28" data-default="0" data-unit="%"></div>
+          <div class="knob" data-label="Res" data-min="0" data-max="100" data-value="28" data-default="0" data-unit="%"></div>
           <div class="knob" data-label="Env" data-min="-100" data-max="100" data-value="45" data-default="0" data-unit="%" data-bipolar></div>
         </div>
       </div>
@@ -452,7 +465,7 @@
         <div class="module-title">Delay</div>
         <div class="module-body">
           <div class="knob" data-label="Time" data-min="0" data-max="5" data-value="2" data-default="2" data-list="1/32|1/16|1/8|1/8D|1/4|1/2"></div>
-          <div class="knob" data-label="Feedbk" data-min="0" data-max="95" data-value="38" data-default="30" data-unit="%"></div>
+          <div class="knob" data-label="Fdbk" data-min="0" data-max="95" data-value="38" data-default="30" data-unit="%"></div>
           <div class="knob" data-label="Mix" data-min="0" data-max="100" data-value="25" data-default="0" data-unit="%"></div>
         </div>
       </div>
@@ -482,9 +495,9 @@
   <section class="panel seq">
     <div class="panel-head">
       <h2>Sequencer</h2>
-      <span class="hint">16 steps &middot; <b>1/16</b></span>
+      <span class="hint">1 bar of 16th notes</span>
       <span class="spacer"></span>
-      <span class="hint">Click: toggle &middot; Shift+click: accent / next note</span>
+      <span class="hint">Click toggles a step. Shift-click sets accent, or steps the bass note.</span>
       <button class="btn sm" id="clear-all">Clear All</button>
     </div>
     <div class="seq-rows" id="seq-rows">
@@ -502,7 +515,7 @@
     <div class="panel-head">
       <h2>Keyboard</h2>
       <span class="spacer"></span>
-      <span class="hint">Play with your computer keyboard &middot; <b>Z / X</b>: octave &minus;/+</span>
+      <span class="hint">Play with your computer keyboard. <b>Z</b> and <b>X</b> shift the octave.</span>
     </div>
     <div class="keys-body">
       <div class="kb" id="kb"></div>
@@ -513,7 +526,6 @@
           <button class="btn sq" id="oct-inc" aria-label="Octave up">X</button>
         </div>
         <div class="hint">Range <b id="oct-range">C3 &ndash; E4</b></div>
-        <div class="hint">Keys: <b>A W S E D F T G Y H U J K O L P ;</b></div>
       </div>
     </div>
   </section>
@@ -656,7 +668,7 @@
       this.valEl = $('.knob-val', this.el);
     }
     render() {
-      const n = this.norm(), travel = 96 - 16;             // track height - thumb height
+      const n = this.norm(), travel = 80 - 16;             // track height - thumb height
       this.thumb.style.top = ((1 - n) * travel).toFixed(1) + 'px';
       this.fill.style.height = (4 + n * travel).toFixed(1) + 'px';
     }
@@ -727,7 +739,11 @@
   const BASS = ['C2', null, 'C2', null, 'D#2', null, 'G2', null, 'C2', null, null, 'C2', 'A#1', null, 'G1', 'F1'];
 
   const rowsEl = $('#seq-rows'), pipsEl = $('#pips');
-  for (let i = 0; i < 16; i++) { const p = document.createElement('span'); p.className = 'pip'; pipsEl.appendChild(p); }
+  for (let i = 0; i < 16; i++) {
+    const col = document.createElement('span'); col.className = 'pip-col';
+    col.innerHTML = '<span class="beat">' + (i % 4 === 0 ? (i / 4 + 1) : '') + '</span><span class="pip"></span>';
+    pipsEl.appendChild(col);
+  }
   const CLEAR_ICON = '<svg viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8"/></svg>';
 
   function makeRow(name, isDrum, data) {

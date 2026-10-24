@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** Phase 0 (repo + design previews). Waiting on design pick.
+**Current milestone:** M0 (Skeleton). Design A picked; WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -11,7 +11,7 @@
 - [x] design/preview-c.html ("Synth Module")
 - [x] design/index.html
 - [x] Commit and push "Phase 0: design previews"
-- [ ] User picks winner -> design/WINNER.md (gate for any Rust code)
+- [x] User picked A ("Studio Hardware") -> design/WINNER.md written (gate for Rust code is open)
 
 ## M0: Skeleton
 - [ ] Cargo workspace (engine, neu, app) builds
@@ -58,8 +58,8 @@
 Not run yet (no Rust code exists in Phase 0).
 
 ## Next action
-Waiting for the user to pick a winner (A, B, or C). On reply: write design/WINNER.md with
-the final token table, commit, push, then begin M0 under /loop. No Rust before WINNER.md exists.
+Start M0 per docs/PLAN.md "Loop procedure": cargo workspace (engine, neu, app), neu theme tokens
+from design/WINNER.md, offline render + test tone, cpal output, --smoke-test, deny.toml.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)

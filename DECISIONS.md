@@ -17,3 +17,10 @@ gradients, circles/arcs). No Rust is written until `design/WINNER.md` exists.
 All three previews independently found that white text on the brief's light accent-hover
 `#3D74FF` lands around 4.1:1, below WCAG AA. Each darkened it slightly (A: #3368F5, B: #2E6AFF,
 C: #2A66FF). The winner's value becomes the token in `design/WINNER.md`.
+
+## 2026-10-24: Design A "Studio Hardware" is the winner
+User picked A and asked for judgement-call improvements. Changes are listed in
+`design/WINNER.md`. Notable calls: pads stay 40px (they define the look) so the main screen is
+about 1240x1100; the app opens at 1280x1100 and scrolls vertically below 760px tall rather
+than shrinking controls. Panel titles are sentence case; module and knob labels keep hardware
+silkscreen caps.
