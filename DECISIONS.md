@@ -32,3 +32,9 @@ accent thumbs, light geometric type, dark charcoal panel with glowing accent cir
 for a redo. Round 1 moved to `design/round1/`; `design/WINNER.md` removed so the loop gate
 closes until a new pick. Palette tuning allowed: dark surface may be charcoal (reference) rather
 than near-black, as long as orange/blue accents stay high contrast.
+
+## 2026-10-24: Round-2 design A "Soft Console" is the winner
+User picked A with no tweaks. `design/WINNER.md` is the token source of truth for the `neu`
+crate. Dark surface is charcoal `#262A31` (per the reference) rather than the brief's near-black
+starting value; orange/blue accents keep AA contrast. ON states use an accent-coloured glow
+shadow plus one dark shadow, staying within the two-shadows-per-element rule.

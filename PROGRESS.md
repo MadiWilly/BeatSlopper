@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** Phase 0, round 2 design previews. Waiting on design pick.
+**Current milestone:** M0 (Skeleton). Round-2 design A "Soft Console" picked; design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -13,7 +13,7 @@
 - [x] Commit and push "Phase 0: design previews"
 - [x] Round 1 previews (archived in design/round1/, A had been picked)
 - [x] Round 2 previews against the user's reference image: A "Soft Console", B "Glow Grid", C "Hush Console" + index.html
-- [ ] User picks winner -> design/WINNER.md (gate for any Rust code)
+- [x] User picked round-2 A ("Soft Console") -> design/WINNER.md written (Rust gate open)
 
 ## M0: Skeleton
 - [ ] Cargo workspace (engine, neu, app) builds
@@ -60,8 +60,9 @@
 Not run yet (no Rust code exists in Phase 0).
 
 ## Next action
-Waiting for the user to pick a round-2 winner (A, B, or C). On reply: write design/WINNER.md with
-the final token table, commit, push, then M0 under /loop. No Rust before WINNER.md exists.
+Start M0 per docs/PLAN.md "Loop procedure": cargo workspace (engine, neu, app), neu theme tokens
+from design/WINNER.md (round 2, Soft Console), offline render + test tone, cpal output,
+--smoke-test, deny.toml. Spawn engine | neu | app subagents in parallel on disjoint crates.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
