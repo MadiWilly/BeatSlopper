@@ -6,11 +6,11 @@
 - [x] git init, README.md, .gitignore, LICENSE
 - [x] Private GitHub repo created and pushed
 - [x] State files: PROGRESS.md, DECISIONS.md, BLOCKERS.md, docs/PLAN.md
-- [ ] design/preview-a.html
-- [ ] design/preview-b.html
-- [ ] design/preview-c.html
-- [ ] design/index.html
-- [ ] Commit and push "Phase 0: design previews"
+- [x] design/preview-a.html ("Studio Hardware")
+- [x] design/preview-b.html ("Soft Minimal")
+- [x] design/preview-c.html ("Synth Module")
+- [x] design/index.html
+- [x] Commit and push "Phase 0: design previews"
 - [ ] User picks winner -> design/WINNER.md (gate for any Rust code)
 
 ## M0: Skeleton
@@ -58,8 +58,8 @@
 Not run yet (no Rust code exists in Phase 0).
 
 ## Next action
-Spawn 3 design-preview subagents, write design/index.html, commit, push, stop and wait for
-the user's pick.
+Waiting for the user to pick a winner (A, B, or C). On reply: write design/WINNER.md with
+the final token table, commit, push, then begin M0 under /loop. No Rust before WINNER.md exists.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
