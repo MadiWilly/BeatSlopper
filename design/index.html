@@ -3,67 +3,66 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BeatSlopper design previews</title>
+<title>BeatSlopper design previews, round 2</title>
 <style>
   :root {
-    --bg: #ECF0F5; --hi: #FFFFFF; --lo: #C5CCD6;
-    --accent: #1E5BFF; --accent-hover: #3D74FF;
-    --text: #141821; --text2: #5A6372; --on-accent: #FFFFFF;
+    --bg: #E8ECF3; --hi: #FFFFFF; --lo: #C3CAD6;
+    --accent: #1E5BFF; --text: #1C2130; --text2: #6B7382; --on-accent: #FFFFFF;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #16171A; --hi: #24262B; --lo: #0A0B0D;
-      --accent: #FF7A1A; --accent-hover: #FF9440;
-      --text: #F2F2F2; --text2: #A8A8A8; --on-accent: #141821;
+      --bg: #262A31; --hi: #30353D; --lo: #1A1D22;
+      --accent: #FF7A1A; --text: #F2F2F2; --text2: #A8ADB5; --on-accent: #141821;
     }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  body { padding: 24px 32px 40px; min-height: 100vh; }
-  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
-  p.sub { color: var(--text2); margin: 0 0 24px; font-size: 14px; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 24px; }
-  .card { border-radius: 16px; padding: 20px; background: var(--bg);
-    box-shadow: -6px -6px 14px var(--hi), 6px 6px 14px var(--lo); }
-  .card .letter { display: inline-block; width: 36px; height: 36px; line-height: 36px;
-    text-align: center; border-radius: 50%; background: var(--accent); color: var(--on-accent);
-    font-weight: 700; margin-right: 10px; }
-  .card h2 { display: inline; font-size: 18px; font-weight: 600; vertical-align: middle; }
-  .card p { color: var(--text2); font-size: 14px; margin: 12px 0 16px; line-height: 1.45; }
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-weight: 400; }
+  body { padding: 28px 32px 40px; min-height: 100vh; }
+  h1 { font-size: 22px; font-weight: 500; margin: 0 0 4px; }
+  p.sub { color: var(--text2); margin: 0 0 28px; font-size: 14px; }
+  p.sub a { color: var(--accent); text-decoration: none; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; margin-bottom: 28px; }
+  .card { border-radius: 24px; padding: 24px; background: var(--bg);
+    box-shadow: -8px -8px 20px var(--hi), 8px 8px 20px var(--lo); }
+  .card .letter { display: inline-grid; place-items: center; width: 36px; height: 36px;
+    border-radius: 50%; background: var(--accent); color: var(--on-accent);
+    font-weight: 500; margin-right: 12px; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 45%, transparent); }
+  .card h2 { display: inline; font-size: 17px; font-weight: 500; vertical-align: middle; }
+  .card p { color: var(--text2); font-size: 14px; margin: 14px 0 18px; line-height: 1.5; }
   .card a.btn, .tabs button {
-    display: inline-block; padding: 9px 16px; border-radius: 10px; border: 0; cursor: pointer;
-    font: inherit; font-size: 14px; font-weight: 600; color: var(--text); background: var(--bg);
-    text-decoration: none; box-shadow: -4px -4px 10px var(--hi), 4px 4px 10px var(--lo); }
+    display: inline-block; padding: 10px 18px; border-radius: 999px; border: 0; cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 500; color: var(--text); background: var(--bg);
+    text-decoration: none; box-shadow: -5px -5px 12px var(--hi), 5px 5px 12px var(--lo); }
   .card a.btn { margin-right: 8px; }
   .tabs button.active { box-shadow: inset 3px 3px 8px var(--lo), inset -3px -3px 8px var(--hi); color: var(--accent); }
-  .viewer { border-radius: 16px; padding: 12px; background: var(--bg);
-    box-shadow: inset 4px 4px 12px var(--lo), inset -4px -4px 12px var(--hi); }
+  .viewer { border-radius: 24px; padding: 14px; background: var(--bg);
+    box-shadow: inset 5px 5px 14px var(--lo), inset -5px -5px 14px var(--hi); }
   .tabs { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
   .tabs span { color: var(--text2); font-size: 13px; margin-left: auto; }
-  iframe { width: 100%; height: 860px; border: 0; border-radius: 10px; background: var(--bg); }
+  iframe { width: 100%; height: 900px; border: 0; border-radius: 16px; background: var(--bg); }
 </style>
 </head>
 <body>
-  <h1>BeatSlopper: three neumorphic directions</h1>
-  <p class="sub">Each preview mocks the M3 main screen (transport, synth, FX, 16-step sequencer, piano keys) in light and dark. Pick one: A, B, or C.</p>
+  <h1>BeatSlopper, round 2: soft-UI directions from your reference</h1>
+  <p class="sub">Each preview mocks the M3 main screen in light and dark, built only from effects egui can draw. Pick A, B, or C. Round 1 is kept <a href="round1/index.html">here</a> for comparison.</p>
 
   <div class="grid">
     <div class="card">
-      <span class="letter">A</span><h2>Studio Hardware</h2> <span style="color:var(--accent);font-weight:600;font-size:13px">Winner</span>
-      <p>Chunky, tactile drum-machine feel: big round knobs, large square pads, thick raised panels. Built to be touched.</p>
+      <span class="letter">A</span><h2>Soft Console</h2>
+      <p>The concentric-ring dial from the reference leads: master volume and filter cutoff as nested rings, round icon buttons, pill toggles, thin ADSR sliders, glowing circular steps.</p>
       <a class="btn" href="preview-a.html" target="_blank">Open full page</a>
       <a class="btn" href="#" data-show="preview-a.html">Show below</a>
     </div>
     <div class="card">
-      <span class="letter">B</span><h2>Soft Minimal</h2>
-      <p>Airy and precise: light type, generous whitespace, barely-there depth, slim arc knobs. The accent color does the talking.</p>
+      <span class="letter">B</span><h2>Glow Grid</h2>
+      <p>The reference's dark calendar becomes the sequencer: a calm grid where on-steps glow like the lit days. Steppers for BPM and octave, segmented selectors, small simple knobs.</p>
       <a class="btn" href="preview-b.html" target="_blank">Open full page</a>
       <a class="btn" href="#" data-show="preview-b.html">Show below</a>
     </div>
     <div class="card">
-      <span class="letter">C</span><h2>Synth Module</h2>
-      <p>Dense modular-rack panels with rails and screws, small labelled knobs, LED-style step lights and recessed readouts.</p>
+      <span class="letter">C</span><h2>Hush Console</h2>
+      <p>The reference's thin sliders with tiny accent thumbs lead: levels and mixes are sliders, knobs only where rotation is natural. Reads like a premium soft-touch mixing console.</p>
       <a class="btn" href="preview-c.html" target="_blank">Open full page</a>
       <a class="btn" href="#" data-show="preview-c.html">Show below</a>
     </div>
@@ -71,9 +70,9 @@
 
   <div class="viewer">
     <div class="tabs">
-      <button data-show="preview-a.html" class="active">A: Studio Hardware</button>
-      <button data-show="preview-b.html">B: Soft Minimal</button>
-      <button data-show="preview-c.html">C: Synth Module</button>
+      <button data-show="preview-a.html" class="active">A: Soft Console</button>
+      <button data-show="preview-b.html">B: Glow Grid</button>
+      <button data-show="preview-c.html">C: Hush Console</button>
       <span>Click into the frame, then play keys A W S E D F T G Y H U J K O L P ;</span>
     </div>
     <iframe id="frame" src="preview-a.html" title="Design preview"></iframe>

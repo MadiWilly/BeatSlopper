@@ -1,655 +1,631 @@
 <!doctype html>
 <!--
-  ============================================================================
-  BeatSlopper  -  Design B: "SOFT MINIMAL"   (M3 main screen mockup)
-  ============================================================================
-  Airy, flat-soft, editorial neumorphism. Thin system type, generous
-  whitespace, barely-lifted panels, slim arc knobs, compact step cells.
-  Everything below is reproducible with egui's painter: rounded rects,
-  solid fills, two soft offset shadows per element, SVG-style arcs.
+  BeatSlopper — Direction B: "GLOW GRID"
+  Neumorphic kit (reference: @designwithbyy neumorphism sheet). Everything is the surface
+  colour; depth comes only from shadows. Hero = 16-step sequencer as a calm calendar grid
+  where ON steps become glowing accent circles.
 
-  ---------------------------------------------------------------- COLORS ---
-  DARK THEME                               LIGHT THEME
-    base (surface)        #16171A            base (surface)        #ECF0F5
-    hi  (highlight shadow)#24262B            hi  (highlight shadow)#FFFFFF
-    lo  (dark shadow)     #0A0B0D            lo  (dark shadow)     #C5CCD6
-    track (knob ring bg)  #2A2C32            track (knob ring bg)  #D5DBE4
-    accent                #FF7A1A            accent                #1E5BFF
-    accent-hover/active   #FF9440            accent-hover/active   #2E6AFF  (tuned from #3D74FF
-                                                                             so white text keeps 4.5:1)
-    on-accent (text/icon) #141821            on-accent (text/icon) #FFFFFF
-    accent-lo (inset dark)#B9500A            accent-lo (inset dark)#1240B8
-    accent-hi (inset lite)#FFA866            accent-hi (inset lite)#6A95FF
-    text primary          #F2F2F2            text primary          #141821
-    text secondary        #A8A8A8            text secondary        #5A6372
-    key-black (piano)     #0E0F11            key-black (piano)     #2A303B
-    key-black-text        #F2F2F2            key-black-text        #F2F2F2
+  ================================  TOKENS  ================================
+  DARK THEME
+    surface            #262A31
+    shadow highlight   #30353D
+    shadow dark        #1A1D22
+    track (arc/dot)    #353A43      (inactive arc track, inactive playhead dots)
+    accent             #FF7A1A
+    accent hover       #FF9440
+    on-accent text     #141821
+    text primary       #F2F2F2      (12.9:1 on surface)
+    text secondary     #A8ADB5      ( 6.4:1 on surface)
+    glow colour        #FF7A1A73    (accent @ 45% alpha)
 
-  Contrast (WCAG AA): dark on-accent #141821 on #FF7A1A = 6.8:1, accent on
-  base = 6.9:1, text2 on base = 7.5:1. Light: #FFFFFF on #1E5BFF = 5.3:1,
-  #FFFFFF on #2E6AFF = 4.55:1, accent on base = 4.6:1, text2 on base = 5.3:1.
+  LIGHT THEME
+    surface            #E8ECF3
+    shadow highlight   #FFFFFF
+    shadow dark        #C3CAD6
+    track (arc/dot)    #CDD3DE
+    accent             #1E5BFF      (4.4:1 on surface)
+    accent hover       #2E6AFF      (white on it 4.5:1)
+    on-accent text     #FFFFFF      (5.3:1 on accent)
+    text primary       #1C2130      (14.6:1 on surface)
+    text secondary     #5E6676      ( 4.9:1 on surface; tuned from #6B7382 which was 4.0:1)
+    glow colour        #1E5BFF66    (accent @ 40% alpha)
 
-  --------------------------------------------------------------- SHADOWS ---
-  (each element uses at most ONE pair: highlight top-left + dark bottom-right)
-    panel raised   : hi  offset(-4,-4) blur 14 spread 0 | lo offset(5,5)   blur 14 spread 0
-    control raised : hi  offset(-3,-3) blur 8  spread 0 | lo offset(3,3)   blur 8  spread 0
-    small raised   : hi  offset(-2,-2) blur 5  spread 0 | lo offset(2,2)   blur 5  spread 0
-    inset (pressed): lo  inset offset(2,2) blur 5 spread 0 | hi inset offset(-2,-2) blur 5 spread 0
-    inset on accent: accent-lo inset (2,2) blur 5 | accent-hi inset (-2,-2) blur 5
-    hairline H     : lo inset (0,1) blur 0 | hi inset (0,-1) blur 0   (2px tall strip, no border)
-    hairline V     : lo inset (1,0) blur 0 | hi inset (-1,0) blur 0   (2px wide strip, no border)
+  SHADOWS  (x y blur spread colour; "hi" = shadow highlight, "lo" = shadow dark)
+    raised-lg (panels)        -8 -8 20 0 hi  |  8 8 20 0 lo
+    raised    (40-44px ctrl)  -4 -4 10 0 hi  |  4 4 10 0 lo
+    raised-sm (18-26px ctrl)  -2 -2  6 0 hi  |  2 2  6 0 lo
+    inset-lg  (seq panel)     inset 6 6 14 0 lo  |  inset -6 -6 14 0 hi
+    inset     (seg/toggle)    inset 3 3  7 0 lo  |  inset -3 -3  7 0 hi
+    inset-sm  (slider track)  inset 2 2  4 0 lo  |  inset -2 -2  4 0 hi
+    glow      (ON states)     0 0 14 2 glow  |  3 3 8 0 lo
 
-  ----------------------------------------------------------------- SHAPE ---
-    radius sm 8px (buttons, steps, inputs)   radius md 12px (panels)
-    radius pill 999px (select, theme toggle) circle buttons 40px
-    spacing scale: 4 / 8 / 12 / 16 / 24 px   panel padding 14px 16px   grid gap 14px
-
-  ------------------------------------------------------------------ TYPE ---
-    system-ui stack only. Weights 300 / 400 / 500.
-    display 22px w300 (BPM, octave)    title 14px w500    body 13px w400
-    label 12px w400 (secondary color)  value 12px w500    brand 16px w300
-
-  ------------------------------------------------------------- CONTROLS ---
-    knob md 40px: ring r18 stroke 2 (track + accent value arc, -135..+135 deg),
-                  disc 26px raised-small, pointer 2x6px text color
-    knob sm 32px: ring r14, disc 20px     knob xs 26px: ring r11, disc 16px
-    step cell 38 x 28px, radius 8, gap 3px, group gap 12px (4 groups of 4)
-      off = raised-small, on = accent fill + inset-on-accent,
-      playhead column = inset (off) / accent-hover (on)
-    transport round button 40px, BPM +/- 26px, theme toggle 46x24 thumb 18px
-    segmented selector: inset container, pad 3, selected = accent fill
-    piano white key 54 x 100px radius 4/4/8/8, black key 32 x 62px radius 0/0/6/6,
-      key gap 3px, pressed = accent fill + inset-on-accent
-  ============================================================================
+  RADII        panel 24 | key 14 | slider track 3 | pill 999 | circle 50%
+  SPACING      4 8 12 16 20 24 32
+  TYPE         system-ui / Segoe UI
+    brand        15px 300  +0.08em
+    display      20px 500  (BPM number only)
+    body         13px 400
+    value        12px 400
+    label        11px 500  +0.12em uppercase
+    segmented    12px 400 / selected 500
+    step number  12px 400 / ON 500
+    bass note    11px 500
+    key letter   13px 500 / key note 11px 400
+  SIZES
+    icon button 44 (18px icon, 1.5px stroke) | small round button 24 (12px icon)
+    knob face 40 (arc box 52, arc r 23, stroke 2, pointer dot 4)
+    slider track 6 x 72, thumb 14, marker dot 3, slider column 22, ADSR gap 12
+    segmented height 28, item padding 0 8
+    theme toggle 48 x 26, thumb 18
+    step cell 44 circle, cell gap 10, group gap 28, row gap 4
+    playhead dot 6 (current 8)
+    white key 80 x 54, black key 46 x 34, key gap 12
+    transport height 64 | panel padding 20 24 | page padding 16 20 | section gap 14
+    synth panel flexible (content ~753 wide) | FX panel 408 wide, 2x2 groups, gap 16 12
+    knob column 56 wide | group gap 12 | knob row = label 11 + value 12 under a 52 arc box
+  =========================================================================
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BeatSlopper — Soft Minimal</title>
-<script>
-  try { var t = localStorage.getItem('bs-theme'); if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t; } catch (e) {}
-</script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeatSlopper Glow Grid</title>
 <style>
   :root {
-    color-scheme: light;
-    --base: #ECF0F5; --hi: #FFFFFF; --lo: #C5CCD6; --track: #D5DBE4;
+    --surface: #E8ECF3; --hi: #FFFFFF; --lo: #C3CAD6; --track: #CDD3DE;
     --accent: #1E5BFF; --accent-hover: #2E6AFF; --on-accent: #FFFFFF;
-    --accent-lo: #1240B8; --accent-hi: #6A95FF;
-    --text: #141821; --text2: #5A6372;
-    --key-black: #2A303B; --key-black-text: #F2F2F2;
+    --text: #1C2130; --text-2: #5E6676; --glow: #1E5BFF66;
 
-    --r-sm: 8px; --r-md: 12px; --r-pill: 999px;
-    --sh-panel: -4px -4px 14px var(--hi), 5px 5px 14px var(--lo);
-    --sh-raise: -3px -3px 8px var(--hi), 3px 3px 8px var(--lo);
-    --sh-raise-sm: -2px -2px 5px var(--hi), 2px 2px 5px var(--lo);
-    --sh-inset: inset 2px 2px 5px var(--lo), inset -2px -2px 5px var(--hi);
-    --sh-inset-accent: inset 2px 2px 5px var(--accent-lo), inset -2px -2px 5px var(--accent-hi);
-    --sh-hline: inset 0 1px 0 var(--lo), inset 0 -1px 0 var(--hi);
-    --sh-vline: inset 1px 0 0 var(--lo), inset -1px 0 0 var(--hi);
+    --sh-raised-lg: -8px -8px 20px var(--hi), 8px 8px 20px var(--lo);
+    --sh-raised:    -4px -4px 10px var(--hi), 4px 4px 10px var(--lo);
+    --sh-raised-sm: -2px -2px 6px var(--hi), 2px 2px 6px var(--lo);
+    --sh-inset-lg:  inset 6px 6px 14px var(--lo), inset -6px -6px 14px var(--hi);
+    --sh-inset:     inset 3px 3px 7px var(--lo), inset -3px -3px 7px var(--hi);
+    --sh-inset-sm:  inset 2px 2px 4px var(--lo), inset -2px -2px 4px var(--hi);
+    --sh-glow:      0 0 14px 2px var(--glow), 3px 3px 8px var(--lo);
+
+    --r-panel: 24px; --r-key: 14px; --r-pill: 999px;
+    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px;
+    color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      color-scheme: dark;
-      --base: #16171A; --hi: #24262B; --lo: #0A0B0D; --track: #2A2C32;
+      --surface: #262A31; --hi: #30353D; --lo: #1A1D22; --track: #353A43;
       --accent: #FF7A1A; --accent-hover: #FF9440; --on-accent: #141821;
-      --accent-lo: #B9500A; --accent-hi: #FFA866;
-      --text: #F2F2F2; --text2: #A8A8A8;
-      --key-black: #0E0F11; --key-black-text: #F2F2F2;
+      --text: #F2F2F2; --text-2: #A8ADB5; --glow: #FF7A1A73; color-scheme: dark;
     }
   }
   :root[data-theme="dark"] {
-    color-scheme: dark;
-    --base: #16171A; --hi: #24262B; --lo: #0A0B0D; --track: #2A2C32;
+    --surface: #262A31; --hi: #30353D; --lo: #1A1D22; --track: #353A43;
     --accent: #FF7A1A; --accent-hover: #FF9440; --on-accent: #141821;
-    --accent-lo: #B9500A; --accent-hi: #FFA866;
-    --text: #F2F2F2; --text2: #A8A8A8;
-    --key-black: #0E0F11; --key-black-text: #F2F2F2;
+    --text: #F2F2F2; --text-2: #A8ADB5; --glow: #FF7A1A73; color-scheme: dark;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { background: var(--base); color: var(--text); }
+  html, body { background: var(--surface); color: var(--text); }
   body {
-    font: 400 13px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    padding: 16px; min-height: 100vh; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    font-size: 13px; font-weight: 400; line-height: 1.3; min-height: 100vh;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
   }
-  .app { max-width: 1408px; margin: 0 auto; display: grid; gap: 14px; }
-  .panel { background: var(--base); border-radius: var(--r-md); box-shadow: var(--sh-panel); padding: 14px 16px; }
-  .ph { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-  .ph .sp { flex: 1; }
-  h2 { font-size: 14px; font-weight: 500; letter-spacing: .02em; }
-  .lbl { font-size: 12px; font-weight: 400; color: var(--text2); white-space: nowrap; }
-  .val { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .ctl { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 48px; }
-  .group { display: flex; flex-direction: column; gap: 8px; }
-  .gt { font-size: 12px; font-weight: 400; color: var(--text2); text-transform: uppercase; letter-spacing: .08em; }
-  .controls { display: flex; align-items: flex-end; gap: 12px; }
-  .vdiv { width: 2px; align-self: stretch; box-shadow: var(--sh-vline); border-radius: 1px; }
-  .hdiv { height: 2px; box-shadow: var(--sh-hline); border-radius: 1px; }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  svg { display: block; }
 
-  /* ---- buttons ---- */
-  button { font: inherit; color: var(--text); background: var(--base); border: 0; cursor: pointer;
-           border-radius: var(--r-sm); box-shadow: var(--sh-raise); user-select: none; }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button:active { box-shadow: var(--sh-inset); }
-  .btn { padding: 6px 12px; font-size: 12px; font-weight: 500; }
-  .rbtn { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; }
-  .rbtn svg { width: 16px; height: 16px; fill: var(--text); }
-  .rbtn.on, .btn.on { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-inset-accent); }
-  .rbtn.on svg { fill: var(--on-accent); }
-  .rbtn:hover svg { fill: var(--accent); }
-  .rbtn.on:hover { background: var(--accent-hover); }
-  .rbtn.on:hover svg { fill: var(--on-accent); }
+  .app { width: 1280px; max-width: 100%; margin: 0 auto; padding: var(--s4) var(--s5); display: flex; flex-direction: column; gap: 14px; }
+  .panel { background: var(--surface); border-radius: var(--r-panel); box-shadow: var(--sh-raised-lg); padding: var(--s5) var(--s6); }
+  .panel--inset { box-shadow: var(--sh-inset-lg); }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s3); min-height: 28px; }
 
-  /* ---- segmented selector ---- */
-  .seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: var(--r-sm); box-shadow: var(--sh-inset); }
-  .seg button { box-shadow: none; border-radius: 6px; padding: 0 8px; height: 24px; min-width: 26px;
-                font-size: 12px; font-weight: 500; color: var(--text2); display: grid; place-items: center; }
+  .label { font-size: 11px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; color: var(--text-2); }
+  .value { font-size: 12px; font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
+  .brand { font-size: 15px; font-weight: 300; letter-spacing: .08em; color: var(--text); }
+
+  /* ---------- round buttons, pills, toggle ---------- */
+  .btn-circle {
+    width: 44px; height: 44px; border-radius: 50%; background: var(--surface); color: var(--text-2);
+    box-shadow: var(--sh-raised); display: grid; place-items: center; flex: none;
+  }
+  .btn-circle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .btn-circle:hover { color: var(--text); }
+  .btn-circle:active { box-shadow: var(--sh-inset); }
+  .btn-circle.is-on { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-glow); }
+  .btn-circle.is-on:hover { background: var(--accent-hover); }
+  .btn-circle.is-on svg { fill: currentColor; }
+  .btn-sm { width: 24px; height: 24px; box-shadow: var(--sh-raised-sm); font-size: 11px; font-weight: 500; }
+  .btn-sm svg { width: 12px; height: 12px; }
+  .btn-sm:active { box-shadow: var(--sh-inset-sm); }
+
+  .btn-pill {
+    height: 28px; padding: 0 var(--s4); border-radius: var(--r-pill); background: var(--surface);
+    box-shadow: var(--sh-raised-sm); font-size: 12px; color: var(--text-2); letter-spacing: .04em;
+  }
+  .btn-pill:hover { color: var(--text); }
+  .btn-pill:active { box-shadow: var(--sh-inset-sm); }
+
+  .theme { display: flex; align-items: center; gap: var(--s3); color: var(--text-2); }
+  .theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .toggle { position: relative; width: 48px; height: 26px; border-radius: var(--r-pill); background: var(--surface); box-shadow: var(--sh-inset); }
+  .toggle-thumb {
+    position: absolute; top: 4px; left: 4px; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--surface); box-shadow: var(--sh-raised-sm); transition: left .15s ease;
+  }
+  :root[data-theme="dark"] .toggle-thumb { left: 26px; background: var(--accent); box-shadow: var(--sh-glow); }
+
+  /* ---------- stepper  (-) value (+) ---------- */
+  .stepper { display: inline-flex; align-items: center; gap: var(--s2); }
+  .stepper > .label { margin-right: var(--s2); }
+  .stepper .val { min-width: 30px; text-align: center; font-size: 13px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+  .stepper--display .val { font-size: 20px; min-width: 48px; }
+
+  /* ---------- segmented inset selector ---------- */
+  .seg { display: inline-flex; align-items: center; height: 28px; padding: 0 var(--s1); border-radius: var(--r-pill); box-shadow: var(--sh-inset); }
+  .seg button { height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: 12px; color: var(--text-2); white-space: nowrap; }
   .seg button:hover { color: var(--text); }
-  .seg button.on { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-inset-accent); }
-  .seg svg { width: 16px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+  .seg button.is-sel { color: var(--text); font-weight: 500; }
 
-  /* ---- select ---- */
-  .select { position: relative; box-shadow: var(--sh-inset); border-radius: var(--r-pill); }
-  .select select { appearance: none; -webkit-appearance: none; background: transparent; border: 0; color: var(--text);
-                   font: inherit; font-size: 12px; font-weight: 500; padding: 6px 28px 6px 12px; cursor: pointer; outline: none; }
-  .select svg { position: absolute; right: 10px; top: 50%; width: 10px; height: 10px; transform: translateY(-50%);
-                stroke: var(--text2); fill: none; stroke-width: 1.5; pointer-events: none; }
+  /* ---------- knob ---------- */
+  .knob { display: flex; flex-direction: column; align-items: center; gap: var(--s1); width: 56px; user-select: none; touch-action: none; }
+  .knob-wrap { position: relative; width: 52px; height: 52px; }
+  .knob-wrap svg { position: absolute; inset: 0; width: 52px; height: 52px; fill: none; stroke-width: 2; stroke-linecap: round; }
+  .arc-track { stroke: var(--track); }
+  .arc-val { stroke: var(--accent); }
+  .knob-face { position: absolute; left: 6px; top: 6px; width: 40px; height: 40px; border-radius: 50%; background: var(--surface); box-shadow: var(--sh-raised); cursor: ns-resize; }
+  .knob-face:hover { box-shadow: var(--sh-raised-lg); }
+  .knob-ptr { position: absolute; inset: 0; }
+  .knob-ptr::after { content: ""; position: absolute; left: 50%; top: 5px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--accent); }
+  .knob .label { margin-top: 2px; }
+  .knob--compact { width: 52px; }
+  .knob--compact .value { display: none; }
 
-  /* ---- knobs ---- */
-  .knob { position: relative; width: 40px; height: 40px; cursor: ns-resize; touch-action: none; user-select: none; }
-  .knob.sm { width: 32px; height: 32px; }
-  .knob.xs { width: 26px; height: 26px; }
-  .knob svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke-linecap: round; }
-  .knob .track { stroke: var(--track); stroke-width: 2; }
-  .knob .arc { stroke: var(--accent); stroke-width: 2; }
-  .knob:hover .arc { stroke: var(--accent-hover); }
-  .knob .disc { position: absolute; inset: 7px; border-radius: 50%; background: var(--base); box-shadow: var(--sh-raise-sm); }
-  .knob.sm .disc { inset: 6px; }
-  .knob.xs .disc { inset: 5px; }
-  .knob .disc i { position: absolute; left: 50%; top: 3px; width: 2px; height: 6px; margin-left: -1px; border-radius: 1px; background: var(--text); }
-  .knob.xs .disc i { top: 2px; height: 4px; }
+  /* ---------- vertical slider ---------- */
+  .slider { display: flex; flex-direction: column; align-items: center; gap: var(--s2); width: 22px; user-select: none; touch-action: none; }
+  .slider-hit { position: relative; width: 22px; height: 72px; cursor: ns-resize; }
+  .slider-track { position: absolute; left: 8px; top: 0; width: 6px; height: 72px; border-radius: 3px; box-shadow: var(--sh-inset-sm); }
+  .slider-thumb { position: absolute; left: 50%; width: 14px; height: 14px; margin-left: -7px; margin-bottom: -7px; border-radius: 50%; background: var(--accent); box-shadow: var(--sh-raised-sm); }
+  .slider-mark { width: 3px; height: 3px; border-radius: 50%; background: var(--accent); }
 
-  /* ---- transport ---- */
-  .transport { display: flex; align-items: center; gap: 16px; padding: 12px 16px; flex-wrap: wrap; }
-  .brand { font-size: 16px; font-weight: 300; letter-spacing: .04em; margin-right: 8px; }
-  .brand b { font-weight: 500; color: var(--accent); }
-  .tgroup { display: flex; align-items: center; gap: 8px; }
-  .bpm .disp { min-width: 68px; text-align: center; font-size: 22px; font-weight: 300; padding: 4px 10px;
-               border-radius: var(--r-sm); box-shadow: var(--sh-inset); font-variant-numeric: tabular-nums; }
-  .pm { width: 26px; height: 26px; border-radius: 50%; font-size: 14px; font-weight: 400; display: grid; place-items: center; }
-  .tctl { display: flex; align-items: center; gap: 8px; }
-  .tctl .txt { display: flex; flex-direction: column; gap: 2px; }
-  .rec svg { width: 14px; height: 14px; }
-  .tog { width: 46px; height: 24px; border-radius: var(--r-pill); box-shadow: var(--sh-inset); position: relative; display: flex;
-         align-items: center; justify-content: space-between; padding: 0 6px; }
-  .tog svg { width: 12px; height: 12px; stroke: var(--text2); fill: none; stroke-width: 1.6; stroke-linecap: round; position: relative; z-index: 1; }
-  .tog svg.on { stroke: var(--accent); }
-  .tog .thumb { position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--base);
-                box-shadow: var(--sh-raise-sm); transition: left .15s; }
-  .tog.dark .thumb { left: 25px; }
+  /* ---------- groups ---------- */
+  .group { display: flex; flex-direction: column; gap: var(--s3); }
+  .group-body { display: flex; align-items: flex-start; gap: var(--s2); }
+  .group-stack { display: flex; flex-direction: column; gap: var(--s3); align-items: flex-start; }
+  .group-head { display: flex; align-items: center; gap: var(--s3); height: 28px; margin-top: -6px; margin-bottom: -6px; }
+  .row-of { display: flex; align-items: flex-start; }
 
-  /* ---- top row: synth + fx ---- */
-  .toprow { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; }
-  .synth .rows { display: flex; flex-direction: column; gap: 12px; }
-  .synth .line { display: flex; gap: 16px; align-items: flex-start; }
-  .fx .fxgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
-  .lamp { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 40px; padding-bottom: 20px; }
-  .lamp i { width: 12px; height: 12px; border-radius: 50%; background: var(--base); box-shadow: var(--sh-inset); display: block; }
-  .lamp.on i { background: var(--accent); box-shadow: var(--sh-inset-accent); }
-  .lamp.on .lbl { color: var(--accent); font-weight: 500; }
+  /* ---------- transport ---------- */
+  .transport { display: flex; align-items: center; gap: var(--s8); height: 64px; padding: 0 var(--s6); }
+  .transport-group { display: flex; align-items: center; gap: var(--s3); }
+  .transport .knob { flex-direction: row; width: auto; gap: var(--s3); }
+  .transport .knob .label { margin: 0; }
+  .transport .knob-meta { display: flex; flex-direction: column; gap: 2px; }
+  .spacer { flex: 1; }
 
-  /* ---- sequencer ---- */
-  .seq .grid { display: grid; grid-template-columns: 78px 26px 46px auto 28px; align-items: center; row-gap: 3px; column-gap: 8px; }
-  .seq .grid > * { min-width: 0; }
-  .steps { display: flex; gap: 3px; }
-  .steps .g { display: flex; gap: 3px; }
-  .steps .g + .g { margin-left: 12px; }
-  .hdr span { width: 38px; text-align: center; font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
-  .hdr span.cur { color: var(--accent); font-weight: 500; }
-  .rowlbl { font-size: 13px; font-weight: 400; }
-  .rowval { font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
-  .step { width: 38px; height: 28px; border-radius: var(--r-sm); background: var(--base); box-shadow: var(--sh-raise-sm); cursor: pointer;
-          font-size: 12px; font-weight: 500; color: var(--text2); display: flex; align-items: center; justify-content: center; user-select: none; }
+  /* ---------- sequencer (hero) ---------- */
+  .seq { padding: var(--s5) var(--s6) var(--s3); }
+  .seq-grid {
+    display: grid; width: max-content; margin: 0 auto; align-items: center; column-gap: 10px; row-gap: 4px;
+    grid-template-columns: 84px 108px repeat(4, 44px) 8px repeat(4, 44px) 8px repeat(4, 44px) 8px repeat(4, 44px) 24px;
+  }
+  .seq-grid .rowlabel { font-size: 13px; color: var(--text); }
+  .beat { grid-column: span 4; text-align: center; }
+  .step {
+    width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; position: relative;
+  }
   .step:hover { color: var(--text); }
-  .step.cur { box-shadow: var(--sh-inset); }
-  .step.on { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-inset-accent); }
-  .step.on.acc, .step.on.cur, .step.on:hover { background: var(--accent-hover); }
-  .xbtn { width: 28px; height: 28px; border-radius: var(--r-sm); font-size: 14px; font-weight: 400; color: var(--text2); display: grid; place-items: center; box-shadow: var(--sh-raise-sm); }
-  .xbtn:hover { color: var(--text); }
-  .seq .hint { font-size: 12px; color: var(--text2); }
+  .step.is-cur { color: var(--text); }
+  .step.is-on { background: var(--accent); color: var(--on-accent); font-weight: 500; box-shadow: var(--sh-glow); }
+  .step.is-on:hover { background: var(--accent-hover); }
+  .step.is-acc::after { content: ""; position: absolute; left: 50%; top: 7px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--on-accent); }
+  .step--bass { font-size: 11px; font-weight: 500; }
+  .ph { width: 44px; height: 14px; display: grid; place-items: center; }
+  .ph::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--track); }
+  .ph.is-cur::before { width: 8px; height: 8px; background: var(--accent); box-shadow: var(--sh-glow); }
 
-  /* ---- keyboard ---- */
-  .kbd { display: flex; align-items: flex-start; gap: 24px; }
-  .oct { display: flex; flex-direction: column; gap: 8px; min-width: 160px; }
-  .oct .disp { font-size: 22px; font-weight: 300; }
-  .oct .hint { font-size: 12px; color: var(--text2); line-height: 1.5; }
-  .oct kbd { font: 500 12px/1 system-ui, sans-serif; color: var(--text); padding: 2px 6px; border-radius: 6px; box-shadow: var(--sh-raise-sm); }
-  .piano { position: relative; display: flex; gap: 3px; height: 100px; flex-shrink: 0; }
-  .key { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px; cursor: pointer; user-select: none; }
-  .wk { width: 54px; height: 100px; border-radius: 4px 4px 8px 8px; background: var(--base); box-shadow: var(--sh-raise); padding-bottom: 8px; }
-  .bk { position: absolute; top: 0; width: 32px; height: 62px; border-radius: 0 0 6px 6px; background: var(--key-black); color: var(--key-black-text);
-        box-shadow: var(--sh-raise); z-index: 2; padding-bottom: 6px; }
-  .key .kc { font-size: 13px; font-weight: 500; }
-  .key .kn { font-size: 12px; color: var(--text2); }
-  .bk .kn { color: var(--key-black-text); }
-  .key.down { background: var(--accent); color: var(--on-accent); box-shadow: var(--sh-inset-accent); }
-  .key.down .kn { color: var(--on-accent); }
+  /* ---------- synth + fx ---------- */
+  .row-2 { display: flex; gap: var(--s4); align-items: stretch; }
+  .synth { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+  .synth-body { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--s3); margin: auto 0; }
+  .fx { width: 408px; flex: none; }
+  .fx-body { display: grid; grid-template-columns: auto auto; justify-content: space-between; gap: var(--s4) var(--s3); }
+  .limiter { display: flex; flex-direction: column; align-items: center; gap: var(--s1); width: 52px; padding-top: 14px; }
+  .lim-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--surface); box-shadow: var(--sh-inset-sm); margin-bottom: 6px; }
+  .lim-dot.is-on { background: var(--accent); box-shadow: var(--sh-glow); }
 
-  @media (max-width: 1180px) { .toprow { grid-template-columns: 1fr; } }
+  /* ---------- piano ---------- */
+  .piano { padding-bottom: var(--s5); }
+  .kbd { position: relative; width: 908px; margin: 0 auto; height: 98px; }
+  .kbd-white { position: absolute; left: 0; bottom: 0; display: flex; gap: 12px; }
+  .key {
+    width: 80px; height: 54px; border-radius: var(--r-key); background: var(--surface); box-shadow: var(--sh-raised);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; user-select: none; touch-action: none;
+  }
+  .key .k { font-size: 13px; font-weight: 500; color: var(--text); }
+  .key .n { font-size: 11px; color: var(--text-2); }
+  .key--black { position: absolute; top: 0; width: 46px; height: 34px; box-shadow: var(--sh-inset); flex-direction: row; gap: 6px; }
+  .key--black .n { display: none; }
+  .key:hover .k { color: var(--accent); }
+  .key.is-down { background: var(--accent); box-shadow: var(--sh-glow); }
+  .key.is-down .k, .key.is-down .n { color: var(--on-accent); }
 </style>
 </head>
 <body>
-<div class="app">
+<main class="app">
 
-  <!-- ================= TRANSPORT ================= -->
-  <header class="panel transport">
-    <div class="brand">Beat<b>Slopper</b> <span class="lbl">M3</span></div>
-
-    <div class="tgroup">
-      <button class="rbtn" id="play" title="Play" aria-label="Play"><svg viewBox="0 0 16 16"><path d="M5 3 L13 8 L5 13 Z"/></svg></button>
-      <button class="rbtn" id="stop" title="Stop" aria-label="Stop"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg></button>
-      <button class="rbtn rec" id="rec" title="Record arm" aria-label="Record arm"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5"/></svg></button>
+  <!-- 1. TRANSPORT -->
+  <header class="panel transport" aria-label="Transport">
+    <div class="brand">BeatSlopper</div>
+    <div class="transport-group">
+      <button class="btn-circle" id="play" aria-label="Play" aria-pressed="false" data-icon="play"></button>
+      <button class="btn-circle" id="stop" aria-label="Stop" data-icon="stop"></button>
+      <button class="btn-circle" id="rec" aria-label="Record arm" aria-pressed="false" data-icon="rec"></button>
     </div>
-    <div class="vdiv" style="height:36px"></div>
-
-    <div class="tgroup bpm">
-      <span class="lbl">BPM</span>
-      <button class="pm" id="bpmDn" aria-label="BPM down">−</button>
-      <div class="disp" id="bpmVal">120</div>
-      <button class="pm" id="bpmUp" aria-label="BPM up">+</button>
-    </div>
-
-    <div class="tctl">
-      <div class="knob" data-min="0" data-max="75" data-value="0" data-fmt="pct" data-step="1" title="Swing"></div>
-      <div class="txt"><span class="lbl">Swing</span><span class="val"></span></div>
-    </div>
-    <div class="tctl">
-      <div class="knob" data-min="0" data-max="100" data-value="80" data-fmt="pct" data-step="1" title="Master volume"></div>
-      <div class="txt"><span class="lbl">Master</span><span class="val"></span></div>
-    </div>
-
-    <div style="flex:1"></div>
-    <div class="tgroup">
-      <span class="lbl">Pattern A · 16 steps · 1/16</span>
-      <div class="vdiv" style="height:24px;margin:0 8px"></div>
-      <button class="tog" id="themeTog" aria-label="Toggle light / dark theme" title="Theme">
-        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.5"/><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.3 4.3l1.4 1.4M14.3 14.3l1.4 1.4M4.3 15.7l1.4-1.4M14.3 5.7l1.4-1.4"/></svg>
-        <svg viewBox="0 0 20 20"><path d="M12.5 3.5a6.5 6.5 0 1 0 4 12 5.5 5.5 0 0 1-4-12z"/></svg>
-        <span class="thumb"></span>
-      </button>
+    <div class="stepper stepper--display" id="bpm" data-label="BPM" data-val="120" data-min="40" data-max="240"></div>
+    <div class="knob knob--compact" id="swing" data-label="Swing" data-val="0" data-unit="%"></div>
+    <div class="knob knob--compact" id="master" data-label="Master" data-val="80" data-unit="%"></div>
+    <div class="spacer"></div>
+    <div class="theme">
+      <span data-icon="sun"></span>
+      <button class="toggle" id="theme-toggle" role="switch" aria-checked="false" aria-label="Dark theme"><span class="toggle-thumb"></span></button>
+      <span data-icon="moon"></span>
     </div>
   </header>
 
-  <div class="toprow">
-    <!-- ================= SYNTH ================= -->
-    <section class="panel synth">
-      <div class="ph">
-        <h2>Synth</h2>
-        <span class="lbl">Bass / Melody lane voice</span>
-        <span class="sp"></span>
-        <span class="lbl">Preset</span>
-        <div class="select">
-          <select aria-label="Preset"><option>Bass</option><option>Lead</option><option>Pad</option><option>Pluck</option></select>
-          <svg viewBox="0 0 10 10"><path d="M2 3.5 5 6.5 8 3.5"/></svg>
-        </div>
+  <!-- 4. SEQUENCER (hero) -->
+  <section class="panel panel--inset seq" aria-label="Sequencer">
+    <div class="panel-head">
+      <span class="label">Sequencer</span>
+      <button class="btn-pill" id="clear-all">Clear all</button>
+    </div>
+    <div class="seq-grid" id="seq"></div>
+  </section>
+
+  <div class="row-2">
+    <!-- 2. SYNTH -->
+    <section class="panel synth" aria-label="Synth">
+      <div class="panel-head">
+        <span class="label">Synth</span>
+        <div class="seg" id="preset" data-options="Bass,Lead,Pad,Pluck" data-sel="0"></div>
       </div>
-      <div class="rows">
-        <div class="line">
-          <div class="group">
-            <span class="gt">Osc 1</span>
-            <div class="controls">
-              <div class="ctl"><span class="lbl">Wave</span><div class="seg waves" data-sel="1" style="margin-bottom:17px"></div></div>
-              <div class="ctl"><span class="lbl">Detune</span><div class="knob" data-min="-50" data-max="50" data-value="0" data-fmt="ct" data-step="1" data-bipolar></div><span class="val"></span></div>
-            </div>
-          </div>
-          <div class="vdiv"></div>
-          <div class="group">
-            <span class="gt">Osc 2</span>
-            <div class="controls">
-              <div class="ctl"><span class="lbl">Wave</span><div class="seg waves" data-sel="2" style="margin-bottom:17px"></div></div>
-              <div class="ctl"><span class="lbl">Detune</span><div class="knob" data-min="-50" data-max="50" data-value="7" data-fmt="ct" data-step="1" data-bipolar></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Mix</span><div class="knob" data-min="0" data-max="100" data-value="35" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-            </div>
-          </div>
-          <div class="vdiv"></div>
-          <div class="group">
-            <span class="gt">Filter</span>
-            <div class="controls">
-              <div class="ctl"><span class="lbl">Cutoff</span><div class="knob" data-min="20" data-max="20000" data-value="1200" data-fmt="hz" data-log></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Reso</span><div class="knob" data-min="0" data-max="100" data-value="22" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Env amt</span><div class="knob" data-min="-100" data-max="100" data-value="40" data-fmt="pct" data-step="1" data-bipolar></div><span class="val"></span></div>
+      <div class="synth-body">
+        <div class="group">
+          <span class="label">Osc 1</span>
+          <div class="group-stack">
+            <div class="seg" data-options="Sin,Saw,Sqr,Tri" data-sel="1"></div>
+            <div class="row-of">
+              <div class="knob" data-label="Detune" data-val="0" data-min="-50" data-max="50" data-unit="c" data-signed="1"></div>
+              <div class="knob" data-label="Mix" data-val="70" data-unit="%"></div>
             </div>
           </div>
         </div>
-        <div class="hdiv"></div>
-        <div class="line">
-          <div class="group">
-            <span class="gt">Amp envelope</span>
-            <div class="controls">
-              <div class="ctl"><span class="lbl">Attack</span><div class="knob" data-min="1" data-max="4000" data-value="8" data-fmt="ms" data-log></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Decay</span><div class="knob" data-min="1" data-max="4000" data-value="180" data-fmt="ms" data-log></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Sustain</span><div class="knob" data-min="0" data-max="100" data-value="60" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Release</span><div class="knob" data-min="1" data-max="8000" data-value="320" data-fmt="ms" data-log></div><span class="val"></span></div>
+        <div class="group">
+          <span class="label">Osc 2</span>
+          <div class="group-stack">
+            <div class="seg" data-options="Sin,Saw,Sqr,Tri" data-sel="2"></div>
+            <div class="row-of">
+              <div class="knob" data-label="Detune" data-val="7" data-min="-50" data-max="50" data-unit="c" data-signed="1"></div>
+              <div class="knob" data-label="Mix" data-val="40" data-unit="%"></div>
             </div>
           </div>
-          <div class="vdiv"></div>
-          <div class="group">
-            <span class="gt">LFO</span>
-            <div class="controls">
-              <div class="ctl"><span class="lbl">Rate</span><div class="knob" data-min="0.1" data-max="20" data-value="4.2" data-fmt="lhz" data-log></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Depth</span><div class="knob" data-min="0" data-max="100" data-value="15" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-              <div class="ctl"><span class="lbl">Target</span>
-                <div class="seg" style="margin-bottom:17px"><button>Pitch</button><button class="on">Cutoff</button></div>
-              </div>
+        </div>
+        <div class="group">
+          <span class="label">Filter</span>
+          <div class="row-of">
+            <div class="knob" data-label="Cutoff" data-val="2400" data-min="20" data-max="18000" data-unit="Hz"></div>
+            <div class="knob" data-label="Reso" data-val="18" data-unit="%"></div>
+            <div class="knob" data-label="Env" data-val="35" data-unit="%"></div>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">Amp</span>
+          <div class="group-body" style="gap:12px">
+            <div class="slider" data-label="A" data-val="8"></div>
+            <div class="slider" data-label="D" data-val="40"></div>
+            <div class="slider" data-label="S" data-val="65"></div>
+            <div class="slider" data-label="R" data-val="30"></div>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">LFO</span>
+          <div class="group-stack">
+            <div class="seg" data-options="Pitch,Cutoff" data-sel="1"></div>
+            <div class="row-of">
+              <div class="knob" data-label="Rate" data-val="2.5" data-min="0.1" data-max="20" data-unit="Hz" data-dec="1"></div>
+              <div class="knob" data-label="Depth" data-val="25" data-unit="%"></div>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ================= FX RACK ================= -->
-    <section class="panel fx">
-      <div class="ph"><h2>FX rack</h2><span class="lbl">post-synth chain</span></div>
-      <div class="fxgrid">
+    <!-- 3. FX -->
+    <section class="panel fx" aria-label="Effects">
+      <div class="panel-head"><span class="label">FX</span></div>
+      <div class="fx-body">
         <div class="group">
-          <span class="gt">Drive</span>
-          <div class="controls">
-            <div class="ctl"><span class="lbl">Amount</span><div class="knob" data-min="0" data-max="100" data-value="30" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-            <div class="ctl"><span class="lbl">Mix</span><div class="knob" data-min="0" data-max="100" data-value="50" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
+          <span class="label">Drive</span>
+          <div class="row-of">
+            <div class="knob" data-label="Amount" data-val="20" data-unit="%"></div>
+            <div class="knob" data-label="Mix" data-val="50" data-unit="%"></div>
           </div>
         </div>
         <div class="group">
-          <span class="gt">Delay</span>
-          <div class="controls">
-            <div class="ctl"><span class="lbl">Time</span><div class="knob" data-min="0" data-max="5" data-value="3" data-fmt="sync" data-step="1"></div><span class="val"></span></div>
-            <div class="ctl"><span class="lbl">Feedback</span><div class="knob" data-min="0" data-max="95" data-value="38" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-            <div class="ctl"><span class="lbl">Mix</span><div class="knob" data-min="0" data-max="100" data-value="22" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
+          <div class="group-head">
+            <span class="label">Delay</span>
+            <div class="seg" data-options="1/4,1/8,1/16" data-sel="1" aria-label="Delay time"></div>
+          </div>
+          <div class="row-of">
+            <div class="knob" data-label="Feedback" data-val="35" data-unit="%"></div>
+            <div class="knob" data-label="Mix" data-val="25" data-unit="%"></div>
           </div>
         </div>
         <div class="group">
-          <span class="gt">Reverb</span>
-          <div class="controls">
-            <div class="ctl"><span class="lbl">Size</span><div class="knob" data-min="0" data-max="100" data-value="55" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-            <div class="ctl"><span class="lbl">Damping</span><div class="knob" data-min="0" data-max="100" data-value="40" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
-            <div class="ctl"><span class="lbl">Mix</span><div class="knob" data-min="0" data-max="100" data-value="18" data-fmt="pct" data-step="1"></div><span class="val"></span></div>
+          <span class="label">Reverb</span>
+          <div class="row-of">
+            <div class="knob" data-label="Size" data-val="55" data-unit="%"></div>
+            <div class="knob" data-label="Damp" data-val="40" data-unit="%"></div>
+            <div class="knob" data-label="Mix" data-val="20" data-unit="%"></div>
           </div>
         </div>
         <div class="group">
-          <span class="gt">Master</span>
-          <div class="controls">
-            <div class="ctl"><span class="lbl">Gain</span><div class="knob" id="mgain" data-min="-12" data-max="12" data-value="0" data-fmt="db" data-step="0.5" data-bipolar></div><span class="val"></span></div>
-            <div class="lamp" id="lim" title="Soft limiter active"><i></i><span class="lbl">Limit</span></div>
+          <span class="label">Master</span>
+          <div class="row-of">
+            <div class="knob" id="gain" data-label="Gain" data-val="75" data-unit="%"></div>
+            <div class="limiter"><span class="lim-dot" id="lim"></span><span class="label">Limit</span></div>
           </div>
         </div>
       </div>
     </section>
   </div>
 
-  <!-- ================= SEQUENCER ================= -->
-  <section class="panel seq">
-    <div class="ph">
-      <h2>Sequencer</h2>
-      <span class="hint">click: toggle · shift+click: accent (drums) / next note (bass) · ×: clear row</span>
-      <span class="sp"></span>
-      <button class="btn" id="clearAll">Clear all</button>
+  <!-- 5. PIANO -->
+  <section class="panel piano" aria-label="Keyboard">
+    <div class="panel-head">
+      <span class="label">Keys</span>
+      <div class="stepper" id="octave" data-label="Octave" data-val="3" data-min="1" data-max="6" data-btns="Z,X"></div>
     </div>
-    <div class="grid" id="seqGrid"></div>
+    <div class="kbd" id="kbd"><div class="kbd-white" id="kbd-white"></div></div>
   </section>
 
-  <!-- ================= KEYBOARD ================= -->
-  <section class="panel keys">
-    <div class="ph"><h2>Keyboard</h2><span class="lbl">plays the synth voice · hold a computer key or click</span></div>
-    <div class="kbd">
-      <div class="oct">
-        <span class="lbl">Octave</span>
-        <span class="disp" id="octDisp">3</span>
-        <div class="hint"><kbd>Z</kbd> / <kbd>X</kbd>&nbsp; octave − / +<br>Keys <kbd>A</kbd> … <kbd>;</kbd> map C → E</div>
-      </div>
-      <div class="piano" id="piano"></div>
-    </div>
-  </section>
-
-</div>
+</main>
 
 <script>
-(function () {
-  'use strict';
-  const $ = (s, r) => (r || document).querySelector(s);
-  const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+(() => {
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  /* ---------- thin line icons (1.5px) ---------- */
+  const ICON = {
+    play: '<path d="M8 5.5v13l10-6.5z"/>',
+    stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>',
+    rec: '<circle cx="12" cy="12" r="5"/>',
+    minus: '<path d="M7 12h10"/>',
+    plus: '<path d="M12 7v10M7 12h10"/>',
+    x: '<path d="M8 8l8 8M16 8l-8 8"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/>',
+    moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  };
+  const icon = n => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
+  $$('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); });
 
   /* ---------- theme ---------- */
   const root = document.documentElement;
-  const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const tog = $('#themeTog');
-  const curTheme = () => root.dataset.theme || (mq.matches ? 'dark' : 'light');
-  function syncTog() {
-    const dark = curTheme() === 'dark';
-    tog.classList.toggle('dark', dark);
-    const [sun, moon] = $$('svg', tog);
-    sun.classList.toggle('on', !dark); moon.classList.toggle('on', dark);
-  }
-  tog.addEventListener('click', () => {
-    const t = curTheme() === 'dark' ? 'light' : 'dark';
+  const toggle = $('#theme-toggle');
+  function setTheme(t, persist) {
     root.dataset.theme = t;
-    try { localStorage.setItem('bs-theme', t); } catch (e) {}
-    syncTog();
-  });
-  mq.addEventListener('change', syncTog);
-  syncTog();
-
-  /* ---------- knobs ---------- */
-  const SYNC = ['1/32', '1/16', '1/8T', '1/8', '1/8.', '1/4'];
-  const FMT = {
-    pct: v => Math.round(v) + '%',
-    ct: v => (v > 0 ? '+' : '') + Math.round(v) + ' ct',
-    ms: v => v >= 1000 ? (v / 1000).toFixed(2) + ' s' : Math.round(v) + ' ms',
-    hz: v => v >= 1000 ? (v / 1000).toFixed(1) + ' kHz' : Math.round(v) + ' Hz',
-    lhz: v => v.toFixed(1) + ' Hz',
-    db: v => (v > 0 ? '+' : '') + v.toFixed(1) + ' dB',
-    sync: v => SYNC[Math.round(v)]
-  };
-  function arcPath(size, r, a0, a1) {
-    const c = size / 2;
-    const pt = a => { const t = (a - 90) * Math.PI / 180; return (c + r * Math.cos(t)).toFixed(2) + ' ' + (c + r * Math.sin(t)).toFixed(2); };
-    if (a1 < a0) { const s = a0; a0 = a1; a1 = s; }
-    const large = a1 - a0 > 180 ? 1 : 0;
-    return 'M' + pt(a0) + ' A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + pt(a1);
+    toggle.setAttribute('aria-checked', String(t === 'dark'));
+    if (persist) { try { localStorage.setItem('bs-theme', t); } catch (e) {} }
   }
-  function initKnob(el) {
-    const size = el.classList.contains('xs') ? 26 : el.classList.contains('sm') ? 32 : 40;
-    const r = size / 2 - 2;
-    el.innerHTML = '<svg viewBox="0 0 ' + size + ' ' + size + '"><path class="track" d="' + arcPath(size, r, -135, 135) + '"/><path class="arc"/></svg><div class="disc"><i></i></div>';
-    const arc = $('.arc', el), disc = $('.disc', el);
-    const sib = el.nextElementSibling;
-    const valEl = (sib && sib.classList.contains('val')) ? sib : el.parentElement.querySelector('.val');
-    const min = +el.dataset.min, max = +el.dataset.max, def = +el.dataset.value;
-    const log = el.hasAttribute('data-log'), bipolar = el.hasAttribute('data-bipolar');
-    const step = +(el.dataset.step || 0);
-    const fmt = FMT[el.dataset.fmt] || (v => String(v));
-    const norm = v => log ? Math.log(v / min) / Math.log(max / min) : (v - min) / (max - min);
-    const denorm = t => log ? min * Math.pow(max / min, t) : min + t * (max - min);
-    let v = def;
-    function render() {
-      const ang = -135 + 270 * norm(v);
-      arc.setAttribute('d', arcPath(size, r, bipolar ? 0 : -135, ang));
-      disc.style.transform = 'rotate(' + ang + 'deg)';
-      if (valEl) valEl.textContent = fmt(v);
-      el.setAttribute('aria-valuetext', fmt(v));
-      el.dispatchEvent(new CustomEvent('knob', { detail: v }));
-    }
-    let y0 = 0, t0 = 0;
-    el.addEventListener('pointerdown', e => {
-      y0 = e.clientY; t0 = norm(v); el.setPointerCapture(e.pointerId); e.preventDefault();
+  let saved = null;
+  try { saved = localStorage.getItem('bs-theme'); } catch (e) {}
+  setTheme(saved || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'), false);
+  toggle.addEventListener('click', () => setTheme(root.dataset.theme === 'dark' ? 'light' : 'dark', true));
+
+  /* ---------- knob ---------- */
+  function arc(a0, a1) {
+    const r = 23, c = 26, p = a => [c + r * Math.sin(a * Math.PI / 180), c - r * Math.cos(a * Math.PI / 180)];
+    const [x0, y0] = p(a0), [x1, y1] = p(a1);
+    return `M${x0.toFixed(2)} ${y0.toFixed(2)}A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  }
+  function makeKnob(el) {
+    const min = +(el.dataset.min ?? 0), max = +(el.dataset.max ?? 100), def = +el.dataset.val;
+    const unit = el.dataset.unit || '', dec = +(el.dataset.dec || 0), signed = !!el.dataset.signed;
+    let val = def;
+    el.innerHTML =
+      `<div class="knob-wrap"><svg viewBox="0 0 52 52" aria-hidden="true"><path class="arc-track" d="${arc(-135, 135)}"/><path class="arc-val" d=""/></svg>` +
+      `<div class="knob-face" tabindex="0" role="slider" aria-label="${el.dataset.label}"><div class="knob-ptr"></div></div></div>` +
+      `<span class="label">${el.dataset.label}</span><span class="value"></span>`;
+    const face = $('.knob-face', el), ptr = $('.knob-ptr', el), arcVal = $('.arc-val', el), out = $('.value', el);
+    const render = () => {
+      const t = (val - min) / (max - min), ang = -135 + 270 * t;
+      ptr.style.transform = `rotate(${ang}deg)`;
+      arcVal.setAttribute('d', t > 0.004 ? arc(-135, ang) : '');
+      const txt = val.toFixed(dec);
+      out.textContent = (signed && val > 0 ? '+' : '') + txt + unit;
+      face.setAttribute('aria-valuenow', txt);
+      el.dataset.value = txt;
+      el.dispatchEvent(new CustomEvent('change'));
+    };
+    let y0 = 0, v0 = 0;
+    face.addEventListener('pointerdown', e => { y0 = e.clientY; v0 = val; face.setPointerCapture(e.pointerId); });
+    face.addEventListener('pointermove', e => {
+      if (!face.hasPointerCapture(e.pointerId)) return;
+      val = clamp(v0 + (y0 - e.clientY) * (max - min) / 180, min, max); render();
     });
-    el.addEventListener('pointermove', e => {
-      if (!el.hasPointerCapture(e.pointerId)) return;
-      const t = clamp(t0 + (y0 - e.clientY) / 160 * (e.shiftKey ? 0.2 : 1), 0, 1);
-      v = denorm(t);
-      if (step) v = Math.round(v / step) * step;
-      v = clamp(v, min, max);
-      render();
+    face.addEventListener('dblclick', () => { val = def; render(); });
+    face.addEventListener('keydown', e => {
+      const step = (max - min) / 50;
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') { val = clamp(val + step, min, max); render(); e.preventDefault(); }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') { val = clamp(val - step, min, max); render(); e.preventDefault(); }
     });
-    el.addEventListener('dblclick', () => { v = def; render(); });
-    el.setAttribute('role', 'slider'); el.tabIndex = 0;
     render();
   }
-  $$('.knob').forEach(initKnob);
+  $$('.knob').forEach(makeKnob);
 
-  /* soft-limiter lamp follows master gain */
-  const lim = $('#lim');
-  $('#mgain').addEventListener('knob', e => lim.classList.toggle('on', e.detail > 0));
-
-  /* ---------- segmented selectors ---------- */
-  const WAVES = [
-    ['Sine', 'M1 5c2-5 4-5 7 0s5 5 7 0'],
-    ['Saw', 'M1 9 8 1v8l7-8'],
-    ['Square', 'M1 9V1h7v8h7V1'],
-    ['Triangle', 'M1 9 5 1l4 8 4-8']
-  ];
-  $$('.seg.waves').forEach(seg => {
-    const sel = +seg.dataset.sel;
-    seg.innerHTML = WAVES.map((w, i) => '<button class="' + (i === sel ? 'on' : '') + '" title="' + w[0] + '" aria-label="' + w[0] + '"><svg viewBox="0 0 16 10"><path d="' + w[1] + '"/></svg></button>').join('');
-  });
-  $$('.seg').forEach(seg => seg.addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    $$('button', seg).forEach(x => x.classList.toggle('on', x === b));
-  }));
-
-  /* ---------- transport ---------- */
-  let bpm = 120, playing = false, pos = 0, timer = null;
-  const bpmVal = $('#bpmVal'), play = $('#play'), stop = $('#stop'), rec = $('#rec');
-  function setBpm(n) { bpm = clamp(n, 40, 240); bpmVal.textContent = bpm; if (playing) startClock(); }
-  $('#bpmUp').addEventListener('click', () => setBpm(bpm + 1));
-  $('#bpmDn').addEventListener('click', () => setBpm(bpm - 1));
-  function startClock() {
-    if (timer) clearInterval(timer);
-    timer = setInterval(() => { pos = (pos + 1) % 16; renderPlayhead(); }, 60000 / bpm / 4);
+  /* ---------- vertical slider ---------- */
+  function makeSlider(el) {
+    let val = +el.dataset.val;
+    el.innerHTML = `<span class="slider-mark"></span><div class="slider-hit" tabindex="0" role="slider" aria-label="${el.dataset.label}"><div class="slider-track"></div><div class="slider-thumb"></div></div><span class="label">${el.dataset.label}</span>`;
+    const hit = $('.slider-hit', el), thumb = $('.slider-thumb', el);
+    const render = () => { thumb.style.bottom = val + '%'; hit.setAttribute('aria-valuenow', Math.round(val)); };
+    const fromEvent = e => { const r = hit.getBoundingClientRect(); val = clamp(100 * (r.bottom - e.clientY) / r.height, 0, 100); render(); };
+    hit.addEventListener('pointerdown', e => { hit.setPointerCapture(e.pointerId); fromEvent(e); });
+    hit.addEventListener('pointermove', e => { if (hit.hasPointerCapture(e.pointerId)) fromEvent(e); });
+    render();
   }
-  play.addEventListener('click', () => {
-    playing = !playing; play.classList.toggle('on', playing);
-    if (playing) startClock(); else { clearInterval(timer); timer = null; }
-  });
-  stop.addEventListener('click', () => {
-    playing = false; play.classList.remove('on'); clearInterval(timer); timer = null; pos = 0; renderPlayhead();
-  });
-  rec.addEventListener('click', () => rec.classList.toggle('on'));
+  $$('.slider').forEach(makeSlider);
+
+  /* ---------- stepper (-) value (+) ---------- */
+  function makeStepper(el, onChange) {
+    const min = +el.dataset.min, max = +el.dataset.max, step = +(el.dataset.step || 1);
+    const btns = el.dataset.btns ? el.dataset.btns.split(',') : null;
+    let val = +el.dataset.val;
+    el.innerHTML = (el.dataset.label ? `<span class="label">${el.dataset.label}</span>` : '') +
+      `<button class="btn-circle btn-sm" data-d="-1" aria-label="Decrease">${btns ? btns[0] : icon('minus')}</button>` +
+      `<span class="val"></span>` +
+      `<button class="btn-circle btn-sm" data-d="1" aria-label="Increase">${btns ? btns[1] : icon('plus')}</button>`;
+    const out = $('.val', el);
+    const fmt = v => el.dataset.signed ? (v > 0 ? '+' + v : String(v)) : String(v);
+    const set = v => { val = clamp(v, min, max); out.textContent = fmt(val); el.dataset.value = val; if (onChange) onChange(val); };
+    $$('button', el).forEach(b => b.addEventListener('click', () => set(val + step * +b.dataset.d)));
+    set(val);
+    return { set, get: () => val };
+  }
+
+  /* ---------- segmented selector ---------- */
+  function makeSeg(el) {
+    const opts = el.dataset.options.split(',');
+    el.setAttribute('role', 'radiogroup');
+    el.innerHTML = opts.map((o, i) => `<button role="radio" aria-checked="${i === +el.dataset.sel}">${o}</button>`).join('');
+    const btns = $$('button', el);
+    const select = i => { btns.forEach((b, j) => { b.classList.toggle('is-sel', j === i); b.setAttribute('aria-checked', String(j === i)); }); el.dataset.value = opts[i]; };
+    btns.forEach((b, i) => b.addEventListener('click', () => select(i)));
+    select(+el.dataset.sel);
+  }
+  $$('.seg').forEach(makeSeg);
+
+  /* ---------- master gain -> soft limiter indicator ---------- */
+  const gain = $('#gain'), lim = $('#lim');
+  const updateLim = () => lim.classList.toggle('is-on', +gain.dataset.value >= 85);
+  gain.addEventListener('change', updateLim); updateLim();
 
   /* ---------- sequencer ---------- */
+  const NOTES = ['C2', 'D2', 'D#2', 'F2', 'G2', 'A#2', 'C3', 'D3', 'D#3'];
   const ROWS = [
-    ['Kick', 'x...x...x...x...'],
-    ['Snare', '....x.......x...'],
-    ['Clap', '....x.......x..x'],
-    ['Closed Hat', 'x.x.x.x.x.x.x.x.'],
-    ['Open Hat', '..x...x...x...x.']
+    { name: 'Kick',       vol: 8, steps: [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0] },
+    { name: 'Snare',      vol: 7, steps: [0,0,0,0, 2,0,0,0, 0,0,0,0, 1,0,0,0] },
+    { name: 'Clap',       vol: 6, steps: [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1] },
+    { name: 'Closed Hat', vol: 5, steps: [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0] },
+    { name: 'Open Hat',   vol: 5, steps: [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,1,0] },
+    { name: 'Bass', bass: true, steps: [0,-1,-1,0, -1,-1,3,-1, 0,-1,-1,5, -1,-1,2,-1] },
   ];
-  const BASS = ['C2', '', 'C2', 'D#2', '', 'G2', '', 'C2', 'C2', '', 'A#1', '', 'G2', '', 'F2', 'D#2'];
-  const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-  const EMPTY = '—';
-  const grid = $('#seqGrid');
-  function stepsHtml(make) {
-    let h = '';
-    for (let g = 0; g < 4; g++) { h += '<div class="g">'; for (let i = g * 4; i < g * 4 + 4; i++) h += make(i); h += '</div>'; }
-    return h;
-  }
-  let html = '<span></span><span></span><span></span><div class="steps hdr">' + stepsHtml(i => '<span data-col="' + i + '">' + (i + 1) + '</span>') + '</div><span></span>';
-  ROWS.forEach((row, ri) => {
-    html += '<span class="rowlbl">' + row[0] + '</span>' +
-      '<div class="knob xs" data-min="-24" data-max="6" data-value="0" data-fmt="db" data-step="0.5" title="' + row[0] + ' volume"></div><span class="val rowval"></span>' +
-      '<div class="steps" data-row="' + ri + '">' + stepsHtml(i => '<div class="step' + (row[1][i] === 'x' ? ' on' : '') + '" data-col="' + i + '"></div>') + '</div>' +
-      '<button class="xbtn" data-clear="' + ri + '" title="Clear row" aria-label="Clear ' + row[0] + ' row">×</button>';
-  });
-  html += '<span class="rowlbl">Bass</span>' +
-    '<div class="knob xs" data-min="-12" data-max="12" data-value="0" data-fmt="ct" data-step="1" data-bipolar title="Bass tune"></div><span class="val rowval"></span>' +
-    '<div class="steps bass" data-row="5">' + stepsHtml(i => '<div class="step' + (BASS[i] ? ' on' : '') + '" data-col="' + i + '" data-note="' + (BASS[i] || 'C2') + '">' + (BASS[i] || EMPTY) + '</div>') + '</div>' +
-    '<button class="xbtn" data-clear="5" title="Clear row" aria-label="Clear Bass row">×</button>';
-  grid.innerHTML = html;
-  $$('.knob', grid).forEach(initKnob);
+  const seq = $('#seq');
+  const cells = ROWS.map(() => []);
+  const spacer = () => { const d = document.createElement('div'); seq.appendChild(d); };
+  const add = (cls, html, tag = 'div') => { const d = document.createElement(tag); d.className = cls; d.innerHTML = html; seq.appendChild(d); return d; };
 
-  function renderPlayhead() {
-    $$('[data-col]', grid).forEach(el => el.classList.toggle('cur', +el.dataset.col === pos));
-  }
-  renderPlayhead();
+  // header: beat numbers
+  spacer(); spacer();
+  for (let b = 1; b <= 4; b++) { add('label beat', String(b)); if (b < 4) spacer(); }
+  spacer();
 
-  function nextNote(n) {
-    const m = /^([A-G]#?)(-?\d)$/.exec(n); if (!m) return 'C2';
-    let i = NOTES.indexOf(m[1]) + 1, o = +m[2];
-    if (i === 12) { i = 0; o++; }
-    return NOTES[i] + o;
-  }
-  grid.addEventListener('click', e => {
-    const s = e.target.closest('.step');
-    if (s) {
-      const bass = s.parentElement.parentElement.classList.contains('bass');
-      if (bass) {
-        if (e.shiftKey && s.classList.contains('on')) s.dataset.note = nextNote(s.dataset.note);
-        else s.classList.toggle('on');
-        s.textContent = s.classList.contains('on') ? s.dataset.note : EMPTY;
-      } else if (e.shiftKey) {
-        if (!s.classList.contains('on')) s.classList.add('on');
-        s.classList.toggle('acc');
-      } else {
-        s.classList.toggle('on'); if (!s.classList.contains('on')) s.classList.remove('acc');
-      }
-      return;
+  ROWS.forEach((row, r) => {
+    add('rowlabel', row.name);
+    const st = add('stepper', '');
+    if (row.bass) { st.dataset.val = '0'; st.dataset.min = '-12'; st.dataset.max = '12'; st.dataset.signed = '1'; }
+    else { st.dataset.val = String(row.vol); st.dataset.min = '0'; st.dataset.max = '10'; }
+    makeStepper(st);
+    for (let c = 0; c < 16; c++) {
+      const b = add('step' + (row.bass ? ' step--bass' : ''), '', 'button');
+      b.setAttribute('aria-label', `${row.name} step ${c + 1}`);
+      b.addEventListener('click', e => {
+        const v = row.steps[c];
+        if (row.bass) row.steps[c] = e.shiftKey ? (v < 0 ? 0 : (v + 1) % NOTES.length) : (v < 0 ? 0 : -1);
+        else row.steps[c] = e.shiftKey ? (v === 2 ? 1 : 2) : (v ? 0 : 1);
+        paint(r, c);
+      });
+      cells[r].push(b);
+      if (c % 4 === 3 && c < 15) spacer();
     }
-    const x = e.target.closest('[data-clear]');
-    if (x) clearRow($('.steps[data-row="' + x.dataset.clear + '"]'));
+    const clr = add('btn-circle btn-sm', icon('x'), 'button');
+    clr.setAttribute('aria-label', 'Clear ' + row.name);
+    clr.addEventListener('click', () => { row.steps.fill(row.bass ? -1 : 0); row.steps.forEach((_, c) => paint(r, c)); });
   });
-  function clearRow(row) {
-    $$('.step', row).forEach(s => { s.classList.remove('on', 'acc'); if (row.classList.contains('bass')) s.textContent = EMPTY; });
-  }
-  $('#clearAll').addEventListener('click', () => $$('.steps[data-row]', grid).forEach(clearRow));
 
-  /* ---------- piano keyboard ---------- */
-  const KEYS = [
-    ['C', 'a'], ['C#', 'w', 1], ['D', 's'], ['D#', 'e', 1], ['E', 'd'], ['F', 'f'], ['F#', 't', 1], ['G', 'g'], ['G#', 'y', 1],
-    ['A', 'h'], ['A#', 'u', 1], ['B', 'j'], ['C', 'k', 0, 1], ['C#', 'o', 1, 1], ['D', 'l', 0, 1], ['D#', 'p', 1, 1], ['E', ';', 0, 1]
-  ];
-  const WK = 54, GAP = 3, BK = 32;
-  let octave = 3;
-  const piano = $('#piano'), octDisp = $('#octDisp');
-  let wc = 0, ph = '';
-  KEYS.forEach((k, i) => {
-    const [note, key, black, up] = k;
-    if (black) {
-      const left = wc * (WK + GAP) - GAP / 2 - BK / 2;
-      ph += '<div class="key bk" data-i="' + i + '" data-key="' + key + '" style="left:' + left + 'px"><span class="kc">' + key.toUpperCase() + '</span><span class="kn"></span></div>';
-    } else {
-      ph += '<div class="key wk" data-i="' + i + '" data-key="' + key + '"><span class="kc">' + key.toUpperCase() + '</span><span class="kn"></span></div>';
-      wc++;
-    }
+  // footer: playhead dots
+  spacer(); spacer();
+  const phDots = [];
+  for (let c = 0; c < 16; c++) { phDots.push(add('ph', '')); if (c % 4 === 3 && c < 15) spacer(); }
+  spacer();
+
+  function paint(r, c) {
+    const row = ROWS[r], v = row.steps[c], b = cells[r][c];
+    const on = row.bass ? v >= 0 : v > 0;
+    b.classList.toggle('is-on', on);
+    b.classList.toggle('is-acc', !row.bass && v === 2);
+    b.setAttribute('aria-pressed', String(on));
+    b.textContent = row.bass ? (on ? NOTES[v] : '–') : String(c + 1);
+  }
+  ROWS.forEach((row, r) => row.steps.forEach((_, c) => paint(r, c)));
+  $('#clear-all').addEventListener('click', () => ROWS.forEach((row, r) => { row.steps.fill(row.bass ? -1 : 0); row.steps.forEach((_, c) => paint(r, c)); }));
+
+  /* ---------- transport ---------- */
+  const bpm = makeStepper($('#bpm'));
+  const swing = $('#swing');
+  const play = $('#play'), stop = $('#stop'), rec = $('#rec');
+  let pos = -1, timer = null;
+  function setPos(p) {
+    if (pos >= 0) { phDots[pos].classList.remove('is-cur'); cells.forEach(r => r[pos].classList.remove('is-cur')); }
+    pos = p;
+    if (pos >= 0) { phDots[pos].classList.add('is-cur'); cells.forEach(r => r[pos].classList.add('is-cur')); }
+  }
+  function tick() {
+    setPos((pos + 1) % 16);
+    const base = 60000 / bpm.get() / 4, sw = (+swing.dataset.value || 0) / 100 * 0.5;
+    timer = setTimeout(tick, base * (pos % 2 === 0 ? 1 + sw : 1 - sw));
+  }
+  function startStop(on) {
+    clearTimeout(timer); timer = null;
+    play.classList.toggle('is-on', on); play.setAttribute('aria-pressed', String(on));
+    if (on) tick(); else setPos(-1);
+  }
+  play.addEventListener('click', () => startStop(!timer));
+  stop.addEventListener('click', () => startStop(false));
+  rec.addEventListener('click', () => { const on = rec.classList.toggle('is-on'); rec.setAttribute('aria-pressed', String(on)); });
+
+  /* ---------- piano ---------- */
+  const KEYS = [['A','C'],['W','C#'],['S','D'],['E','D#'],['D','E'],['F','F'],['T','F#'],['G','G'],['Y','G#'],['H','A'],['U','A#'],['J','B'],['K','C'],['O','C#'],['L','D'],['P','D#'],[';','E']];
+  const kbd = $('#kbd'), whites = $('#kbd-white'), keyEls = new Map();
+  const W = 80, G = 12, BW = 46;
+  let whiteIdx = 0;
+  KEYS.forEach(([k, n], i) => {
+    const black = n.includes('#');
+    const el = document.createElement('button');
+    el.className = 'key' + (black ? ' key--black' : '');
+    el.innerHTML = `<span class="k">${k}</span><span class="n"></span>`;
+    el.dataset.note = n; el.dataset.oct = i >= 12 ? '1' : '0';
+    if (black) { el.style.left = (whiteIdx * (W + G) - G / 2 - BW / 2) + 'px'; kbd.appendChild(el); }
+    else { whites.appendChild(el); whiteIdx++; }
+    el.addEventListener('pointerdown', () => el.classList.add('is-down'));
+    el.addEventListener('pointerup', () => el.classList.remove('is-down'));
+    el.addEventListener('pointerleave', () => el.classList.remove('is-down'));
+    keyEls.set(k, el);
   });
-  piano.innerHTML = ph;
-  const keyEls = $$('.key', piano);
-  function renderOct() {
-    octDisp.textContent = octave;
-    keyEls.forEach(el => { const k = KEYS[+el.dataset.i]; $('.kn', el).textContent = k[0] + (octave + (k[3] || 0)); });
-  }
-  renderOct();
-  const byKey = {}; keyEls.forEach(el => byKey[el.dataset.key] = el);
-  const press = el => el && el.classList.add('down');
-  const release = el => el && el.classList.remove('down');
-
-  document.addEventListener('keydown', e => {
+  const octave = makeStepper($('#octave'), o => {
+    keyEls.forEach(el => { el.setAttribute('aria-label', el.dataset.note + (o + +el.dataset.oct)); $('.n', el).textContent = el.dataset.note + (o + +el.dataset.oct); });
+  });
+  window.addEventListener('keydown', e => {
     if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-    const tag = e.target.tagName; if (tag === 'SELECT' || tag === 'INPUT') return;
-    const k = e.key.toLowerCase();
-    if (k === 'z') { octave = clamp(octave - 1, 0, 7); renderOct(); return; }
-    if (k === 'x') { octave = clamp(octave + 1, 0, 7); renderOct(); return; }
-    if (byKey[k]) { press(byKey[k]); e.preventDefault(); }
+    const k = e.key.length === 1 ? e.key.toUpperCase() : '';
+    if (k === 'Z') { octave.set(octave.get() - 1); return; }
+    if (k === 'X') { octave.set(octave.get() + 1); return; }
+    const el = keyEls.get(k); if (el) { el.classList.add('is-down'); e.preventDefault(); }
   });
-  document.addEventListener('keyup', e => release(byKey[e.key.toLowerCase()]));
-  window.addEventListener('blur', () => keyEls.forEach(release));
-
-  piano.addEventListener('pointerdown', e => {
-    const el = e.target.closest('.key'); if (!el) return;
-    press(el); el.setPointerCapture(e.pointerId); e.preventDefault();
+  window.addEventListener('keyup', e => {
+    const el = keyEls.get(e.key.length === 1 ? e.key.toUpperCase() : ''); if (el) el.classList.remove('is-down');
   });
-  const up = e => { const el = e.target.closest('.key'); if (el) release(el); };
-  piano.addEventListener('pointerup', up);
-  piano.addEventListener('pointercancel', up);
+  window.addEventListener('blur', () => keyEls.forEach(el => el.classList.remove('is-down')));
 })();
 </script>
 </body>

@@ -1,4 +1,7 @@
-# Design winner: A, "Studio Hardware"
+# Round 1 winner (superseded): A, "Studio Hardware"
+
+Superseded on 2026-10-24: the user supplied a neumorphism reference image and asked for a
+redo. This is kept for history only. The live winner file is `design/WINNER.md`.
 
 **Picked:** 2026-10-24. **Tweaks requested:** none; the user asked for improvements at my
 judgement. **Reference mock:** `design/preview-a.html` (its top-of-file comment is the

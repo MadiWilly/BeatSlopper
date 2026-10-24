@@ -24,3 +24,11 @@ User picked A and asked for judgement-call improvements. Changes are listed in
 about 1240x1100; the app opens at 1280x1100 and scrolls vertically below 760px tall rather
 than shrinking controls. Panel titles are sentence case; module and knob labels keep hardware
 silkscreen caps.
+
+## 2026-10-24: Design round 2 against a reference image
+After picking A, the user supplied a neumorphism reference (soft-UI kit: cool off-white
+surfaces, large-blur floating shadows, pills, concentric-ring dials, thin sliders with small
+accent thumbs, light geometric type, dark charcoal panel with glowing accent circles) and asked
+for a redo. Round 1 moved to `design/round1/`; `design/WINNER.md` removed so the loop gate
+closes until a new pick. Palette tuning allowed: dark surface may be charcoal (reference) rather
+than near-black, as long as orange/blue accents stay high contrast.
