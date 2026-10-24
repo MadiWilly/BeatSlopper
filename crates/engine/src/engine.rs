@@ -1,8 +1,10 @@
-//! Engine core: message queue, test tone, smoothed master gain and the master limiter.
+//! Engine core: message queue, polyphonic voices, test tone, smoothed master gain and the
+//! master limiter.
 //!
 //! The public API below is the contract the `app` crate builds against (docs/ARCHITECTURE.md).
 //!
-//! Signal flow (M0): `TestTone -> master gain (smoothed) -> Limiter -> interleaved stereo`.
+//! Signal flow (M1): `voices (sum) + TestTone -> master gain (smoothed) -> Limiter ->
+//! interleaved stereo`.
 //!
 //! Real-time rules: everything used by [`Engine::render`] is pre-allocated in [`new_engine`].
 //! `render` never allocates, locks, does I/O, logs or panics; it tolerates `out` buffers that
@@ -12,8 +14,9 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::dsp::db_to_gain;
 use crate::fx::Limiter;
-use crate::params::{DEFAULT_SMOOTH_MS, Smoother};
+use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::synth::SineOsc;
+use crate::voice::VoicePool;
 
 /// Capacity of the UI -> audio message queue.
 pub const QUEUE_CAPACITY: usize = 1024;
@@ -36,6 +39,23 @@ pub enum Message {
     TestTone(bool),
     /// Master output gain, linear (1.0 = unity). Clamped to `0.0..=`[`MAX_MASTER_GAIN`].
     MasterGain(f32),
+    /// Start a synth voice for MIDI `note` (69 = A4) at `velocity` in `0.0..=1.0`.
+    /// A note that is already sounding retriggers its own voice.
+    NoteOn {
+        /// MIDI note number, `0..=127`.
+        note: u8,
+        /// Velocity, `0.0..=1.0`; scales the voice amplitude linearly.
+        velocity: f32,
+    },
+    /// Release every voice playing MIDI `note` (envelope enters its release stage).
+    NoteOff {
+        /// MIDI note number, `0..=127`.
+        note: u8,
+    },
+    /// Release every sounding voice (panic button / focus lost).
+    AllNotesOff,
+    /// Set a parameter; the value is clamped to [`ParamId::range`].
+    SetParam(ParamId, f32),
 }
 
 /// UI-side handle: sends [`Message`]s to the engine over a lock-free SPSC queue.
@@ -114,6 +134,9 @@ pub struct Engine {
     sample_rate: f32,
     consumer: Consumer<Message>,
     tone: TestTone,
+    voices: VoicePool,
+    /// Current value of every [`ParamId`] (clamped), indexed by [`ParamId::index`].
+    params: [f32; ParamId::COUNT],
     master_gain: Smoother,
     limiter: Limiter,
 }
@@ -124,13 +147,23 @@ pub struct Engine {
 /// allocate afterwards. `sample_rate` is in Hz (tests use 48 000).
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
+    let mut params = [0.0_f32; ParamId::COUNT];
+    for id in ParamId::ALL {
+        params[id.index()] = id.default_value();
+    }
     (
         EngineHandle { producer },
         Engine {
             sample_rate,
             consumer,
             tone: TestTone::new(sample_rate),
-            master_gain: Smoother::new(sample_rate, MASTER_GAIN_SMOOTH_MS, 1.0),
+            voices: VoicePool::new(sample_rate),
+            params,
+            master_gain: Smoother::new(
+                sample_rate,
+                MASTER_GAIN_SMOOTH_MS,
+                ParamId::MasterGain.default_value(),
+            ),
             limiter: Limiter::new(),
         },
     )
@@ -158,8 +191,9 @@ impl Engine {
     /// The change is smoothed over about [`MASTER_GAIN_SMOOTH_MS`]. Non-finite values are ignored.
     pub fn set_master_gain(&mut self, gain: f32) {
         if gain.is_finite() {
-            self.master_gain
-                .set_target(gain.clamp(0.0, MAX_MASTER_GAIN));
+            let gain = gain.clamp(0.0, MAX_MASTER_GAIN);
+            self.master_gain.set_target(gain);
+            self.params[ParamId::MasterGain.index()] = gain;
         }
     }
 
@@ -169,10 +203,66 @@ impl Engine {
         self.master_gain.target()
     }
 
-    /// `true` while the engine would produce non-silent output (tone on or fading out).
+    /// Starts a synth voice for MIDI `note` (69 = A4 = 440 Hz) at `velocity` (`0.0..=1.0`,
+    /// clamped). A note that is already sounding retriggers its own voice; when all
+    /// [`MAX_VOICES`](crate::voice::MAX_VOICES) are busy the oldest releasing (else oldest
+    /// held) voice is stolen.
+    pub fn note_on(&mut self, note: u8, velocity: f32) {
+        self.voices.note_on(note, velocity);
+    }
+
+    /// Releases every voice playing MIDI `note`; it fades out over the release time.
+    pub fn note_off(&mut self, note: u8) {
+        self.voices.note_off(note);
+    }
+
+    /// Releases every sounding voice.
+    pub fn all_notes_off(&mut self) {
+        self.voices.all_notes_off();
+    }
+
+    /// Sets parameter `id` to `value`, clamped to [`ParamId::range`] (non-finite values
+    /// become the default). Envelope parameters re-time every voice immediately, running ones
+    /// included; the master gain is smoothed as in [`set_master_gain`](Self::set_master_gain).
+    pub fn set_param(&mut self, id: ParamId, value: f32) {
+        let value = id.clamp(value);
+        self.params[id.index()] = value;
+        match id {
+            ParamId::AmpAttack | ParamId::AmpDecay | ParamId::AmpSustain | ParamId::AmpRelease => {
+                self.voices.set_adsr(
+                    self.params[ParamId::AmpAttack.index()],
+                    self.params[ParamId::AmpDecay.index()],
+                    self.params[ParamId::AmpSustain.index()],
+                    self.params[ParamId::AmpRelease.index()],
+                );
+            }
+            ParamId::MasterGain => self.set_master_gain(value),
+        }
+    }
+
+    /// Current (clamped) value of parameter `id`.
+    #[must_use]
+    pub fn param(&self, id: ParamId) -> f32 {
+        self.params[id.index()]
+    }
+
+    /// The voice pool (for inspection: active voice count, per-voice state).
+    #[must_use]
+    pub fn voices(&self) -> &VoicePool {
+        &self.voices
+    }
+
+    /// Number of synth voices currently sounding (held or releasing).
+    #[must_use]
+    pub fn active_voices(&self) -> usize {
+        self.voices.active_voices()
+    }
+
+    /// `true` while the engine would produce non-silent output (any voice sounding, or the
+    /// tone on or fading out).
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.tone.is_active()
+        self.tone.is_active() || self.voices.is_active()
     }
 
     /// Applies all pending messages from the UI. Called at the start of every `render`.
@@ -181,6 +271,10 @@ impl Engine {
             match msg {
                 Message::TestTone(on) => self.set_test_tone(on),
                 Message::MasterGain(g) => self.set_master_gain(g),
+                Message::NoteOn { note, velocity } => self.note_on(note, velocity),
+                Message::NoteOff { note } => self.note_off(note),
+                Message::AllNotesOff => self.all_notes_off(),
+                Message::SetParam(id, value) => self.set_param(id, value),
             }
         }
     }
@@ -196,7 +290,7 @@ impl Engine {
         let (body, tail) = out.split_at_mut(frames * 2);
         let (stereo_frames, _) = body.as_chunks_mut::<2>();
         for [l, r] in stereo_frames {
-            let dry = self.tone.tick();
+            let dry = self.voices.tick() + self.tone.tick();
             let gain = self.master_gain.tick();
             let s = self.limiter.process(dry * gain);
             *l = s;

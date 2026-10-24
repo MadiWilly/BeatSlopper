@@ -7,11 +7,14 @@
 //! panics. The UI talks to the engine only through the lock-free [`EngineHandle`] queue.
 //!
 //! Module map (see docs/ARCHITECTURE.md):
-//! - [`engine`]: the audio-thread core (message queue, test tone, master stage).
-//! - [`params`]: parameter smoothing ([`Smoother`]) shared by every later module.
+//! - [`engine`]: the audio-thread core (message queue, voices, test tone, master stage).
+//! - [`params`]: parameter ids ([`ParamId`]), smoothing ([`Smoother`]) and the [`Adsr`]
+//!   envelope.
+//! - [`voice`]: the polyphonic voice pool with voice stealing (M1).
 //! - [`dsp`]: small numeric helpers (denormal flushing, dB conversion).
 //! - [`fx`]: effects; M0 ships only the master [`fx::Limiter`].
-//! - [`synth`], [`drums`], [`voice`], [`transport`], [`project`]: skeletons for M1-M3.
+//! - [`synth`]: oscillators ([`synth::SineOsc`], [`synth::note_to_hz`]).
+//! - [`drums`], [`transport`], [`project`]: skeletons for M3.
 
 #![warn(missing_docs)]
 
@@ -26,4 +29,5 @@ pub mod transport;
 pub mod voice;
 
 pub use engine::{Engine, EngineHandle, Message, QUEUE_CAPACITY, new_engine};
-pub use params::Smoother;
+pub use params::{Adsr, AdsrStage, ParamId, Smoother};
+pub use voice::{MAX_VOICES, VoicePool};

@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M1 (Keyboard piano). M0 tagged `m0`. design/WINNER.md is the token source of truth.
+**Current milestone:** M2 (Synth + effects). M0, M1 tagged. design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -25,13 +25,13 @@
 - [x] deny.toml license allowlist, cargo-deny passes
 - [x] Gate green, tag m0
 
-## M1: Keyboard piano
-- [ ] Key map A W S E D F T G Y H U J K O L P ; (about 1.5 octaves), Z/X octave shift
-- [ ] Fixed velocity, adjustable in UI
-- [ ] Held-key tracking ignores OS key repeat (test)
-- [ ] Polyphonic 8-16 voices, voice stealing, ADSR (tests)
-- [ ] On-screen piano keys light with accent while held, clickable
-- [ ] Gate green, tag m1
+## M1: Keyboard piano (done 2026-10-24, tag m1)
+- [x] Key map A W S E D F T G Y H U J K O L P ; (about 1.5 octaves), Z/X octave shift
+- [x] Fixed velocity, adjustable in UI
+- [x] Held-key tracking ignores OS key repeat (test)
+- [x] Polyphonic 16 voices, voice stealing, ADSR (tests)
+- [x] On-screen piano keys light with accent while held, clickable
+- [x] Gate green, tag m1
 
 ## M2: Synth + effects
 - [ ] 2 band-limited oscillators (PolyBLEP: sine/saw/square/triangle), detune, mix
@@ -57,11 +57,12 @@
 - [ ] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-24 M0: all green (fmt, clippy -D warnings, 53 tests, deny licenses ok, release build, smoke exit 0).
+2026-10-24 M1: all green (fmt, clippy -D warnings, 111 tests, deny licenses ok, release build, smoke exit 0).
 
 ## Next action
-M1: engine voices + ADSR + NoteOn/NoteOff | neu piano_keys + stepper widgets | app input.rs key map
-(ignore key repeat) + keyboard panel wiring. Spawn three subagents in parallel, then gate.
+M2: add M2 ParamIds + SetBpm, stub neu knob/dial/segmented/vslider/lamp signatures, then spawn
+engine-synth | engine-fx | neu widgets | app panels in parallel; integrate FxChain into engine.rs;
+gate.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)

@@ -7,7 +7,7 @@
 //! Modules:
 //! - [`app`]: [`BeatSlopperApp`] (the `eframe::App`) and [`AppState`] (UI-facing state).
 //! - [`audio_io`]: the cpal output stream that owns the `engine::Engine`.
-//! - [`input`]: computer-keyboard piano input (M1; stub for now).
+//! - [`input`]: computer-keyboard piano input (key map, held keys, octave, velocity).
 //! - [`ui`]: the panels, as functions over `&mut AppState` and `&neu::Theme`.
 
 pub mod app;

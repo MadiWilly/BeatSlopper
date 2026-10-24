@@ -1,8 +1,8 @@
 //! Synthesizer building blocks.
 //!
-//! M2 adds band-limited oscillators (PolyBLEP saw/square/triangle), the SVF filter, ADSR
-//! envelopes and the LFO as sibling modules. M0 provides only the plain [`SineOsc`] used by
-//! the engine's test tone, plus [`note_to_hz`].
+//! M2 adds band-limited oscillators (PolyBLEP saw/square/triangle), the SVF filter and the
+//! LFO as sibling modules (the amp ADSR lives in [`crate::params::Adsr`]). M0/M1 provide the
+//! plain [`SineOsc`] used by the engine's test tone and the M1 voices, plus [`note_to_hz`].
 
 use core::f64::consts::TAU;
 

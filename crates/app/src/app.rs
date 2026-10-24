@@ -4,6 +4,11 @@
 //! falling back to dark) unless the user flipped the manual toggle, which stores an override.
 //! Only the override is persisted (eframe storage, key [`THEME_OVERRIDE_KEY`]); egui's own
 //! memory is not persisted so the OS theme never leaks into storage.
+//!
+//! Keyboard piano (M1): every frame [`BeatSlopperApp::tick`] feeds the frame's egui events to
+//! [`crate::input::InputState`] and forwards the resulting note events to the engine as
+//! `Message::NoteOn` / `Message::NoteOff`, mirroring them into [`AppState::held_notes`] for
+//! the on-screen keys. Mouse presses on the on-screen piano go through the same path.
 
 use eframe::{App, CreationContext, Frame, Storage};
 use engine::{EngineHandle, Message};
@@ -11,6 +16,7 @@ use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_io::AudioOutput;
+use crate::input::{InputState, NoteEvent};
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
@@ -81,6 +87,15 @@ pub struct AppState {
     pub audio: Option<AudioOutput>,
     /// Set when the audio device could not be opened (shown in the transport bar).
     pub audio_error: Option<String>,
+    /// Computer-keyboard piano state (held keys, octave, velocity).
+    pub input: InputState,
+    /// Which MIDI notes are sounding (keyboard or mouse), for the on-screen piano.
+    pub held_notes: [bool; 128],
+    /// Note-on messages sent so far (diagnostics; the tests use it to prove key repeat does
+    /// not retrigger).
+    pub note_on_count: u64,
+    /// Note-off messages sent so far (diagnostics).
+    pub note_off_count: u64,
 }
 
 impl AppState {
@@ -97,6 +112,10 @@ impl AppState {
                 master_gain: 0.8,
                 audio: None,
                 audio_error: None,
+                input: InputState::new(),
+                held_notes: [false; 128],
+                note_on_count: 0,
+                note_off_count: 0,
             },
             engine,
         )
@@ -114,6 +133,10 @@ impl AppState {
                     master_gain: 0.8,
                     audio: Some(audio),
                     audio_error: None,
+                    input: InputState::new(),
+                    held_notes: [false; 128],
+                    note_on_count: 0,
+                    note_off_count: 0,
                 };
                 state.send_master_gain();
                 state
@@ -142,6 +165,53 @@ impl AppState {
     pub fn send_master_gain(&mut self) {
         let gain = self.master_gain.clamp(0.0, 1.0);
         self.engine.send(Message::MasterGain(gain));
+    }
+
+    /// Starts `note` (MIDI) at `velocity` (0..=1): tells the engine and lights the key.
+    pub fn note_on(&mut self, note: u8, velocity: f32) {
+        let note = note.min(127);
+        self.held_notes[usize::from(note)] = true;
+        self.note_on_count += 1;
+        self.engine.send(Message::NoteOn {
+            note,
+            velocity: velocity.clamp(0.0, 1.0),
+        });
+    }
+
+    /// Stops `note` (MIDI): tells the engine and unlights the key.
+    pub fn note_off(&mut self, note: u8) {
+        let note = note.min(127);
+        self.held_notes[usize::from(note)] = false;
+        self.note_off_count += 1;
+        self.engine.send(Message::NoteOff { note });
+    }
+
+    /// Releases every key (computer keyboard and on-screen) and silences the engine.
+    pub fn all_notes_off(&mut self) {
+        self.input.release_all();
+        self.held_notes = [false; 128];
+        self.engine.send(Message::AllNotesOff);
+    }
+
+    /// Applies note events from the keyboard (or the on-screen piano).
+    pub fn apply_note_events(&mut self, events: &[NoteEvent]) {
+        for event in events {
+            match *event {
+                NoteEvent::On { note, velocity } => self.note_on(note, velocity),
+                NoteEvent::Off { note } => self.note_off(note),
+            }
+        }
+    }
+
+    /// Reads this frame's egui events and plays the computer keyboard. While a text edit has
+    /// focus the keys type instead of play; anything still held is released so no note sticks.
+    pub fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        let events = if ctx.text_edit_focused() {
+            self.input.release_all()
+        } else {
+            ctx.input(|i| self.input.handle_events(&i.events))
+        };
+        self.apply_note_events(&events);
     }
 
     /// Flips the theme mode as a manual choice (stored as the override).
@@ -261,10 +331,11 @@ impl BeatSlopperApp {
         }
     }
 
-    /// Per-frame logic (runs before the UI): theme sync and the smoke-test counter. Public so
-    /// tests can drive a frame without an `eframe::Frame`.
+    /// Per-frame logic (runs before the UI): theme sync, the computer-keyboard piano and the
+    /// smoke-test counter. Public so tests can drive a frame without an `eframe::Frame`.
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.sync_theme(ctx);
+        self.state.handle_keyboard(ctx);
 
         if self.smoke_test {
             self.frames += 1;
@@ -380,6 +451,41 @@ mod tests {
             engine.render(&mut out, 4096);
         }
         assert!(out.iter().all(|s| s.abs() < 1e-4), "tone did not stop");
+    }
+
+    #[test]
+    fn note_events_reach_the_engine_and_light_the_keys() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.apply_note_events(&[NoteEvent::On {
+            note: 60,
+            velocity: 0.8,
+        }]);
+        assert!(state.held_notes[60]);
+        assert_eq!(state.note_on_count, 1);
+        let mut out = vec![0.0f32; 2048 * 2];
+        engine.render(&mut out, 2048);
+        assert!(out.iter().any(|s| s.abs() > 0.001), "note-on made no sound");
+
+        state.apply_note_events(&[NoteEvent::Off { note: 60 }]);
+        assert!(!state.held_notes[60]);
+        assert_eq!(state.note_off_count, 1);
+        // Two seconds covers any sensible default release tail.
+        let mut out = vec![0.0f32; 4096 * 2];
+        for _ in 0..24 {
+            engine.render(&mut out, 4096);
+        }
+        assert!(out.iter().all(|s| s.abs() < 1e-3), "note did not release");
+    }
+
+    #[test]
+    fn all_notes_off_clears_everything() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.note_on(64, 1.0);
+        state.note_on(200, 1.0); // clamped to 127, never panics
+        assert!(state.held_notes[127]);
+        state.all_notes_off();
+        assert!(state.held_notes.iter().all(|h| !h));
+        assert!(state.input.held.is_empty());
     }
 
     #[test]
