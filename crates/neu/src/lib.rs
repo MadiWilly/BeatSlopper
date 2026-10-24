@@ -11,9 +11,12 @@
 //!   control).
 
 pub mod button;
+pub mod knob;
 pub mod panel;
 pub mod piano_keys;
+pub mod segmented;
 pub mod shadow;
+pub mod slider;
 pub mod stepper;
 pub mod text;
 pub mod theme;
@@ -21,6 +24,7 @@ pub mod theme;
 pub use button::{
     Icon, button, icon_button, paint_icon, stepper_button, theme_toggle, toggle_button,
 };
+pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob};
 pub use panel::panel;
 pub use piano_keys::{
     PianoKey, PianoModel, PianoOutput, key_at, key_layout, keyboard_size, keyboard_width,

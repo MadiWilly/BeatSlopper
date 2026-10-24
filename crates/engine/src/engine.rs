@@ -56,6 +56,8 @@ pub enum Message {
     AllNotesOff,
     /// Set a parameter; the value is clamped to [`ParamId::range`].
     SetParam(ParamId, f32),
+    /// Tempo in beats per minute (60..=200); used by the BPM-synced delay and the M3 transport.
+    SetBpm(f32),
 }
 
 /// UI-side handle: sends [`Message`]s to the engine over a lock-free SPSC queue.
@@ -139,6 +141,8 @@ pub struct Engine {
     params: [f32; ParamId::COUNT],
     master_gain: Smoother,
     limiter: Limiter,
+    /// Tempo in BPM (60..=200), shared by the delay sync and the M3 transport.
+    bpm: f32,
 }
 
 /// Creates an engine and its UI-side handle.
@@ -165,6 +169,7 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
                 ParamId::MasterGain.default_value(),
             ),
             limiter: Limiter::new(),
+            bpm: crate::transport::DEFAULT_BPM,
         },
     )
 }
@@ -237,7 +242,22 @@ impl Engine {
                 );
             }
             ParamId::MasterGain => self.set_master_gain(value),
+            // M2 synth and FX parameters are stored above and routed once those modules land.
+            _ => {}
         }
+    }
+
+    /// Sets the tempo (clamped to 60..=200 BPM). Used by the BPM-synced delay and the transport.
+    pub fn set_bpm(&mut self, bpm: f32) {
+        if bpm.is_finite() {
+            self.bpm = bpm.clamp(60.0, 200.0);
+        }
+    }
+
+    /// Current tempo in BPM.
+    #[must_use]
+    pub fn bpm(&self) -> f32 {
+        self.bpm
     }
 
     /// Current (clamped) value of parameter `id`.
@@ -275,6 +295,7 @@ impl Engine {
                 Message::NoteOff { note } => self.note_off(note),
                 Message::AllNotesOff => self.all_notes_off(),
                 Message::SetParam(id, value) => self.set_param(id, value),
+                Message::SetBpm(bpm) => self.set_bpm(bpm),
             }
         }
     }

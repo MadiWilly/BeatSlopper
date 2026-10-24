@@ -24,6 +24,24 @@ const SNAP_EPSILON: f32 = 1.0e-4;
 /// ids. The enum is deliberately exhaustive (no `#[non_exhaustive]`) so the UI can `match` on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamId {
+    /// Oscillator 1 waveform index: 0 sine, 1 saw, 2 square, 3 triangle.
+    Osc1Wave,
+    /// Oscillator 1 detune, cents.
+    Osc1Detune,
+    /// Oscillator 1 level, `0.0..=1.0`.
+    Osc1Mix,
+    /// Oscillator 2 waveform index: 0 sine, 1 saw, 2 square, 3 triangle.
+    Osc2Wave,
+    /// Oscillator 2 detune, cents.
+    Osc2Detune,
+    /// Oscillator 2 level, `0.0..=1.0`.
+    Osc2Mix,
+    /// Lowpass filter cutoff, Hz (log scale in the UI).
+    FilterCutoff,
+    /// Lowpass filter resonance, `0.0..=1.0`.
+    FilterResonance,
+    /// Filter envelope amount, `-1.0..=1.0` (+-4 octaves driven by the amp envelope).
+    FilterEnvAmount,
     /// Amplitude envelope attack time, seconds.
     AmpAttack,
     /// Amplitude envelope decay time, seconds.
@@ -32,18 +50,66 @@ pub enum ParamId {
     AmpSustain,
     /// Amplitude envelope release time, seconds.
     AmpRelease,
+    /// LFO rate, Hz.
+    LfoRate,
+    /// LFO depth, `0.0..=1.0`.
+    LfoDepth,
+    /// LFO target index: 0 pitch, 1 cutoff.
+    LfoTarget,
+    /// Glide (portamento) time, seconds; 0 = off.
+    Glide,
+    /// Drive amount, `0.0..=1.0`.
+    DriveAmount,
+    /// Drive dry/wet mix, `0.0..=1.0`.
+    DriveMix,
+    /// Delay time division index: 0 = 1/16, 1 = 1/8, 2 = 1/4, 3 = 1/2 (synced to BPM).
+    DelayTime,
+    /// Delay feedback, `0.0..=0.95`.
+    DelayFeedback,
+    /// Delay dry/wet mix, `0.0..=1.0`.
+    DelayMix,
+    /// Reverb room size, `0.0..=1.0`.
+    ReverbSize,
+    /// Reverb damping, `0.0..=1.0`.
+    ReverbDamping,
+    /// Reverb dry/wet mix, `0.0..=1.0`.
+    ReverbMix,
     /// Master output gain, linear (`1.0` = unity, `4.0` = +12 dB).
     MasterGain,
+    /// Soft limiter enabled: 0 off, 1 on.
+    LimiterOn,
 }
 
 impl ParamId {
     /// Every parameter, in display order.
     pub const ALL: &'static [ParamId] = &[
+        ParamId::Osc1Wave,
+        ParamId::Osc1Detune,
+        ParamId::Osc1Mix,
+        ParamId::Osc2Wave,
+        ParamId::Osc2Detune,
+        ParamId::Osc2Mix,
+        ParamId::FilterCutoff,
+        ParamId::FilterResonance,
+        ParamId::FilterEnvAmount,
         ParamId::AmpAttack,
         ParamId::AmpDecay,
         ParamId::AmpSustain,
         ParamId::AmpRelease,
+        ParamId::LfoRate,
+        ParamId::LfoDepth,
+        ParamId::LfoTarget,
+        ParamId::Glide,
+        ParamId::DriveAmount,
+        ParamId::DriveMix,
+        ParamId::DelayTime,
+        ParamId::DelayFeedback,
+        ParamId::DelayMix,
+        ParamId::ReverbSize,
+        ParamId::ReverbDamping,
+        ParamId::ReverbMix,
         ParamId::MasterGain,
+        ParamId::LimiterOn,
     ];
 
     /// Number of parameters.
@@ -55,15 +121,67 @@ impl ParamId {
         self as usize
     }
 
+    /// `true` for the effect-chain parameters (drive, delay, reverb).
+    #[must_use]
+    pub const fn is_fx(self) -> bool {
+        matches!(
+            self,
+            ParamId::DriveAmount
+                | ParamId::DriveMix
+                | ParamId::DelayTime
+                | ParamId::DelayFeedback
+                | ParamId::DelayMix
+                | ParamId::ReverbSize
+                | ParamId::ReverbDamping
+                | ParamId::ReverbMix
+        )
+    }
+
+    /// `true` for parameters that are an index into a fixed list (waveform, LFO target, delay
+    /// division, limiter switch) and should be shown as a segmented control.
+    #[must_use]
+    pub const fn is_discrete(self) -> bool {
+        matches!(
+            self,
+            ParamId::Osc1Wave
+                | ParamId::Osc2Wave
+                | ParamId::LfoTarget
+                | ParamId::DelayTime
+                | ParamId::LimiterOn
+        )
+    }
+
     /// Value of a fresh project.
     #[must_use]
     pub const fn default_value(self) -> f32 {
         match self {
+            ParamId::Osc1Wave => 1.0,
+            ParamId::Osc1Detune => 0.0,
+            ParamId::Osc1Mix => 0.7,
+            ParamId::Osc2Wave => 0.0,
+            ParamId::Osc2Detune => 0.0,
+            ParamId::Osc2Mix => 0.45,
+            ParamId::FilterCutoff => 2400.0,
+            ParamId::FilterResonance => 0.22,
+            ParamId::FilterEnvAmount => 0.4,
             ParamId::AmpAttack => 0.01,
             ParamId::AmpDecay => 0.2,
             ParamId::AmpSustain => 0.7,
             ParamId::AmpRelease => 0.3,
+            ParamId::LfoRate => 4.5,
+            ParamId::LfoDepth => 0.25,
+            ParamId::LfoTarget => 1.0,
+            ParamId::Glide => 0.0,
+            ParamId::DriveAmount => 0.35,
+            ParamId::DriveMix => 0.5,
+            ParamId::DelayTime => 1.0,
+            ParamId::DelayFeedback => 0.35,
+            ParamId::DelayMix => 0.25,
+            ParamId::ReverbSize => 0.6,
+            ParamId::ReverbDamping => 0.4,
+            ParamId::ReverbMix => 0.2,
             ParamId::MasterGain => 1.0,
+            ParamId::LimiterOn => 1.0,
         }
     }
 
@@ -71,10 +189,28 @@ impl ParamId {
     #[must_use]
     pub const fn range(self) -> RangeInclusive<f32> {
         match self {
+            ParamId::Osc1Wave | ParamId::Osc2Wave | ParamId::DelayTime => 0.0..=3.0,
+            ParamId::Osc1Detune | ParamId::Osc2Detune => -50.0..=50.0,
+            ParamId::FilterCutoff => 20.0..=20000.0,
+            ParamId::FilterEnvAmount => -1.0..=1.0,
             ParamId::AmpAttack | ParamId::AmpDecay => 0.001..=2.0,
-            ParamId::AmpSustain => 0.0..=1.0,
             ParamId::AmpRelease => 0.001..=4.0,
+            ParamId::LfoRate => 0.1..=20.0,
+            ParamId::LfoTarget | ParamId::LimiterOn => 0.0..=1.0,
+            ParamId::Glide => 0.0..=1.0,
+            ParamId::DelayFeedback => 0.0..=0.95,
             ParamId::MasterGain => 0.0..=4.0,
+            ParamId::Osc1Mix
+            | ParamId::Osc2Mix
+            | ParamId::FilterResonance
+            | ParamId::AmpSustain
+            | ParamId::LfoDepth
+            | ParamId::DriveAmount
+            | ParamId::DriveMix
+            | ParamId::DelayMix
+            | ParamId::ReverbSize
+            | ParamId::ReverbDamping
+            | ParamId::ReverbMix => 0.0..=1.0,
         }
     }
 
@@ -82,11 +218,28 @@ impl ParamId {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            ParamId::AmpAttack => "Attack",
-            ParamId::AmpDecay => "Decay",
-            ParamId::AmpSustain => "Sustain",
-            ParamId::AmpRelease => "Release",
+            ParamId::Osc1Wave | ParamId::Osc2Wave => "Wave",
+            ParamId::Osc1Detune | ParamId::Osc2Detune => "Detune",
+            ParamId::Osc1Mix | ParamId::Osc2Mix | ParamId::DriveMix => "Mix",
+            ParamId::DelayMix | ParamId::ReverbMix => "Mix",
+            ParamId::FilterCutoff => "Cutoff",
+            ParamId::FilterResonance => "Res",
+            ParamId::FilterEnvAmount => "Env",
+            ParamId::AmpAttack => "A",
+            ParamId::AmpDecay => "D",
+            ParamId::AmpSustain => "S",
+            ParamId::AmpRelease => "R",
+            ParamId::LfoRate => "Rate",
+            ParamId::LfoDepth => "Depth",
+            ParamId::LfoTarget => "Target",
+            ParamId::Glide => "Glide",
+            ParamId::DriveAmount => "Amount",
+            ParamId::DelayTime => "Time",
+            ParamId::DelayFeedback => "Feedback",
+            ParamId::ReverbSize => "Size",
+            ParamId::ReverbDamping => "Damping",
             ParamId::MasterGain => "Master",
+            ParamId::LimiterOn => "Limit",
         }
     }
 
@@ -454,7 +607,9 @@ mod tests {
             assert_eq!(id.clamp(1.0e9), *r.end());
             assert_eq!(id.clamp(-1.0e9), *r.start());
         }
-        assert_eq!(ParamId::COUNT, 5);
+        assert_eq!(ParamId::COUNT, 27);
+        assert!(ParamId::DelayMix.is_fx() && !ParamId::FilterCutoff.is_fx());
+        assert!(ParamId::Osc1Wave.is_discrete() && !ParamId::Osc1Mix.is_discrete());
         assert_eq!(ParamId::AmpAttack.default_value(), 0.01);
         assert_eq!(ParamId::AmpDecay.default_value(), 0.2);
         assert_eq!(ParamId::AmpSustain.default_value(), 0.7);
