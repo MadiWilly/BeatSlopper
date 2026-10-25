@@ -371,11 +371,13 @@ pub fn group_head<R>(
 
 /// Items of the right-hand column's tab selector, in [`RightTab`] order. The RECENT panel
 /// (QOL) is a sub-view of PROJECT, reached from its clock button and left by its BACK pill,
-/// so it has no item of its own and selects the `Project` tab while shown.
-pub const RIGHT_TABS: [&str; 3] = ["Project", "Chain", "Visual"];
+/// so it has no item of its own and selects the `Proj` tab while shown. The labels are short
+/// (M10): the four full words (`Project | Chain | Visual | Tracks`, about 236 pt) overflow
+/// the column's 220 pt inner width; these fit with room to spare.
+pub const RIGHT_TABS: [&str; 4] = ["Proj", "Chain", "Vis", "Tracks"];
 
-/// The head row shared by the PROJECT, SONG CHAIN and VISUALIZER panels: the
-/// `Project | Chain | Visual` tab (`neu::segmented`), whose selected item doubles as the
+/// The head row shared by the PROJECT, SONG CHAIN, VISUALIZER and TRACKS panels: the
+/// `Proj | Chain | Vis | Tracks` tab (`neu::segmented`), whose selected item doubles as the
 /// panel title. A click switches [`AppState::right_tab`].
 pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
     // With three tabs the segmented (about 176 pt) and a title no longer fit side by side in
@@ -388,16 +390,19 @@ pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str)
             RightTab::Project | RightTab::Recent => 0,
             RightTab::Chain => 1,
             RightTab::Visual => 2,
+            RightTab::Tracks => 3,
         };
         let mut selected = before;
         neu::segmented(ui, theme, &mut selected, &RIGHT_TABS).on_hover_text(format!(
-            "{title}. Project: files and export. Chain: the song. Visual: the visualizer."
+            "{title}. Proj: files and export. Chain: the song. Vis: the visualizer. \
+             Tracks: the instrument tracks."
         ));
         if selected != before {
             state.right_tab = match selected {
                 0 => RightTab::Project,
                 1 => RightTab::Chain,
-                _ => RightTab::Visual,
+                2 => RightTab::Visual,
+                _ => RightTab::Tracks,
             };
         }
     });

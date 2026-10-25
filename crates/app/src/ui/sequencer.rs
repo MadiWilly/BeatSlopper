@@ -59,6 +59,7 @@
 //! track's notes of the pattern as ghosts in their track colours ([`roll_ghosts`],
 //! `neu::piano_roll_with_ghosts`): reference only, never editable.
 
+use egui::epaint::text::LayoutJob;
 use egui::{
     Align, Align2, CursorIcon, Layout, Modifiers, Response, Role, ScrollArea, Sense, Ui, Vec2,
     WidgetInfo, vec2,
@@ -787,7 +788,7 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         queued_indicator(ui, state, theme);
         lane_view_tabs(ui, state, theme);
         // M10: the lane and the roll edit this track.
-        controls::track_tag(ui, state, theme);
+        head_track_tag(ui, state, theme);
         if state.lane_view == LaneView::Roll && state.roll_popped {
             // The roll is in its own window: the pill that brings it back stays reachable.
             if neu::toggle_button(ui, theme, POP_OUT_LABEL, true)
@@ -824,6 +825,51 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             }
             neu::lamp(ui, theme, state.is_recording(), "Rec");
         });
+    });
+}
+
+/// Narrowest name worth showing beside the head's chip; below it the name is the tooltip.
+const TAG_NAME_MIN_WIDTH: f32 = 24.0;
+
+/// The edit track's tag in the head (M10): the colour chip (`controls::track_chip`,
+/// accessible as `"<name> colour"`), then the name as a caps label only as far as the room
+/// beside the right group allows, cut with an ellipsis; with the whole head at 1280 wide the
+/// chip alone fits and the name is its tooltip (it is also in the SYNTH head and the TRACKS
+/// panel). The right group's width is what [`controls::right_aligned`] measured last frame
+/// under `"sequencer_head"`, so the head never grows past the panel and pushes the right-hand
+/// column off the window.
+fn head_track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) {
+    let right_width: f32 = ui
+        .data(|d| d.get_temp(ui.scope_id().with("sequencer_head")))
+        .unwrap_or(0.0);
+    let gap = ui.spacing().item_spacing.x;
+    let room = ui.available_width() - right_width - gap;
+    let name_room = room - controls::TRACK_CHIP - controls::TRACK_CHIP_GAP;
+    let track = state.edit_track_ui();
+    let tooltip = format!(
+        "Edits track {} (Alt+Up / Alt+Down select another track)",
+        track.name
+    );
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = controls::TRACK_CHIP_GAP;
+        controls::track_chip(ui, theme, track.colour, &track.name).on_hover_text(&tooltip);
+        if name_room < TAG_NAME_MIN_WIDTH {
+            return;
+        }
+        let mut job = LayoutJob::single_section(
+            TextKind::Label.display_string(&track.name),
+            TextKind::Label.format(theme.text_secondary),
+        );
+        job.wrap.max_width = name_room;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('…');
+        let galley = ui.painter().layout_job(job);
+        let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+        if ui.is_rect_visible(rect) {
+            ui.painter().galley(rect.min, galley, theme.text_secondary);
+        }
+        response.on_hover_text(tooltip);
     });
 }
 

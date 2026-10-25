@@ -231,9 +231,10 @@ pub enum PendingAction {
 }
 
 /// Which panel the right-hand column shows (M5): the PROJECT panel, the RECENT projects
-/// list (QOL, a sub-view under the PROJECT tab), the SONG CHAIN panel or the VISUALIZER
-/// panel. The column has room for one at a time; switching the play mode
-/// switches the tab too.
+/// list (QOL, a sub-view under the PROJECT tab), the SONG CHAIN panel, the VISUALIZER
+/// panel or the TRACKS panel (M10). The column has room for one at a time; switching the
+/// play mode switches the tab too, and adding or duplicating a track by shortcut shows
+/// the TRACKS panel so the new track is visible.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RightTab {
     #[default]
@@ -241,6 +242,7 @@ pub enum RightTab {
     Recent,
     Chain,
     Visual,
+    Tracks,
 }
 
 /// Which panel the top row's right-hand slot shows (M6): the FX rack or the MIXER. Both heads
@@ -3512,10 +3514,14 @@ impl BeatSlopperApp {
             Shortcut::BpmUp => state.nudge_bpm(1),
             Shortcut::BpmDown => state.nudge_bpm(-1),
             Shortcut::AddTrack => {
-                state.add_track();
+                if state.add_track().is_some() {
+                    state.right_tab = RightTab::Tracks;
+                }
             }
             Shortcut::DuplicateTrack => {
-                state.duplicate_track(state.edit_track);
+                if state.duplicate_track(state.edit_track).is_some() {
+                    state.right_tab = RightTab::Tracks;
+                }
             }
             Shortcut::PrevTrack => {
                 state.select_adjacent_track(-1);

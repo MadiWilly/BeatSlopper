@@ -972,7 +972,7 @@ fn queued_pattern_letter_shows_until_the_bar_boundary() {
 fn mode_switch_shows_the_song_chain_panel_and_add_remove_edit_the_chain() {
     let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
     harness.run_steps(2);
-    radio(&harness, "Project");
+    radio(&harness, ui::controls::RIGHT_TABS[0]);
     // The SONG CHAIN panel (its REPEATS stepper) is not showing in pattern mode.
     assert!(harness.query_by_label("Repeats").is_none());
     harness.get_by_label("A · bar 1/1");
@@ -1020,7 +1020,7 @@ fn mode_switch_shows_the_song_chain_panel_and_add_remove_edit_the_chain() {
     assert_eq!(harness.state().state().chain().len(), 2);
 
     // The tab goes back to PROJECT without leaving song mode; EXPORT reads EXPORT SONG.
-    radio(&harness, "Project").click();
+    radio(&harness, ui::controls::RIGHT_TABS[0]).click();
     harness.run_steps(2);
     assert_eq!(
         harness.state().state().right_tab,

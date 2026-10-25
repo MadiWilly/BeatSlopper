@@ -11,6 +11,7 @@
 //! scrolls vertically when the window is at its minimum height. The right column's third
 //! tab is the VISUALIZER panel ([`visualizer`]); with [`AppState::visual_full`] set the
 //! visualizer overlay ([`visualizer::overlay`]) covers the SYNTH | FX row until Escape / CLOSE.
+//! The fourth tab is the TRACKS panel ([`tracks`], M10): the instrument track list.
 
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, ScrollArea, Ui, vec2};
 use neu::Theme;
@@ -28,6 +29,7 @@ pub mod sequencer;
 pub mod song;
 pub mod synth_panel;
 pub mod tempo;
+pub mod tracks;
 pub mod transport_bar;
 pub mod visualizer;
 
@@ -131,6 +133,7 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                         RightTab::Recent => recent_panel::show(ui, state, theme),
                         RightTab::Chain => song::show(ui, state, theme),
                         RightTab::Visual => visualizer::show(ui, state, theme),
+                        RightTab::Tracks => tracks::show(ui, state, theme),
                     },
                 );
             });

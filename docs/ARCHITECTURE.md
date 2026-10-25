@@ -1258,3 +1258,94 @@ drones are the presets whose *global* delay/reverb (or the vinyl bed) outlast 8 
   the lofi pad (`brightness`); every Lofi Keys preset has `LofiMix > 0`, `LofiBits < 16`
   and vinyl noise, and bypassing the lo-fi changes "Dusty Rhodes"; "White Riser" is noise
   that swells (late RMS > 2x early) and brightens; the three drones keep sounding.
+
+## M10 as built (app, part 2: TRACKS panel)
+
+The "easy list" of instrument tracks, modelled on FL Studio's Channel Rack and Ableton's
+track list: `crates/app/src/ui/tracks.rs`, shown in the right-hand column under
+`RightTab::Tracks` (`ui/mod.rs` dispatches it like the other three).
+
+### The head: four short tabs
+- `controls::RIGHT_TABS` is now `["Proj", "Chain", "Vis", "Tracks"]` (the full words,
+  `Project | Chain | Visual | Tracks`, are about 236 pt and overflow the column's 220 pt
+  inner width; the short set is about 200). The same `controls::panel_head` serves all four
+  panels, so every head reads the same; its accessible name is the joined items
+  (`"Proj / Chain / Vis / Tracks"`, a radio group whose items are `"Proj"` ... `"Tracks"`).
+  Song mode still flips the tab to `Chain` and pattern mode back to `Proj`; the tab is not
+  persisted (it never was: the play mode decides it at load).
+- `Ctrl+T` (add) and `Ctrl+Shift+D` (duplicate) switch the column to the TRACKS tab when
+  they succeed (`BeatSlopperApp::run_shortcut`), so the new row is visible.
+
+### The list (`tracks::show`)
+- One row per active track in slot order, `tracks::ROW_HEIGHT` (34) tall, inside a vertical
+  `ScrollArea` (`"tracks_list"`) that takes whatever height is left over the footer. At the
+  1280 x 1140 design size in GRID view the panel is as tall as the SEQUENCER beside it
+  (about 338), which leaves room for `VISIBLE_ROWS_AT_DESIGN_SIZE` (5) rows: with six to
+  eight tracks the list scrolls; the ROLL view's taller panel shows more.
+- Row anatomy, left to right (fixed widths, the name block takes the rest, 76 pt at the
+  column width): the colour chip (10 pt circle in `theme.track_colour`, a click cycles the
+  eight swatches through `set_track_colour`; a hover ring in the swatch colour); the name
+  (13 pt, text-primary when selected or hovered, else secondary) over the preset name
+  (11 pt secondary), both cut with an ellipsis (`…`) to the block (the full text is the
+  tooltip); a painted pencil (14 pt hit box; the kit has no pencil icon, the glyph is three
+  line segments); the 22 pt `M` / `S` squares (`neu::toggle_button_sized`, bound to the
+  track's strip `Channel::from_track(slot)` through `toggle_mute` / `toggle_solo`); the
+  40 x 22 `Roll` pill (lit while the track is selected and the lane view is ROLL; a click
+  does `select_track` then `set_lane_view(Roll)`).
+- The name block (not the whole row) is the row's button: a click selects
+  (`select_track`, no undo step), a double-click opens the rename editor. The selected row
+  sits on an inset-s well (`paint_soft_rect`, radius 10), the segmented control's inset
+  track in the row's shape. The row allocation itself only senses hover (for the name's
+  hover colour via `contains_pointer`), so a click anywhere lands on a control, never on
+  dead space.
+- Inline rename: the pencil (or the double-click) calls `neu::begin_edit` under
+  `Id::NULL.with(("tracks_panel_rename", slot))`; `neu::show_edit` draws the editor over the
+  name's rect (inset-s pill, 13 pt, 16-char limit = `MAX_NAME_LEN`). `Committed(text)` goes
+  to `rename_track` (trimmed; empty or unchanged = no edit), `Cancelled` (Escape) changes
+  nothing. While the editor has focus `ctx.text_edit_focused()` is true, so
+  `take_shortcuts` returns nothing and `handle_keyboard` releases the piano, as for every
+  text field. `tracks::is_renaming(ui, slot)` reports an open editor.
+- Footer, replaced by the confirm while one is pending: row 1 `+ Add` (the primary pill: a
+  `toggle_button` in its ON look, accessible as `"Add track"`; `add_track`, which refuses a
+  ninth with a status line), `Dup` (disabled without a free slot; `duplicate_track(edit)`,
+  "<name> copy"), `Del` (disabled with one active track; a click stores the edit track in
+  `ui.data` under `"tracks_panel_pending_delete"`); row 2 the `▲` / `▼` move buttons (22 pt
+  rounded squares with a painted triangle, raised-s / inset-s while pressed, dimmed when the
+  selected track is already first / last; `move_track(edit, up)`) beside the hint
+  `"Keys play the selected track · Ctrl+T adds"` (11 pt secondary, wraps to two lines).
+  The confirm is the question `"Delete <name>?"` over `Yes` (`remove_track`, then the state
+  selects the nearest track) | `No`; it is dropped by itself if the track goes away (undo,
+  a load). Every control has a tooltip.
+- `ui/sequencer.rs` head (refined here): `head_track_tag` replaces the plain
+  `controls::track_tag`. The chip always shows; the caps name is laid out into the room
+  left beside the right group (its width from the previous frame, the one
+  `controls::right_aligned` stores under `"sequencer_head"`), cut with an ellipsis, and
+  dropped below 24 pt of room (`TAG_NAME_MIN_WIDTH`). At 1280 wide the head has 22 pt to
+  spare, so only the chip shows and the name is its tooltip; before this the tag made the
+  head about 50 pt wider than its slot and the whole right-hand column hung off the window.
+
+### Accessible names (`tracks::*`, for tests)
+`row_name(index, name)` = `"Track row 1: Synth"` (a button, `toggled` = selected);
+`swatch_name` = `"Synth swatch"`; `rename_name` = `"Rename Synth"`; `mute_name` /
+`solo_name` = `"Mute track Synth"` / `"Solo track Synth"` (buttons, `toggled` = state; the
+mixer's strips stay `"Mute Synth"`); `roll_name` = `"Roll: Synth"` (`toggled` = selected +
+ROLL view); `ADD_LABEL` `"+ Add"` with `ADD_NAME` `"Add track"`; `DUP_LABEL` `"Dup"`;
+`DEL_LABEL` `"Del"`; `delete_question(name)` = `"Delete Synth?"`; `YES_LABEL` / `NO_LABEL`;
+`MOVE_UP_NAME` / `MOVE_DOWN_NAME` = `"Move track up"` / `"Move track down"`; `HINT`.
+
+### Tests
+- `tests/tracks_panel.rs` (8, kittest): the panel alone lists one row per active track in
+  both themes without editing (names, every control, the selected row, the tab fits the
+  column); a row click selects and the SYNTH head follows; ADD / DUP / DEL with the confirm
+  (NO keeps, YES removes and selects the nearest, DEL disabled with one track, undo brings
+  the row back); rename through the pencil (Space does not play and no piano key sounds
+  while the field has focus, Enter commits, Escape cancels, Space plays again afterwards);
+  M / S set the track's strip without selecting, ROLL selects and switches the view; the
+  arrows reorder with the selection following and the chip cycles the colour; Ctrl+T shows
+  the tab; and at 1280 x 1140 with eight tracks the whole sequencer stays visible, the
+  pills and hint sit under the list, the ROLL pill is inside the page padding and a ninth
+  ADD is refused. `ui/tracks.rs` unit tests: the names and the row budget.
+- `tests/ui_renders.rs`: the two `radio("Project")` lookups read `RIGHT_TABS[0]`.
+- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (app 173 unit + 1 + 12 plugins + 8 tracks + 74 renders),
+  `--smoke-test` ok.
