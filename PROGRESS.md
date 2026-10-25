@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M8 engine wiring, then Phase 4 order M10 (instrument tracks) -> M9 (presets) -> M11 (FL mixer); see docs/PLAN.md "Phase 4 brief". M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** M9 app browser (engine presets done), then M11 (FL mixer); M8 and M10 tagged; see docs/PLAN.md "Phase 4 brief". M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -57,7 +57,7 @@
 - [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-25 M8 (engine wiring): all green (fmt, clippy -D warnings, 707 tests, deny licenses ok,
+2026-10-25 M10 (tracks): all green (fmt, clippy -D warnings, 787 tests, deny licenses ok,
 release build + smoke exit 0 from a detached worktree because the running app locks
 target/release/beatslopper.exe).
 
@@ -104,10 +104,10 @@ whenever it gains commits.
 - [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
 - [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
 
-## M10: Instrument tracks (layer synths into rolls; Phase 4 brief in docs/PLAN.md)
-- [ ] engine: `track.rs` (8 tracks: own voice pool, per-track params, stereo insert chain), per-track note lists in every pattern, edit-track routing, lifecycle messages, 13 mixer channels, project v7 with v6 migration (sample-identical render)
-- [ ] app: TRACKS panel (list, add/dup/del/rename/reorder, M/S, ROLL), synth panel + FX insert groups follow the selected track, roll ghosts, mixer strips per track, undo, shortcuts
-- [ ] Tests per PLAN.md M10 (incl. the release perf test); gate green, tag m10
+## M10: Instrument tracks (layer synths into rolls; done 2026-10-25, tag m10)
+- [x] engine: `track.rs` (8 tracks: own voice pool, per-track params, stereo insert chain), per-track note lists in every pattern, edit-track routing, lifecycle messages, 13 mixer channels, project v7 with v6 migration (sample-identical render)
+- [x] app: TRACKS panel (list, add/dup/del/rename/reorder, M/S, ROLL), synth panel + FX insert groups follow the selected track, roll ghosts, mixer strips per track, undo, shortcuts
+- [x] Tests per PLAN.md M10 (incl. the release perf test); gate green, tag m10 (2026-10-25)
 
 ## M11: FL-style mixer (inserts, effect slots, routing)
 - [ ] engine: 16 inserts + master, source -> insert numbers, EQ3 + compressor DSP, 3 effect slots, route-to higher inserts, project v8 with v7 migration
