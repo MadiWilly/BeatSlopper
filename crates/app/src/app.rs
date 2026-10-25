@@ -140,8 +140,8 @@ pub const DEFAULT_ROLL_LOW_PITCH: u8 = 36;
 /// eframe storage key for how many rows taller than default the piano roll is.
 pub const ROLL_EXTRA_ROWS_KEY: &str = "roll_extra_rows";
 
-/// Most extra rows the roll can be dragged to (the default roll shows about 16 rows, so the
-/// whole MIDI range fits at the maximum).
+/// Most extra rows the roll can be dragged to (the default roll shows 17 rows, so the whole
+/// MIDI range fits at the maximum).
 pub const MAX_ROLL_EXTRA_ROWS: usize = 112;
 /// eframe storage key for the chosen visualizer preset (index into [`neu::PRESETS`]).
 pub const VISUAL_PRESET_KEY: &str = "visual_preset";
@@ -154,6 +154,15 @@ pub const VISUAL_HIT_TAIL: Duration = Duration::from_millis(1500);
 
 /// Scope window samples below this count as silence for the repaint decision.
 pub const SCOPE_SILENT: f32 = 1e-4;
+
+/// eframe storage key for whether the piano roll shows the black-key rows.
+pub const ROLL_BLACK_KEYS_KEY: &str = "roll_black_keys";
+
+/// eframe storage key for how many points wider than fitted the piano roll is.
+pub const ROLL_EXTRA_WIDTH_KEY: &str = "roll_extra_width";
+
+/// Widest the roll can be dragged past its fitted width, in points.
+pub const MAX_ROLL_EXTRA_WIDTH: f32 = 4000.0;
 
 /// How fast a shown meter falls after its peak, in dB per second (M6).
 pub const METER_DECAY_DB_PER_S: f32 = 20.0;
@@ -415,6 +424,17 @@ pub struct AppState {
     /// Index into [`crate::chords::CHORDS`] of the chord the next roll draw places, if any
     /// (the CHORDS column beside the roll arms it; not an edit, not persisted).
     pub armed_chord: Option<usize>,
+    /// Every note selected on the piano roll (indices into [`Pattern::notes`], the primary
+    /// [`Self::roll_selected`] among them). Cleared wherever the primary is.
+    pub roll_selection: Vec<usize>,
+    /// Whether the piano roll shows the black-key rows (persisted; the BLACK KEYS pill).
+    pub roll_black_keys: bool,
+    /// How many points wider than its fitted width the piano roll is (persisted; the handle
+    /// right of the roll drags it, `0..=MAX_ROLL_EXTRA_WIDTH`).
+    pub roll_extra_width: f32,
+    /// Whether the piano roll is shown in its own window (the POP OUT pill) instead of the
+    /// SEQUENCER panel. Not persisted.
+    pub roll_popped: bool,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
@@ -583,6 +603,10 @@ impl AppState {
             roll_selected: None,
             roll_extra_rows: 0,
             armed_chord: None,
+            roll_selection: Vec::new(),
+            roll_black_keys: true,
+            roll_extra_width: 0.0,
+            roll_popped: false,
             song_selected: Some(0),
             mixer: MixerState::default(),
             meters: Meters::SILENT,
@@ -1207,7 +1231,7 @@ impl AppState {
         let index = index % PATTERN_COUNT as u8;
         self.bank.current = index;
         self.selected_step = None;
-        self.roll_selected = None;
+        self.clear_roll_selection();
         self.clamp_shown_bar();
         self.send(Message::SelectPattern(index));
     }
@@ -1246,10 +1270,11 @@ impl AppState {
         {
             self.selected_step = None;
         }
-        if let Some(index) = self.roll_selected
-            && index >= self.pattern().notes().len()
+        let notes = self.pattern().notes().len();
+        if self.roll_selected.is_some_and(|index| index >= notes)
+            || self.roll_selection.iter().any(|&index| index >= notes)
         {
-            self.roll_selected = None;
+            self.clear_roll_selection();
         }
     }
 
@@ -1454,11 +1479,17 @@ impl AppState {
         }
         self.begin_edit();
         self.pattern_mut().remove_note(index);
-        self.roll_selected = match self.roll_selected {
-            Some(s) if s == index => None,
-            Some(s) if s > index => Some(s - 1),
-            other => other,
+        let shift = |s: usize| match s {
+            s if s == index => None,
+            s if s > index => Some(s - 1),
+            s => Some(s),
         };
+        self.roll_selected = self.roll_selected.and_then(shift);
+        self.roll_selection = self
+            .roll_selection
+            .iter()
+            .filter_map(|&s| shift(s))
+            .collect();
         self.send_notes();
         true
     }
@@ -1471,7 +1502,7 @@ impl AppState {
         }
         self.begin_edit();
         self.pattern_mut().clear_notes();
-        self.roll_selected = None;
+        self.clear_roll_selection();
         self.send_notes();
     }
 
@@ -1491,7 +1522,7 @@ impl AppState {
         if view == LaneView::Roll {
             self.selected_step = None;
         } else {
-            self.roll_selected = None;
+            self.clear_roll_selection();
         }
     }
 
@@ -1548,6 +1579,84 @@ impl AppState {
         }
         self.send_notes();
         added
+    }
+
+    /// Replaces several notes of the edit pattern at once (`edits` pairs an index into the
+    /// current note list with the note it should become) as one undo step. Returns how many
+    /// notes changed (`0` means no edit: nothing differed, or every edit was out of range or
+    /// invalid). The list is rebuilt, so indices move; the roll selection is remapped by the
+    /// caller ([`crate::ui::sequencer::apply_roll_output`]).
+    pub fn move_notes(&mut self, edits: &[(usize, Note)]) -> usize {
+        let len = self.pattern().len();
+        let mut target = self.pattern().notes().to_vec();
+        let mut changed = 0;
+        for &(index, note) in edits {
+            let Some(slot) = target.get_mut(index) else {
+                continue;
+            };
+            let mut note = note;
+            note.normalise();
+            if note.length == 0 || usize::from(note.start) >= len || *slot == note {
+                continue;
+            }
+            *slot = note;
+            changed += 1;
+        }
+        if changed == 0 {
+            return 0;
+        }
+        self.begin_edit();
+        self.pattern_mut().clear_notes();
+        for note in target {
+            self.pattern_mut().add_note(note);
+        }
+        self.send_notes();
+        changed
+    }
+
+    /// Removes several notes of the edit pattern at once as one undo step; indices out of
+    /// range are ignored. Returns how many were removed (`0` means no edit). The roll
+    /// selection is dropped.
+    pub fn remove_notes(&mut self, indices: &[usize]) -> usize {
+        let count = self.pattern().notes().len();
+        let mut order: Vec<usize> = indices.iter().copied().filter(|&i| i < count).collect();
+        order.sort_unstable();
+        order.dedup();
+        if order.is_empty() {
+            return 0;
+        }
+        self.begin_edit();
+        for &index in order.iter().rev() {
+            self.pattern_mut().remove_note(index);
+        }
+        self.clear_roll_selection();
+        self.send_notes();
+        order.len()
+    }
+
+    /// Drops the piano roll's selection (primary and the rest).
+    pub fn clear_roll_selection(&mut self) {
+        self.roll_selected = None;
+        self.roll_selection.clear();
+    }
+
+    /// Shows or hides the piano roll's black-key rows. View state, not an edit.
+    pub fn toggle_black_keys(&mut self) {
+        self.roll_black_keys = !self.roll_black_keys;
+    }
+
+    /// Makes the piano roll `width` points wider than its fitted width (clamped to
+    /// `0..=MAX_ROLL_EXTRA_WIDTH`, non-finite values ignored). View state, not an edit.
+    pub fn set_roll_extra_width(&mut self, width: f32) {
+        if width.is_finite() {
+            self.roll_extra_width = width.clamp(0.0, MAX_ROLL_EXTRA_WIDTH);
+        }
+    }
+
+    /// Shows the piano roll in its own window (`true`) or back in the SEQUENCER panel.
+    /// View state, not an edit.
+    pub fn set_roll_popped(&mut self, popped: bool) {
+        self.roll_popped = popped;
     }
 
     /// The piano roll's playhead in fractional steps of the edit pattern (`bar * 16 + step +
@@ -1992,8 +2101,8 @@ impl AppState {
                     self.selected_step = None;
                 }
             }
-            if escape && self.roll_selected.is_some() {
-                self.roll_selected = None;
+            if escape && (self.roll_selected.is_some() || !self.roll_selection.is_empty()) {
+                self.clear_roll_selection();
             }
             if escape && self.visual_full {
                 self.visual_full = false;
@@ -2488,6 +2597,14 @@ impl BeatSlopperApp {
             .and_then(|s| eframe::get_value::<usize>(s, ROLL_EXTRA_ROWS_KEY));
         state.set_roll_extra_rows(roll_extra_rows.unwrap_or(0));
         state.set_visual_preset(visual_preset.unwrap_or(DEFAULT_VISUAL_PRESET));
+        let roll_black_keys: Option<bool> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<bool>(s, ROLL_BLACK_KEYS_KEY));
+        state.roll_black_keys = roll_black_keys.unwrap_or(true);
+        let roll_extra_width: Option<f32> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<f32>(s, ROLL_EXTRA_WIDTH_KEY));
+        state.set_roll_extra_width(roll_extra_width.unwrap_or(0.0));
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -2784,6 +2901,8 @@ impl App for BeatSlopperApp {
             &self.plugins.geometry(self.state.plugin_open),
         );
         eframe::set_value(storage, VISUAL_PRESET_KEY, &self.state.visual_preset);
+        eframe::set_value(storage, ROLL_BLACK_KEYS_KEY, &self.state.roll_black_keys);
+        eframe::set_value(storage, ROLL_EXTRA_WIDTH_KEY, &self.state.roll_extra_width);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -4385,6 +4504,89 @@ mod tests {
         assert!(state.undo());
         assert!(state.pattern().notes().is_empty());
         assert!(!state.undo());
+    }
+
+    #[test]
+    fn move_and_remove_notes_are_one_undo_step_each() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_notes();
+        state.undo.clear();
+        state.dirty = false;
+        state.add_note(Note::new(0, 1, 48, 0.8));
+        state.add_note(Note::new(2, 2, 52, 0.8));
+        state.add_note(Note::new(4, 1, 55, 0.8));
+        state.undo.clear();
+
+        // Two notes move up an octave; the third stays. The list is re-sorted.
+        let moved =
+            state.move_notes(&[(0, Note::new(0, 1, 60, 0.8)), (2, Note::new(4, 1, 67, 0.8))]);
+        assert_eq!(moved, 2);
+        assert_eq!(
+            state.pattern().notes(),
+            &[
+                Note::new(0, 1, 60, 0.8),
+                Note::new(2, 2, 52, 0.8),
+                Note::new(4, 1, 67, 0.8)
+            ]
+        );
+        assert_eq!(state.undo.len(), 1);
+        assert!(state.dirty);
+        // Unchanged, out of range or invalid edits are no edit at all.
+        assert_eq!(state.move_notes(&[(1, Note::new(2, 2, 52, 0.8))]), 0);
+        assert_eq!(state.move_notes(&[(9, Note::new(2, 2, 52, 0.8))]), 0);
+        assert_eq!(state.move_notes(&[(1, Note::new(16, 2, 52, 0.8))]), 0);
+        assert_eq!(state.undo.len(), 1);
+
+        // Removing two at once (an out-of-range index ignored) drops the selection.
+        state.roll_selected = Some(0);
+        state.roll_selection = vec![0, 2];
+        assert_eq!(state.remove_notes(&[2, 0, 0, 9]), 2);
+        assert_eq!(state.pattern().notes(), &[Note::new(2, 2, 52, 0.8)]);
+        assert_eq!(state.roll_selected, None);
+        assert!(state.roll_selection.is_empty());
+        assert_eq!(state.undo.len(), 2);
+        assert_eq!(state.remove_notes(&[5]), 0, "nothing in range");
+        assert!(state.undo());
+        assert_eq!(state.pattern().notes().len(), 3);
+        assert!(state.undo());
+        assert_eq!(state.pattern().notes()[0].pitch, 48);
+
+        // A single removal shifts the rest of the selection down like the primary.
+        state.roll_selected = Some(2);
+        state.roll_selection = vec![0, 1, 2];
+        state.remove_note(1);
+        assert_eq!(state.roll_selected, Some(1));
+        assert_eq!(state.roll_selection, [0, 1]);
+        // Switching pattern or view, Escape and clear_notes drop the whole selection.
+        state.select_pattern(1);
+        assert!(state.roll_selection.is_empty() && state.roll_selected.is_none());
+        state.select_pattern(0);
+        state.roll_selection = vec![0];
+        state.set_lane_view(LaneView::Grid);
+        assert!(state.roll_selection.is_empty());
+        state.set_lane_view(LaneView::Roll);
+        state.roll_selection = vec![0, 1];
+        state.clear_notes();
+        assert!(state.roll_selection.is_empty());
+
+        assert!(state.roll_black_keys, "black keys shown by default");
+        state.toggle_black_keys();
+        assert!(!state.roll_black_keys);
+
+        assert_eq!(state.roll_extra_width, 0.0);
+        state.set_roll_extra_width(120.5);
+        assert_eq!(state.roll_extra_width, 120.5);
+        state.set_roll_extra_width(-5.0);
+        assert_eq!(state.roll_extra_width, 0.0);
+        state.set_roll_extra_width(1.0e9);
+        assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH);
+        state.set_roll_extra_width(f32::NAN);
+        assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH, "NaN ignored");
+        assert!(!state.roll_popped);
+        let undo_steps = state.undo.len();
+        state.set_roll_popped(true);
+        assert!(state.roll_popped);
+        assert_eq!(state.undo.len(), undo_steps, "view state only");
     }
 
     // -----------------------------------------------------------------------------------------

@@ -117,6 +117,43 @@ pub const CHORD_PILL: Vec2 = vec2(84.0, 26.0);
 pub const CHORD_PILL_GAP: f32 = 6.0;
 /// Caps title over the chord pills.
 pub const CHORDS_TITLE: &str = "Chords";
+/// Label of the head pill that shows / hides the roll's black-key rows.
+pub const BLACK_KEYS_LABEL: &str = "Black keys";
+/// Width of the handle strip right of the roll (drag it to make the roll wider).
+pub const ROLL_WIDTH_HANDLE: f32 = 8.0;
+/// Accessible name of the handle right of the roll.
+pub const ROLL_WIDTH_HANDLE_LABEL: &str = "Resize roll width";
+/// Widest step column the roll zooms to when dragged wider than its fitted width.
+pub const MAX_ROLL_STEP_WIDTH_ZOOMED: f32 = 192.0;
+/// Label of the head pill that moves the roll into its own window (lit while it is there).
+pub const POP_OUT_LABEL: &str = "Pop out";
+/// Label of the pill in the roll window that brings the roll back into the panel.
+pub const DOCK_LABEL: &str = "Dock";
+/// Title of the roll's own window.
+pub const ROLL_WINDOW_TITLE: &str = "BeatSlopper piano roll";
+/// What the panel shows in place of the roll while it is in its own window.
+pub const POPPED_LABEL: &str = "The piano roll is open in its own window";
+/// Size the roll window opens at.
+pub const ROLL_WINDOW_SIZE: Vec2 = vec2(1100.0, 620.0);
+
+/// The roll's fitted width: every step at [`MAX_ROLL_STEP_WIDTH`], no wider than
+/// `available` (and never narrower than the key column).
+#[must_use]
+pub fn fitted_roll_width(state: &AppState, available: f32) -> f32 {
+    let steps = state.pattern().len().max(1) as f32;
+    (KEY_COLUMN_WIDTH + steps * MAX_ROLL_STEP_WIDTH)
+        .min(available)
+        .max(KEY_COLUMN_WIDTH)
+}
+
+/// The roll's width in the panel: the fitted width plus what the handle was dragged to
+/// ([`AppState::roll_extra_width`]), no wider than `available`.
+#[must_use]
+pub fn roll_width(state: &AppState, available: f32) -> f32 {
+    (fitted_roll_width(state, available) + state.roll_extra_width)
+        .min(available)
+        .max(KEY_COLUMN_WIDTH)
+}
 
 /// Height of the roll itself for `state`: the roll area minus the handle strip, plus the rows
 /// the handle was dragged to ([`AppState::roll_extra_rows`]).
@@ -144,7 +181,7 @@ pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
     let steps = state.pattern().len().max(1);
     let step_width = ((size.x - KEY_COLUMN_WIDTH) / steps as f32)
         .floor()
-        .clamp(MIN_ROLL_STEP_WIDTH, MAX_ROLL_STEP_WIDTH);
+        .clamp(MIN_ROLL_STEP_WIDTH, MAX_ROLL_STEP_WIDTH_ZOOMED);
     let pitches = ((size.y / ROLL_ROW_HEIGHT).floor().max(0.0) as usize).max(MIN_ROLL_PITCHES);
     let mut model = PianoRollModel {
         steps,
@@ -154,13 +191,29 @@ pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
         row_height: ROLL_ROW_HEIGHT,
         playhead_step: state.roll_playhead(),
         selected: state.roll_selected,
+        selection: roll_selection(state),
         held: state.held_notes,
+        black_keys: state.roll_black_keys,
     };
-    model.low_pitch = model.low_pitch.min(model.max_low_pitch());
+    model.normalise(state.pattern().notes().len());
     model
 }
 
-/// The roll's view of a pattern note (`selected` when it is `state.roll_selected`).
+/// The roll's selection: [`AppState::roll_selection`] plus the primary
+/// [`AppState::roll_selected`] when it is missing from it (older paths set the primary
+/// alone).
+#[must_use]
+pub fn roll_selection(state: &AppState) -> Vec<usize> {
+    let mut selection = state.roll_selection.clone();
+    if let Some(primary) = state.roll_selected
+        && !selection.contains(&primary)
+    {
+        selection.push(primary);
+    }
+    selection
+}
+
+/// The roll's view of a pattern note (`selected` when it is in the roll selection).
 #[must_use]
 pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
     state
@@ -173,7 +226,7 @@ pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
             length: n.length,
             pitch: n.pitch,
             velocity: n.velocity,
-            selected: state.roll_selected == Some(i),
+            selected: state.roll_selected == Some(i) || state.roll_selection.contains(&i),
         })
         .collect()
 }
@@ -184,16 +237,33 @@ pub fn to_note(n: RollNote) -> Note {
     Note::new(n.start, n.length, n.pitch, n.velocity)
 }
 
-/// Applies what the roll reported this frame: the scrolled bottom pitch and the click
-/// selection (view state the widget edits in `model`), then the one edit, if any, through
-/// [`AppState::add_note`] / [`AppState::set_note`] / [`AppState::remove_note`]. The selection
-/// follows its note across the re-sort an add or move causes.
+/// Applies what the roll reported this frame: the scrolled bottom pitch and the selection
+/// (view state the widget edits in `model`), then the one edit, if any, through
+/// [`AppState::add_note`] / [`AppState::add_chord`] / [`AppState::set_note`] /
+/// [`AppState::move_notes`] / [`AppState::remove_note`] / [`AppState::remove_notes`]. The
+/// selection follows its notes across the re-sort an add or move causes: every selected
+/// note is remembered by value (as the edit leaves it), then found again in the new list.
 pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: PianoRollOutput) {
     state.set_roll_low_pitch(model.low_pitch);
-    state.roll_selected = model.selected;
-    let selected_note = model
-        .selected
-        .and_then(|i| state.pattern().notes().get(i).copied());
+    let before = state.pattern().notes().to_vec();
+    let mut wanted: Vec<Note> = model
+        .selection
+        .iter()
+        .filter_map(|&i| before.get(i).copied())
+        .collect();
+    let mut primary: Option<Note> = model.selected.and_then(|i| before.get(i).copied());
+    // What a moved note becomes, carried into the remembered selection.
+    let mut follow = |old: Option<&Note>, new: Note, wanted: &mut Vec<Note>| {
+        if let Some(old) = old {
+            for w in wanted.iter_mut().filter(|w| *w == old) {
+                *w = new;
+            }
+            if primary.as_ref() == Some(old) {
+                primary = Some(new);
+            }
+        }
+    };
+
     if let Some(n) = out.add {
         // With a chord armed the drawn note is the root: every chord tone lands at once.
         match state.armed_chord.and_then(|i| CHORDS.get(i)) {
@@ -204,19 +274,54 @@ pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: Pian
                 state.add_note(to_note(n));
             }
         }
-        state.roll_selected =
-            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s));
+    } else if !out.moved_many.is_empty() {
+        let edits: Vec<(usize, Note)> = out
+            .moved_many
+            .iter()
+            .map(|&(i, n)| (i, to_note(n)))
+            .collect();
+        state.move_notes(&edits);
+        for (i, n) in &edits {
+            let mut n = *n;
+            n.normalise();
+            follow(before.get(*i), n, &mut wanted);
+        }
     } else if let Some((i, n)) = out.moved {
-        let new_index = state.set_note(i, to_note(n));
-        state.roll_selected = if model.selected == Some(i) {
-            new_index
-        } else {
-            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s))
-        };
+        let mut note = to_note(n);
+        note.normalise();
+        state.set_note(i, note);
+        follow(before.get(i), note, &mut wanted);
+    } else if !out.removed_many.is_empty() {
+        state.remove_notes(&out.removed_many);
+        for i in &out.removed_many {
+            if let Some(gone) = before.get(*i) {
+                wanted.retain(|w| w != gone);
+                if primary.as_ref() == Some(gone) {
+                    primary = None;
+                }
+            }
+        }
     } else if let Some(i) = out.removed {
-        // `remove_note` shifts the selection past the removed index itself.
         state.remove_note(i);
+        if let Some(gone) = before.get(i) {
+            wanted.retain(|w| w != gone);
+            if primary.as_ref() == Some(gone) {
+                primary = None;
+            }
+        }
     }
+
+    let after = state.pattern().notes();
+    let mut selection: Vec<usize> = wanted
+        .iter()
+        .filter_map(|w| after.iter().position(|n| n == w))
+        .collect();
+    selection.dedup();
+    let primary = primary
+        .and_then(|p| after.iter().position(|n| *n == p))
+        .or_else(|| selection.last().copied());
+    state.roll_selection = selection;
+    state.roll_selected = primary;
 }
 
 /// Left edge of cell `i` relative to the grid's left edge.
@@ -319,13 +424,20 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 ui.add_space(ROW_GAP);
                 bottom_row(ui, state, theme);
             }
+            LaneView::Roll if state.roll_popped => {
+                popped_placeholder(ui, state, theme);
+                roll_window(ui.ctx(), state, theme);
+            }
             LaneView::Roll => {
-                let roll_width =
-                    (ui.available_width() - COLUMN_GAP - CHORD_COLUMN_WIDTH).max(KEY_COLUMN_WIDTH);
-                let model = roll_model(state, vec2(roll_width, roll_height(state)));
+                let available =
+                    (ui.available_width() - ROLL_WIDTH_HANDLE - COLUMN_GAP - CHORD_COLUMN_WIDTH)
+                        .max(KEY_COLUMN_WIDTH);
+                let max_extra = (available - fitted_roll_width(state, available)).max(0.0);
+                let width = roll_width(state, available);
+                let model = roll_model(state, vec2(width, roll_height(state)));
                 roll_beat_numbers(ui, theme, &model);
                 ui.add_space(ROW_GAP);
-                roll_area(ui, state, theme, model);
+                roll_area(ui, state, theme, model, max_extra);
             }
         }
     });
@@ -364,7 +476,13 @@ fn roll_beat_numbers(ui: &mut Ui, theme: &Theme, model: &PianoRollModel) {
 /// The piano roll over the edit pattern's notes with the resize handle under it, and the
 /// CHORDS column to its right, in the space of the grid rows and the bottom row (plus the
 /// extra rows); whatever the roll reports is applied by [`apply_roll_output`].
-fn roll_area(ui: &mut Ui, state: &mut AppState, theme: &Theme, mut model: PianoRollModel) {
+fn roll_area(
+    ui: &mut Ui,
+    state: &mut AppState,
+    theme: &Theme,
+    mut model: PianoRollModel,
+    max_extra_width: f32,
+) {
     let height = roll_height(state);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -380,8 +498,121 @@ fn roll_area(ui: &mut Ui, state: &mut AppState, theme: &Theme, mut model: PianoR
             }
             roll_handle(ui, state, theme, model.size().x);
         });
+        roll_width_handle(ui, state, theme, height, max_extra_width);
         ui.add_space(COLUMN_GAP);
-        chord_column(ui, state, theme, height + ROLL_HANDLE_HEIGHT);
+        chord_column(ui, state, theme, height + ROLL_HANDLE_HEIGHT, true);
+    });
+}
+
+/// The strip right of the roll: dragging it right makes the roll wider (the step columns
+/// zoom, [`AppState::set_roll_extra_width`], at most `max_extra` past the fitted width so
+/// the CHORDS column stays in the panel), dragging it left narrower, down to the fitted
+/// width. Painted as a vertical [`ROLL_GRIP`], accent while hovered or dragged.
+fn roll_width_handle(
+    ui: &mut Ui,
+    state: &mut AppState,
+    theme: &Theme,
+    height: f32,
+    max_extra: f32,
+) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ROLL_WIDTH_HANDLE, height), Sense::drag());
+    let origin_id = response.id.with("origin");
+    if response.dragged()
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        let origin = ui
+            .data(|d| d.get_temp::<(f32, f32)>(origin_id))
+            .filter(|_| !response.drag_started())
+            .unwrap_or((p.x, state.roll_extra_width));
+        ui.data_mut(|d| d.insert_temp(origin_id, origin));
+        let width = (origin.1 + (p.x - origin.0)).clamp(0.0, max_extra);
+        if width != state.roll_extra_width {
+            state.set_roll_extra_width(width);
+        }
+    }
+    if ui.is_rect_visible(rect) {
+        let lit = response.hovered() || response.dragged();
+        let grip = egui::Rect::from_center_size(rect.center(), vec2(ROLL_GRIP.y, ROLL_GRIP.x));
+        let fill = if lit { theme.accent } else { theme.shadow_dark };
+        ui.painter().rect_filled(grip, ROLL_GRIP.y * 0.5, fill);
+    }
+    response
+        .on_hover_cursor(CursorIcon::ResizeHorizontal)
+        .on_hover_text("Drag to make the roll wider or narrower")
+        .widget_info(|| {
+            WidgetInfo::labeled(Role::Slider, ui.is_enabled(), ROLL_WIDTH_HANDLE_LABEL)
+        });
+}
+
+/// What the panel shows while the roll is in its own window: [`POPPED_LABEL`] centred in
+/// the space the roll view takes (beat numbers, roll, handle), so the panel keeps its height.
+fn popped_placeholder(ui: &mut Ui, state: &AppState, theme: &Theme) {
+    let height = label_row_height(ui) + ROW_GAP + roll_height(state) + ROLL_HANDLE_HEIGHT;
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), height),
+        Layout::centered_and_justified(egui::Direction::TopDown),
+        |ui| {
+            neu::label(ui, theme, POPPED_LABEL)
+                .on_hover_text("Click POP OUT again, or DOCK in the window, to bring it back");
+        },
+    );
+}
+
+/// The roll in its own window ([`ROLL_WINDOW_TITLE`]) while [`AppState::roll_popped`]: an
+/// immediate viewport (a real OS window under eframe, which can be maximised or put full
+/// screen; an embedded `egui::Window` where the backend has no multi-window support, e.g.
+/// headless tests). Closing the window docks the roll again.
+fn roll_window(ctx: &egui::Context, state: &mut AppState, theme: &Theme) {
+    let id = egui::ViewportId::from_hash_of("beatslopper_piano_roll_window");
+    let builder = egui::ViewportBuilder::default()
+        .with_title(ROLL_WINDOW_TITLE)
+        .with_inner_size(ROLL_WINDOW_SIZE)
+        .with_min_inner_size(vec2(600.0, 300.0));
+    ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            state.set_roll_popped(false);
+        }
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme.surface)
+                    .inner_margin(theme.panel_padding),
+            )
+            .show(ctx, |ui| roll_window_contents(ui, state, theme));
+    });
+}
+
+/// Inside the roll window: a title row with the DOCK pill, then the beat numbers, the roll
+/// fitted to the window (columns to its width, rows to its height) and the CHORDS column.
+fn roll_window_contents(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.horizontal(|ui| {
+        ui.set_min_height(controls::ROW_HEIGHT);
+        ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
+        neu::title(ui, theme, "Roll");
+        controls::right_aligned(ui, "roll_window_head", |ui| {
+            if neu::button(ui, theme, DOCK_LABEL)
+                .on_hover_text("Put the roll back in the SEQUENCER panel")
+                .clicked()
+            {
+                state.set_roll_popped(false);
+            }
+        });
+    });
+    ui.add_space(HEAD_GAP);
+    let width = (ui.available_width() - COLUMN_GAP - CHORD_COLUMN_WIDTH).max(KEY_COLUMN_WIDTH);
+    let height = (ui.available_height() - label_row_height(ui) - ROW_GAP)
+        .max(ROLL_ROW_HEIGHT * MIN_ROLL_PITCHES as f32);
+    let mut model = roll_model(state, vec2(width, height));
+    roll_beat_numbers(ui, theme, &model);
+    ui.add_space(ROW_GAP);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let notes = roll_notes(state);
+        let out = neu::piano_roll(ui, theme, &mut model, &notes);
+        apply_roll_output(state, &model, out);
+        ui.add_space(COLUMN_GAP);
+        chord_column(ui, state, theme, model.size().y, false);
     });
 }
 
@@ -417,19 +648,42 @@ fn roll_handle(ui: &mut Ui, state: &mut AppState, theme: &Theme, width: f32) {
         .widget_info(|| WidgetInfo::labeled(Role::Slider, ui.is_enabled(), ROLL_HANDLE_LABEL));
 }
 
-/// The CHORDS column: a caps title and one toggle pill per [`CHORDS`] entry (most common at
-/// the top) in a scroll area of the roll's height. The lit pill is the armed chord
+/// The CHORDS column: the roll's view pills (BLACK KEYS, and POP OUT when `docked`), a caps
+/// title and one toggle pill per [`CHORDS`] entry (most common at the top) in a scroll area
+/// of the rest of the roll's height. The lit chord pill is the armed chord
 /// ([`AppState::armed_chord`]); clicking it again disarms. With a chord armed, drawing on
 /// the roll places the whole chord with the drawn note as its root.
-fn chord_column(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32) {
+fn chord_column(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32, docked: bool) {
     ui.allocate_ui_with_layout(
         vec2(CHORD_COLUMN_WIDTH, height),
         Layout::top_down(Align::Min),
         |ui| {
             ui.spacing_mut().item_spacing.y = CHORD_PILL_GAP;
-            let title = neu::label(ui, theme, CHORDS_TITLE)
+            let top = ui.cursor().min.y;
+            if neu::toggle_button_sized(
+                ui,
+                theme,
+                BLACK_KEYS_LABEL,
+                state.roll_black_keys,
+                CHORD_PILL,
+            )
+            .on_hover_text("Show the black-key rows on the roll (off: white keys only)")
+            .clicked()
+            {
+                state.toggle_black_keys();
+            }
+            if docked
+                && neu::toggle_button_sized(ui, theme, POP_OUT_LABEL, state.roll_popped, CHORD_PILL)
+                    .on_hover_text("Open the roll in its own window (it can go full screen)")
+                    .clicked()
+            {
+                state.set_roll_popped(!state.roll_popped);
+            }
+            ui.add_space(CHORD_PILL_GAP);
+            neu::label(ui, theme, CHORDS_TITLE)
                 .on_hover_text("Pick a chord, then draw on the roll to place it");
-            let list_height = (height - title.rect.height() - CHORD_PILL_GAP).max(0.0);
+            let used = ui.cursor().min.y - top;
+            let list_height = (height - used).max(0.0);
             ScrollArea::vertical()
                 .id_salt("chords")
                 .max_height(list_height)
@@ -463,6 +717,15 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         pattern_tabs(ui, state, theme);
         queued_indicator(ui, state, theme);
         lane_view_tabs(ui, state, theme);
+        if state.lane_view == LaneView::Roll && state.roll_popped {
+            // The roll is in its own window: the pill that brings it back stays reachable.
+            if neu::toggle_button(ui, theme, POP_OUT_LABEL, true)
+                .on_hover_text("The roll is in its own window; click to bring it back")
+                .clicked()
+            {
+                state.set_roll_popped(false);
+            }
+        }
         controls::right_aligned(ui, "sequencer_head", |ui| {
             ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
             length_selector(ui, state, theme);
