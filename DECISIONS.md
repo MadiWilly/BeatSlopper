@@ -311,3 +311,14 @@ renderer's engine, and gives the export thread the same stack. The engine is unc
 later clean-up could construct the tracks in place). `select_track` is view state, not an
 undo step, but `edit_track` is in the snapshot so undoing a track operation restores the
 selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, not modified).
+
+## 2026-10-25: M9 preset library (engine)
+- 91 presets live in `presets::LIBRARY`; `presets::ALL` keeps the original 8 (not in the
+  library) until the browser replaces the synth panel's preset row. Names are unique across
+  both; `index_of` indexes the library only.
+- The lo-fi insert's vinyl noise is a continuous bed, not gated by the voices, so a preset
+  with vinyl noise never falls below RMS 1e-4 even with no note. The decay test therefore
+  measures each preset's own silent bed (3 s, no note) and requires the tail to fall under
+  `max(1e-4, 2 x bed)`; presets without vinyl noise keep the strict 1e-4. Tagging ~35 lofi
+  presets "drone" would have been wrong, and the DSP was out of that task's scope.
+  `Preset::has_vinyl_noise()` exposes the fact to the UI.

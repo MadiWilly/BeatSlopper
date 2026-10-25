@@ -100,7 +100,7 @@ whenever it gains commits.
 - [x] Tests per PLAN.md M8; gate green, tag m8 (2026-10-25)
 
 ## M9: Preset library + browser (EDM + Joji-style lofi)
-- [ ] engine: 80+ categorised presets with tags, search helpers, per-preset tests
+- [x] engine: 80+ categorised presets with tags, search helpers, per-preset tests (91 presets, 2026-10-25)
 - [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
 - [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
 
