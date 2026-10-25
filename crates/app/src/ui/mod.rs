@@ -81,7 +81,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let available = ui.available_height();
     let gap = f32::from(PAGE_GAP);
-    let bottom_height = sequencer::panel_height(ui, theme);
+    let bottom_height = sequencer::panel_height(ui, theme, state);
     let top_height = (available - bottom_height - gap).max(TOP_ROW_MIN_HEIGHT);
     ScrollArea::vertical()
         .auto_shrink([false, false])

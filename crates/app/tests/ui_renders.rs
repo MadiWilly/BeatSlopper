@@ -343,6 +343,47 @@ fn clicking_a_step_cell_toggles_it() {
     assert_eq!(harness.state().pattern().clone(), expected);
 }
 
+/// Right-click clears a cell: a drum step goes off (accent too), a bass step becomes a rest
+/// and loses its selection. One undo step each; an already-clear cell is left alone.
+#[test]
+fn right_clicking_a_step_cell_clears_it() {
+    let mut harness = sequencer_harness();
+    let kick = DrumRow::Kick.index();
+    let demo = Pattern::demo();
+    assert!(demo.drums[kick][0].on && demo.drums[kick][0].accent);
+    assert!(!harness.state().dirty);
+
+    harness.get_by_label("Kick step 1").click_secondary();
+    harness.step();
+    let cell = harness.state().pattern().drums[kick][0];
+    assert!(!cell.on && !cell.accent, "{cell:?}");
+    assert!(harness.state().dirty);
+
+    // Right-clicking an already-clear cell changes nothing (and is not an undo step).
+    harness.get_by_label("Kick step 2").click_secondary();
+    harness.step();
+    let mut expected = demo.clone();
+    expected.drums[kick][0] = Default::default();
+    assert_eq!(harness.state().pattern().clone(), expected);
+
+    // A selected bass step with a note: the note goes, so does the selection.
+    harness.get_by_label("Bass step 5").click();
+    harness.step();
+    assert_eq!(harness.state().selected_step, Some(4));
+    harness.get_by_label("Bass step 5").click_secondary();
+    harness.step();
+    assert_eq!(harness.state().pattern().synth[4], SynthStep::default());
+    assert_eq!(harness.state().selected_step, None);
+    expected.set_synth_step(4, None, false);
+    assert_eq!(harness.state().pattern().clone(), expected);
+
+    // Two edits, two undo steps: back to the demo pattern.
+    assert!(harness.state_mut().undo());
+    assert!(harness.state_mut().undo());
+    assert_eq!(harness.state().pattern().clone(), demo);
+    assert!(!harness.state_mut().undo(), "nothing more to undo");
+}
+
 #[test]
 fn clear_pills_clear_a_row_and_everything() {
     let mut harness = sequencer_harness();
@@ -1313,6 +1354,105 @@ fn roll_tab_shows_the_piano_roll_in_both_themes() {
         assert!(harness.query_by_label("Piano roll").is_none());
         assert_eq!(harness.state().pattern().clone(), Pattern::demo());
     }
+}
+
+/// The CHORDS column arms a chord: the next click on the roll places every tone of it on the
+/// clicked root as one undo step; clicking the lit pill disarms it and a click is a plain
+/// note again.
+#[test]
+fn chord_pills_arm_a_chord_that_a_roll_click_places() {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    harness.get_by_label(ui::sequencer::CHORDS_TITLE);
+    harness.get_by_label("Major").click();
+    harness.step();
+    assert_eq!(harness.state().armed_chord, Some(0));
+    assert!(!harness.state().dirty, "arming is not an edit");
+
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    assert!(
+        model.is_visible(40) && model.is_visible(47),
+        "{}",
+        model.pitches
+    );
+    // E2 as the root: E2 G#2 B2.
+    pointer_click(&mut harness, roll_cell(&model, grid, 2, 40));
+    let notes = harness.state().pattern().notes().to_vec();
+    let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
+    assert_eq!(pitches, vec![40, 44, 47]);
+    assert!(notes.iter().all(|n| n.start == 2 && n.length == 1));
+    assert_eq!(harness.state().undo.len(), 1, "one undo step");
+    assert!(harness.state().dirty);
+    assert_eq!(harness.state().armed_chord, Some(0), "stays armed");
+
+    harness.get_by_label("Major").click();
+    harness.step();
+    assert_eq!(harness.state().armed_chord, None);
+    pointer_click(&mut harness, roll_cell(&model, grid, 5, 50));
+    assert_eq!(
+        harness.state().pattern().notes().len(),
+        4,
+        "a plain note again"
+    );
+}
+
+/// Dragging the handle under the roll down makes it taller row by row (view state, not an
+/// edit); dragging back up shrinks it, never below the default height.
+#[test]
+fn roll_handle_drags_the_roll_taller_and_shorter() {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    let before = harness.get_by_label("Piano roll").rect();
+    let handle = harness
+        .get_by_label(ui::sequencer::ROLL_HANDLE_LABEL)
+        .rect();
+    assert!(
+        handle.min.y >= before.max.y,
+        "the handle sits under the roll"
+    );
+    assert_eq!(handle.height(), ui::sequencer::ROLL_HANDLE_HEIGHT);
+
+    let from = handle.center();
+    let to = from + egui::vec2(0.0, 3.0 * ui::sequencer::ROLL_ROW_HEIGHT);
+    pointer_drag(&mut harness, from, to);
+    harness.step();
+    assert_eq!(harness.state().roll_extra_rows, 3);
+    let after = harness.get_by_label("Piano roll").rect();
+    assert_eq!(
+        after.height(),
+        before.height() + 3.0 * ui::sequencer::ROLL_ROW_HEIGHT
+    );
+    assert!(!harness.state().dirty);
+    assert_eq!(harness.state().undo.len(), 0);
+
+    let handle = harness
+        .get_by_label(ui::sequencer::ROLL_HANDLE_LABEL)
+        .rect();
+    let from = handle.center();
+    let to = from - egui::vec2(0.0, 10.0 * ui::sequencer::ROLL_ROW_HEIGHT);
+    pointer_drag(&mut harness, from, to);
+    harness.step();
+    assert_eq!(
+        harness.state().roll_extra_rows,
+        0,
+        "never below the default"
+    );
+    assert_eq!(
+        harness.get_by_label("Piano roll").rect().height(),
+        before.height()
+    );
+}
+
+/// Keys held on the computer keyboard reach the roll's model (its key column lights them).
+#[test]
+fn held_keys_reach_the_roll_model() {
+    let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+    state.set_lane_view(app::app::LaneView::Roll);
+    let size = egui::vec2(800.0, ui::sequencer::roll_height(&state));
+    state.note_on(60, 0.8);
+    let model = ui::sequencer::roll_model(&state, size);
+    assert!(model.held[60]);
+    assert_eq!(model.held.iter().filter(|h| **h).count(), 1);
+    state.note_off(60);
+    assert!(!ui::sequencer::roll_model(&state, size).held[60]);
 }
 
 /// A drag on the roll draws a note into the edit pattern (undoable, dirty), a click adds a
