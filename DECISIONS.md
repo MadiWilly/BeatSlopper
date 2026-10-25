@@ -92,3 +92,11 @@ recorded in `design/WINNER.md` "As-built tweaks".
   assertion was weakened.
 - Notes that run past the pattern end are released at the wrap; a pattern shortened below
   the playing bar still finishes that bar.
+
+## 2026-10-25: Phase 3 direction
+The user wants a large preset library in EDM and Joji-style lofi. Because a plain subtractive
+synth cannot make electric pianos, plucked guitars or supersaws, M8 adds FM, a Karplus-Strong
+pluck mode, 7-voice unison, sub and noise sources, a filter ADSR with LP/BP/HP types, a pitch
+envelope, velocity response, a lo-fi insert (bits, rate, wobble, vinyl noise, tone), chorus and
+a kick-triggered sidechain ducker. M9 builds about 80 presets on top with a browser. Sound
+design is done by DSP reasoning and measurable tests since the build machine cannot listen.

@@ -477,3 +477,75 @@ window is 1270x760.
   view. Record-arm overdub and click-then-key entry write length-1 notes as before. Playhead
   from `Position` (bar * 16 + step + frac). Keyboard: Delete removes the selected note, Escape
   deselects. Persisted: roll/grid choice, `low_pitch`.
+
+## M8 additions (synthesis extensions)
+
+### engine: new `ParamId`s (unit, range, default, key)
+- `Osc1Pulse` (0.05..=0.95, 0.5, `osc1_pulse`), `Osc2Pulse` (same, `osc2_pulse`): pulse
+  width of the square wave.
+- `SidechainAmount` (0..=1, 0, `sidechain_amount`), `SidechainRelease` (s, 0.05..=1, 0.25,
+  `sidechain_release`): the synth channel ducks on every kick trigger (EDM pump); not a synth
+  id, not an fx id: routed by the engine to the ducker (`is_mixer_like` not needed; handle in
+  `Engine::set_param` directly).
+- `Osc1Unison` (1..=7 voices, 1, discrete, `osc1_unison`; 7 is the classic supersaw), `Osc1Spread` (cents, 0..=50, 10,
+  `osc1_spread`): unison copies of osc 1 detuned symmetrically.
+- `SubLevel` (0..=1, 0, `sub_level`): sine one octave below osc 1.
+- `NoiseLevel` (0..=1, 0, `noise_level`), `NoiseColor` (0 white / 1 pink, discrete, `noise_color`).
+- `FmAmount` (0..=1 mapped to modulation index 0..=8, 0, `fm_amount`), `FmRatio` (0.5..=8, 1,
+  `fm_ratio`): osc 2 (sine) at ratio x osc 1 frequency phase-modulates osc 1.
+- `OscMode` (0 subtractive / 1 pluck, discrete, `osc_mode`), `PluckDamping` (0..=1, 0.5,
+  `pluck_damping`), `PluckBright` (0..=1, 0.7, `pluck_bright`).
+- `FilterType` (0 LP / 1 BP / 2 HP, discrete, `filter_type`), `FilterAttack` (s, 0.001..=2,
+  0.005, `filter_attack`), `FilterDecay` (s, 0.001..=2, 0.25, `filter_decay`), `FilterSustain`
+  (0..=1, 0.2, `filter_sustain`), `FilterRelease` (s, 0.001..=4, 0.3, `filter_release`),
+  `FilterKeyTrack` (0..=1, 0.3, `filter_key_track`), `VelToCutoff` (0..=1, 0.3,
+  `vel_to_cutoff`), `VelToAmp` (0..=1, 1.0, `vel_to_amp`).
+- `PitchEnvAmount` (semitones, -24..=24, 0, `pitch_env_amount`), `PitchEnvDecay` (s,
+  0.001..=2, 0.1, `pitch_env_decay`).
+- `LofiBits` (4..=16, 16, `lofi_bits`), `LofiRate` (divisor 1..=16, 1, `lofi_rate`),
+  `LofiWobble` (0..=1, 0, `lofi_wobble`), `LofiNoise` (0..=1, 0, `lofi_noise`), `LofiTone`
+  (Hz, 1000..=20000, 20000, `lofi_tone`), `LofiMix` (0..=1, 0, `lofi_mix`).
+- `ChorusRate` (Hz, 0.1..=5, 0.8, `chorus_rate`), `ChorusDepth` (0..=1, 0.3, `chorus_depth`),
+  `ChorusMix` (0..=1, 0, `chorus_mix`).
+`FilterEnvAmount` keeps its meaning (depth of the filter ADSR, +-4 octaves). `is_synth()`
+covers everything up to the velocity ids; `is_fx()` covers lo-fi and chorus too.
+
+### engine: DSP
+- `synth/oscillator.rs`: pulse width for Square; `synth/fm.rs` sine modulator; `synth/noise.rs`
+  white + pink (Paul Kellet); `synth/pluck.rs` Karplus-Strong (pre-allocated delay line per
+  voice at construction sized for the lowest note, fractional read, one-pole damping,
+  excitation = short noise burst filtered by brightness); `synth/svf.rs` returns LP/BP/HP.
+- `voice.rs`: pitch env (one-pole decay from `amount` semitones to 0), filter ADSR (`Adsr`),
+  key tracking (cutoff x 2^((note - 60)/12 x track)), velocity to amp/cutoff, unison (up to 4
+  osc-1 copies (up to 7), summed / sqrt(n)), sub, noise, FM, pluck mode (replaces the oscillators).
+- `fx/ducker.rs` (sidechain): on each kick trigger the gain drops to `1 - amount` within 2 ms
+  and recovers exponentially over `release`; applied to the synth channel after chorus.
+  Allocation-free; all per-voice state fixed-size.
+- `fx/lofi.rs`: bit crusher (quantise to 2^bits), sample-and-hold rate reducer (hold every N
+  samples), wobble (slow random LFO 0.5..=3 Hz into +-20 cents through a short modulated delay
+  line, 20 ms max), vinyl noise (filtered noise + occasional crackle impulses), high cut
+  (one-pole), dry/wet. Inserted on the synth channel after the drive. `fx/chorus.rs`: two
+  modulated delay taps (5..=25 ms, LFO rate/depth) with stereo offset, mix; on the synth
+  channel after lo-fi, before the sends and the dry bus (the synth channel becomes stereo).
+- `Project` v6 (`FORMAT_VERSION = 6`); older files load with the new defaults.
+
+### neu
+Nothing new required (knobs, segmented, sliders cover the new groups).
+
+### app
+Synth panel groups: OSC 1 gains PULSE and UNISON/SPREAD; a MOD group (FM AMT, FM RATIO, SUB,
+NOISE level + colour); MODE segmented (Synth | Pluck) with DAMP/BRIGHT knobs shown in pluck
+mode; FILTER gains TYPE segmented + its own A D S R sliders + KEY TRACK; a PITCH ENV group
+(AMOUNT, DECAY); VELOCITY group (AMP, CUTOFF). FX rack gains LO-FI (BITS, RATE, WOBBLE, NOISE,
+TONE, MIX) and CHORUS (RATE, DEPTH, MIX). The panel may need a vertical scroll area or a
+second row; keep the whole-sequencer visibility tests green.
+
+## M9 additions (preset library)
+- `presets.rs`: `Category { LofiKeys, LofiGuitars, LofiPads, EdmLeads, EdmBass, EdmPlucks, EdmPads, Risers }`
+  (`ALL`, `label`), `Preset { name, category, tags: &[&str], values }`, `ALL` with at least 80
+  entries grouped by category, `by_category(cat)`, `find(name)`, `index_of(name)`,
+  `search(query)` (case-insensitive on name and tags), `Preset::is_drone()` (tag "drone").
+  Keep the original 8 presets (renamed into categories where sensible).
+- app: `ui/preset_browser.rs` (category segmented, scrollable name list, prev/next, search
+  text field styled by the theme; shortcuts suppressed while it is focused), `preset_name`
+  persisted, "modified" marker, Ctrl+Up/Down stepping.

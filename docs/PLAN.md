@@ -302,3 +302,53 @@ remaining is blocked.
   spp, off at 5 x spp); overlapping notes play polyphonically; draw/move/resize/delete via
   kittest; migration from v4.
 - **Done =** I can write a melody with held notes and chords, not only one note per step.
+
+---
+
+# Phase 3 brief (added 2026-10-25): M8 synthesis extensions, M9 preset library
+
+The user asked for a large preset library: lofi pianos, guitars and more. A two-oscillator
+subtractive synth cannot make those convincingly, so M8 adds the synthesis tools first and M9
+builds the library on top. Same rules, gate, tags (m8, m9) and loop as before.
+
+## M8: Synthesis extensions
+- Oscillators: pulse width for square (both oscs); unison 1..=7 voices with cent spread (supersaw)
+  (osc 1); a sub oscillator (sine, one octave down, level); a noise source (white/pink, level);
+  FM: osc 2 phase-modulates osc 1 (index, ratio) so electric pianos, bells and mallets work.
+- Pluck mode: a Karplus-Strong plucked string per voice (excitation burst into a delay line
+  with damping lowpass and feedback), with damping and brightness controls, selectable per
+  preset (OscMode: subtractive or pluck). This is what makes guitars and harps.
+- Filter: type LP, BP or HP; a dedicated filter ADSR; key tracking; velocity-to-cutoff.
+  Pitch envelope: amount (semitones) and decay for plucks, toms and 808-style drops.
+  Velocity-to-amp amount. Sidechain pump: the synth channel ducks on every kick hit
+  (amount, release) for the EDM feel.
+- Lo-fi insert on the synth channel: bit depth, sample-rate reduction, wow/flutter (slow
+  random pitch wobble), vinyl noise bed, high cut, dry/wet. Chorus (rate, depth, mix).
+- Engine: new ParamIds with ranges/defaults/keys, project v6 (older files load with
+  defaults), presets carry the new ids. UI: new groups in the synth panel (OSC mode/FM/unison/
+  sub/noise, filter type + filter ADSR, pitch env, velocity) and in the FX rack (LO-FI, CHORUS).
+- Tests: FM index 0 equals the plain oscillator; index above 0 adds sidebands (brightness
+  up); pluck decays, pitch within 1 %, damping shortens the tail; noise is broadband; unison
+  detune beats; filter types differ (HP removes lows, BP peaks); filter ADSR is independent of
+  the amp ADSR; the pitch env sweeps; velocity scaling; lo-fi bit depth adds quantisation
+  noise, rate reduction removes highs, wobble modulates pitch; chorus widens (L differs from
+  R); everything finite.
+- Done = the engine can produce an electric-piano, a plucked guitar and a lo-fi keys tone.
+
+## M9: Preset library + browser
+- Library: at least 80 presets aimed at the user's taste, EDM and Joji-style lofi, in the
+  categories Lofi Keys, Lofi Guitars, Lofi Pads, EDM Leads, EDM Bass, EDM Plucks, EDM Pads,
+  Risers & FX (about 10 each), each with a name, category, tags and every
+  parameter value including sends, lo-fi and chorus. Designed by DSP reasoning and measurable
+  properties (the build machine cannot be listened to): e.g. "Lofi Piano" = FM EP tone +
+  pitch-env click + lo-fi bits/rate/wobble + vinyl noise + reverb; "Nylon Guitar" = pluck
+  mode, bright, short damping, light chorus; "808 Sub" = sine + sub + pitch drop.
+- Browser: replaces the 8-item preset row: category selector, a scrollable list of names,
+  prev/next buttons, a search box (shortcuts must not fire while it is focused), the current
+  preset name in the synth head, a "modified" marker when a knob moved after loading,
+  Ctrl+Up/Down to step presets. The last preset is persisted by name.
+- Tests: every preset: values in range, applies without panic, a note renders finite and
+  non-silent, decays to silence within 8 s after release (unless tagged "drone"), peak at most
+  1; every category has at least 8 presets; names unique; presets differ pairwise in at
+  least 4 parameters; the browser filters by category and search (kittest); prev/next wrap.
+- Done = I can open the browser, pick "Lofi Piano" or "Nylon Guitar" and play it.

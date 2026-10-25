@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** DONE through M7. M0-M7 tagged. See "Final summary" and "Phase 2 summary". M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** M8 (Synthesis extensions) for an EDM + Joji-style lofi preset library (M9). M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -61,7 +61,9 @@
 release build, smoke exit 0).
 
 ## Next action
-None. Phase 2 (M4-M7) is complete. Ideas live under "Later".
+M8: params subagent adds the ids; then engine-synth (osc extras, FM, pluck, filter ADSR, pitch env,
+velocity) | engine-fx (lo-fi, chorus, ducker) | app (new panel groups) in parallel; gate, tag m8.
+Then M9: presets subagent (80+ EDM/lofi presets) + app browser; gate, tag m9.
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
@@ -88,7 +90,19 @@ None. Phase 2 (M4-M7) is complete. Ideas live under "Later".
 - [x] app: piano roll panel (draw, move, resize, delete, accent, zoom), synced with the grid
 - [x] Tests per PLAN.md M7; gate green, tag m7, final summary updated
 
-## Later (ideas beyond M7, do not start)
+## M8: Synthesis extensions (EDM + lofi tools)
+- [ ] engine: new ParamIds (pulse, unison 1-7, sub, noise, FM, pluck mode, filter type + ADSR, key track, velocity, pitch env, lo-fi, chorus, sidechain), project v6
+- [ ] engine: oscillator/FM/noise/pluck DSP, filter types, filter ADSR, pitch env, velocity, unison
+- [ ] engine: lo-fi insert, chorus, kick-triggered ducker on the synth channel
+- [ ] app: synth panel and FX rack groups for the new parameters
+- [ ] Tests per PLAN.md M8; gate green, tag m8
+
+## M9: Preset library + browser (EDM + Joji-style lofi)
+- [ ] engine: 80+ categorised presets with tags, search helpers, per-preset tests
+- [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
+- [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
+
+## Later (ideas beyond M9, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
 
 ## Final summary (M3 done, 2026-10-24)
