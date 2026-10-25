@@ -96,11 +96,15 @@ use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_io::AudioOutput;
+use crate::drag_paint::PaintStroke;
 use crate::input::{InputState, NoteEvent};
 use crate::midi::{MidiConnection, MidiInput, UI_QUEUE_CAPACITY};
 use crate::presets;
 use crate::project::ExportJob;
+use crate::qol::OCTAVE_SEMITONES;
+use crate::recent::{RECENT_KEY, RecentList};
 use crate::shortcuts::{self, Shortcut};
+use crate::tempo::{TapTempo, fmt_bpm};
 use crate::undo::{Snapshot, UndoStack};
 use crate::window;
 
@@ -169,14 +173,18 @@ pub const CONTINUOUS_EDIT_GAP: Duration = Duration::from_millis(300);
 pub enum PendingAction {
     New,
     Open,
+    /// A RECENT entry (QOL): the path waits in [`AppState::pending_recent`].
+    OpenRecent,
 }
 
-/// Which panel the right-hand column shows (M5): the PROJECT panel or the SONG CHAIN panel.
-/// The column has room for one at a time; switching the play mode switches the tab too.
+/// Which panel the right-hand column shows (M5): the PROJECT panel, the RECENT projects
+/// list (QOL) or the SONG CHAIN panel. The column has room for one at a time; switching the
+/// play mode switches the tab too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RightTab {
     #[default]
     Project,
+    Recent,
     Chain,
 }
 
@@ -459,6 +467,18 @@ pub struct AppState {
     pub midi_note_on_count: u64,
     /// MIDI note-offs applied through [`AppState::poll_midi`] (diagnostics).
     pub midi_note_off_count: u64,
+
+    // ---- QOL pass (see `crate::qol`) ----
+    /// Tap-tempo taps.
+    pub tap: TapTempo,
+    /// The running drag-paint stroke over the sequencer, if a button is down on a cell.
+    pub paint: Option<PaintStroke>,
+    /// The last eight project files opened or saved (persisted under [`RECENT_KEY`]).
+    pub recent: RecentList,
+    /// When Escape was last pressed (a second press within `ESCAPE_DOUBLE_TAP` is the panic).
+    pub last_escape: Option<Instant>,
+    /// The RECENT entry waiting for the DISCARD / KEEP confirm ([`PendingAction::OpenRecent`]).
+    pub pending_recent: Option<PathBuf>,
 }
 
 /// Where a note event came from, which decides whether the UI path tells the engine.
@@ -542,6 +562,11 @@ impl AppState {
             midi_failed_port: None,
             midi_note_on_count: 0,
             midi_note_off_count: 0,
+            tap: TapTempo::new(),
+            paint: None,
+            recent: RecentList::new(),
+            last_escape: None,
+            pending_recent: None,
         }
     }
 
@@ -1610,29 +1635,48 @@ impl AppState {
 
     /// Reads this frame's egui events and plays the computer keyboard. While a text edit has
     /// focus the keys type instead of play; anything still held is released so no note sticks.
-    /// With a bass step selected, Delete / Backspace clear it and Escape deselects it; Escape
-    /// also cancels a pending DISCARD / KEEP confirm.
+    /// With a bass step selected, Delete / Backspace clear it, Up / Down move its note by a
+    /// semitone and PageUp / PageDown by an octave (the keys are consumed). Escape goes
+    /// through [`AppState::escape`] (deselect, test tone off, cancel a pending DISCARD / KEEP;
+    /// twice quickly = panic). Home while playing rewinds to step 0 when no widget has
+    /// keyboard focus (a focused knob keeps Home as its reset).
     pub fn handle_keyboard(&mut self, ctx: &egui::Context) {
         let events = if ctx.text_edit_focused() {
             self.input.release_all()
         } else {
             let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-            if escape && self.pending_action.is_some() {
-                self.cancel_pending();
+            if escape {
+                self.escape();
             }
-            if self.selected_step.is_some() {
+            if self.selected_step.is_some() && self.lane_view == LaneView::Grid {
                 let clear = ctx.input(|i| {
                     i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
                 });
                 if clear {
                     self.clear_selected_step();
                 }
-                if escape {
-                    self.selected_step = None;
+                let semitones = ctx.input_mut(|i| {
+                    let mut st = 0;
+                    for (key, delta) in [
+                        (egui::Key::ArrowUp, 1),
+                        (egui::Key::ArrowDown, -1),
+                        (egui::Key::PageUp, OCTAVE_SEMITONES),
+                        (egui::Key::PageDown, -OCTAVE_SEMITONES),
+                    ] {
+                        st += delta * i.count_and_consume_key(egui::Modifiers::NONE, key) as i32;
+                    }
+                    st
+                });
+                if semitones != 0 {
+                    self.nudge_selected_note(semitones);
                 }
             }
-            if escape && self.roll_selected.is_some() {
-                self.roll_selected = None;
+            let nothing_focused = ctx.memory(|m| m.focused().is_none());
+            if nothing_focused
+                && self.playing
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Home))
+            {
+                self.rewind();
             }
             ctx.input(|i| self.input.handle_events(&i.events))
         };
@@ -1981,9 +2025,13 @@ impl BeatSlopperApp {
         let roll_low_pitch: Option<u8> = cc
             .storage
             .and_then(|s| eframe::get_value::<u8>(s, ROLL_LOW_PITCH_KEY));
+        let recent: Option<RecentList> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<RecentList>(s, RECENT_KEY));
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
+        state.recent = recent.unwrap_or_default();
         state.right_panel = right_panel.unwrap_or_default();
         state.set_lane_view(lane_view.unwrap_or_default());
         state.set_roll_low_pitch(roll_low_pitch.unwrap_or(DEFAULT_ROLL_LOW_PITCH));
@@ -2157,13 +2205,23 @@ impl BeatSlopperApp {
             Shortcut::New => {
                 state.request_new();
             }
+            Shortcut::OpenRecent => {
+                state.cycle_recent();
+            }
+            Shortcut::BpmUp => state.nudge_bpm(1),
+            Shortcut::BpmDown => state.nudge_bpm(-1),
         }
     }
 
-    /// Sends the window title when it changed: the project file name and a trailing ` *`
-    /// while there are unsaved changes.
+    /// Sends the window title when it changed: the project file name, a trailing ` *` while
+    /// there are unsaved changes, then the tempo and the edit pattern (QOL).
     fn sync_title(&mut self, ctx: &egui::Context) {
-        let title = window::window_title(self.state.project_path.as_deref(), self.state.dirty);
+        let title = window::window_title_full(
+            self.state.project_path.as_deref(),
+            self.state.dirty,
+            &fmt_bpm(self.state.bpm),
+            self.state.current_letter(),
+        );
         if self.title.as_deref() != Some(title.as_str()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = Some(title);
@@ -2227,6 +2285,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
         eframe::set_value(storage, LANE_VIEW_KEY, &self.state.lane_view);
         eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
+        eframe::set_value(storage, RECENT_KEY, &self.state.recent);
     }
 
     fn persist_egui_memory(&self) -> bool {

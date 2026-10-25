@@ -321,7 +321,8 @@ pub fn group_head<R>(
     .inner
 }
 
-/// Items of the right-hand column's tab selector, in [`RightTab`] order.
+/// Items of the right-hand column's tab selector: the PROJECT and SONG CHAIN panels (the
+/// RECENT panel is a sub-view of PROJECT, reached from its RECENT pill, with a BACK pill).
 pub const RIGHT_TABS: [&str; 2] = ["Project", "Chain"];
 
 /// The head row shared by the PROJECT and SONG CHAIN panels: the title on the left and the
@@ -333,7 +334,7 @@ pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str)
         neu::title(ui, theme, title);
         right_aligned(ui, "right_column_tabs", |ui| {
             let before = match state.right_tab {
-                RightTab::Project => 0,
+                RightTab::Project | RightTab::Recent => 0,
                 RightTab::Chain => 1,
             };
             let mut selected = before;

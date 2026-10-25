@@ -20,9 +20,11 @@ pub mod fx_rack;
 pub mod keyboard;
 pub mod mixer;
 pub mod project_bar;
+pub mod recent_panel;
 pub mod sequencer;
 pub mod song;
 pub mod synth_panel;
+pub mod tempo;
 pub mod transport_bar;
 
 /// Width of the right-hand column (PROJECT / SONG CHAIN panel) including its padding: wide
@@ -117,6 +119,7 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                     Layout::top_down(Align::Min),
                     |ui| match state.right_tab {
                         RightTab::Project => project_bar::show(ui, state, theme),
+                        RightTab::Recent => recent_panel::show(ui, state, theme),
                         RightTab::Chain => song::show(ui, state, theme),
                     },
                 );

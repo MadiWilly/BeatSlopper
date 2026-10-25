@@ -40,6 +40,8 @@ const NAME_CHARS: usize = 24;
 pub const UNSAVED_LABEL: &str = "Unsaved changes";
 /// The inline confirm's question.
 pub const DISCARD_QUESTION: &str = "Discard unsaved changes?";
+/// Label of the pill that shows the RECENT projects panel (QOL).
+pub const RECENT_LABEL: &str = "Recent";
 
 /// Renders the PROJECT panel into `ui`, filling the space it is given.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
@@ -91,7 +93,7 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// NEW | OPEN over SAVE | SAVE AS.
+/// NEW | OPEN | RECENT over SAVE | SAVE AS.
 fn file_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = PILL_GAP;
@@ -102,10 +104,23 @@ fn file_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             state.request_new();
         }
         if neu::button(ui, theme, "Open")
-            .on_hover_text(Shortcut::Open.label())
+            .on_hover_text(format!(
+                "{} · {}: next recent project",
+                Shortcut::Open.label(),
+                Shortcut::OpenRecent.label()
+            ))
             .clicked()
         {
             request_open(state);
+        }
+        if neu::button(ui, theme, RECENT_LABEL)
+            .on_hover_text(format!(
+                "The last eight projects · {} opens the next one",
+                Shortcut::OpenRecent.label()
+            ))
+            .clicked()
+        {
+            state.right_tab = crate::app::RightTab::Recent;
         }
     });
     ui.add_space(GROUP_GAP);

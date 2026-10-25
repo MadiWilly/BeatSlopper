@@ -1,4 +1,4 @@
-//! Transport bar: wordmark, Play / Stop / Record, BPM stepper, SWING knob, the MASTER dial,
+//! Transport bar: wordmark, Play / Stop / Record, BPM group, SWING knob, the MASTER dial,
 //! the MODE selector with the position read-out, the test-tone toggle and the theme toggle.
 //!
 //! Layout follows `design/preview-a.html` `<header class="transport">`: brand on the left
@@ -27,7 +27,7 @@ use neu::button::ICON_STROKE;
 use neu::shadow::Depth;
 use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, EditKey, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
+use crate::app::{AppState, EditKey, MAX_SWING, MIN_SWING, truncate_name};
 use crate::shortcuts::Shortcut;
 use crate::ui::controls::{Knob, fmt_percent};
 
@@ -104,7 +104,7 @@ fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
         ui.spacing_mut().item_spacing.y = theme.space_1;
         neu::brand(ui, theme, "BeatSlopper");
         match audio_error {
-            None => label(ui, theme, "M5 · SOFT CONSOLE"),
+            None => label(ui, theme, "SOFT CONSOLE"),
             Some(err) if err.contains("stream error") => label(ui, theme, "AUDIO STREAM ERROR"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };
@@ -177,13 +177,9 @@ fn transport_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// The BPM stepper (whole BPM, 60..=200).
+/// The BPM group (QOL: typed entry, one decimal, TAP; see `crate::ui::tempo`).
 fn bpm_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let mut bpm = state.bpm.round() as i32;
-    let range = MIN_BPM as i32..=MAX_BPM as i32;
-    if neu::stepper(ui, theme, "BPM", &mut bpm, range).changed() {
-        state.set_bpm(bpm as f32);
-    }
+    crate::ui::tempo::bpm_group(ui, state, theme);
 }
 
 /// The SWING small knob, 0..=75 % of a step.
