@@ -802,6 +802,14 @@ impl Reverb {
         self.high_cut.reset();
     }
 
+    /// Snaps the pre-delay and width smoothers to their targets without touching the delay
+    /// lines or the tail (project load: the room is replaced as a whole, so nothing should
+    /// glide there from the previous room, least of all an offline render's first hit).
+    pub fn snap(&mut self) {
+        self.pre_delay.snap(self.pre_delay.target());
+        self.width.snap(self.width.target());
+    }
+
     /// Writes `input` into the pre-delay line and returns the sample `delay` samples back
     /// (linear interpolation; `0.0` returns `input` itself).
     #[inline]
