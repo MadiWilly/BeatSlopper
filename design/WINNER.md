@@ -155,3 +155,5 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
 - Mixer: the MASTER column is pinned at the panel's right edge; the strips scroll under it.
 - Synth panel: the first row's column gap compresses down to 4 (not 8) so the LFO column
   stays inside the panel at 1280 after the 12 pt A D S R gap.
+
+> **Superseded 2026-10-25:** the user dropped this design. The new source of truth is `design/round3/WINNER.md` (direction B "Deck", from `design/round3/preview-b.html`). This file stays as history for the neumorphic era (m0..m11).
