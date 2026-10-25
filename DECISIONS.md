@@ -381,3 +381,21 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
 - SYNTH panel column gap minimum 8 -> 4 (the scale's step): the design cleanup's 12 pt
   A D S R gap had made the first row 5.3 pt wider than the panel at 1280, which the top row
   tests only bounded with `<=`; they assert equality now.
+
+## 2026-10-25: M11 engine (FL-style mixer inserts) as built
+- Migration from v7 and older MOVES each strip onto its insert (level, pan, mute, solo,
+  sends; strip i -> insert i+1, source routed one-to-one, slots off, EQ flat, route master)
+  and resets the strip to neutral, rather than copying: copying would double level, pan and
+  sends. The pre-M11 render is pinned bit-identical (`tests/fixtures/v7_demo.json`).
+- Default sends now live on the inserts (2 / 3 reverb 0.3, 6..13 delay and reverb 1.0); the
+  per-source strips default neutral and keep working as FL's channel-rack level / pan plus a
+  legacy pre-insert send. The UI exposes the insert sends.
+- Insert numbers are 1-based; `0` means master as a route and wraps to 16 as an address
+  (like `track_index` and `pattern_index`), so a bad message never panics. A route may only
+  point to MASTER or a higher-numbered insert (feedback impossible by construction).
+- Choosing a slot kind resets its params to that kind's defaults and restarts the effect
+  (hard cut, like loading a plugin). Drive is one instance for both channels; lo-fi and
+  chorus run L / R instances.
+- Compressor: instant-attack / exponential-release peak detector with the attack applied to
+  the gain reduction, so a -3 dBFS sine over a -18 dB threshold at 4:1 lands at -14.25 dBFS.
+- Insert solo and source solo are independent layers; mute beats solo on each.
