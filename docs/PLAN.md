@@ -469,3 +469,53 @@ blocked.
   effect, rename an insert, route a track, meters show.
 - **Done =** route kick, snare and clap to one DRUMS insert, compress it, and mute it with one
   button; put the keys track through a chorus slot; everything saves and exports.
+
+---
+
+# Phase 5 brief (added 2026-10-25): UI overhaul (new look, new layout)
+
+The user, looking at the app on their 3840x2160 display at 150 % scaling: "a full menu redesign
+will need to happen. the menus are smashed together, hard to read, and scrollbars are hidden.
+drop the design plan entirely and overhaul the app with a new fresh look that fixes the menus
+buttons and overall ease of use." They chose: three previews first, then a pick; and a
+re-layout, not only a restyle.
+
+What the orchestrator saw (PrintWindow capture of the m9 release build, 2026-10-25): the page
+is laid out for 1280 logical points, which is 1920 physical pixels at 150 %, but the window
+opened at 1280 physical pixels (853 logical), so the FX rack and the right third of the
+sequencer are cut off and nothing scrolls; the neumorphic shadows cost contrast; every panel
+is on screen at once, so nothing has room. `design/WINNER.md` ("Soft Console") is retired as
+the target; it stays in the repo as history.
+
+## Process
+1. **Previews (no Rust):** three directions as self-contained HTML mock-ups in
+   `design/round3/preview-{a,b,c}.html` plus `design/round3/index.html`, each with a token
+   sheet comment at the top (colours light + dark, type scale, spacing, radii, control sizes,
+   component states) and the REAL screens: main view (transport, tracks list, pattern grid),
+   piano roll with ghost notes, mixer with inserts and slots, preset browser, synth + FX
+   editing, and a narrow state showing how the layout adapts at about 850 logical points
+   wide (the 150 % case) without cutting anything off. The orchestrator stops the loop and
+   asks the user to pick. The pick is recorded in `design/round3/WINNER.md` (the new token
+   source of truth); the old WINNER.md gets a one-line pointer.
+2. **Overhaul (Rust):** restyle `crates/neu` to the new tokens (flat or lightly elevated
+   surfaces, 1 px borders or tonal layers, no paired shadows) and re-layout `crates/app`:
+   a top bar (transport + global), a persistent left TRACKS sidebar (collapsible), a main
+   area with a tab strip (PATTERN grid | PIANO ROLL | MIXER | SYNTH & FX | SONG) so one view
+   has the whole width, an optional right inspector for the selected track's synth + inserts,
+   the keyboard as a collapsible bottom strip; every scrollable area shows its scrollbar;
+   resizable splits persisted; hit targets at least 28 pt; one accent plus per-track colours;
+   a consistent button system (primary / secondary / toggle / icon) and one menu style;
+   readable type (13 pt body, 11 pt labels minimum); tooltips and keyboard hints kept.
+   Windowing: the default inner size is chosen from the monitor's work area and scale
+   factor so the layout fits (never a fixed 1280 x 1140); the minimum logical size is about
+   840 x 600 and the layout still works there.
+3. Tests: every kittest layout assertion is rewritten for the new layout (no hidden overflow
+   at 840 x 600, 1280 x 800 and 1920 x 1080 logical; scrollbars present where content
+   exceeds the area); the whole-app behaviour tests stay green; the real window is captured
+   with PrintWindow at the end of each view's milestone (see the orchestrator memory) and the
+   captures are committed under `design/round3/captures/` so the user can review without
+   building.
+4. Milestones: **M12** tokens + neu restyle + window sizing + top bar + sidebar + tab strip
+   with the PATTERN view; **M13** PIANO ROLL, MIXER and SYNTH & FX views; **M14** SONG view,
+   preset browser, plugin windows, keyboard strip, polish pass, captures, tag. Same gate,
+   auto-fix policy and state files. Stop the loop when M14 is done and green.
