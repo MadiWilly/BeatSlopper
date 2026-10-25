@@ -407,7 +407,6 @@ fn v4_json() -> String {
 fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     let p = Project::from_json(&v4_json()).expect("v4 file loads");
     assert_eq!(p.version, FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 5);
     assert_eq!(p.bpm, 110.0);
     let a = &p.bank.patterns[0];
     assert_eq!(
@@ -435,7 +434,8 @@ fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     assert!(p.bank.patterns[1..].iter().all(Pattern::is_empty));
 
     let v5 = p.to_json_pretty();
-    assert!(v5.starts_with("{\n  \"version\": 5,"));
+    let head = format!("{{\n  \"version\": {FORMAT_VERSION},");
+    assert!(v5.starts_with(&head));
     assert!(!v5.contains("\"synth\""));
     assert!(v5.contains("\"notes\": ["));
     assert!(v5.contains("\"pitch\": 48"));

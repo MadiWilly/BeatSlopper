@@ -82,6 +82,9 @@ pub struct FxChain {
     reverb_damping: Smoother,
     reverb_mix: Smoother,
     delay_seconds: f32,
+    /// The reverb return of the last `process_bus` frame (post return level), for the
+    /// plugins' wet-level meter.
+    last_reverb_wet: (f32, f32),
 }
 
 impl FxChain {
@@ -116,6 +119,7 @@ impl FxChain {
             reverb_damping: smoother(ParamId::ReverbDamping),
             reverb_mix: smoother(ParamId::ReverbMix),
             delay_seconds: 0.0,
+            last_reverb_wet: (0.0, 0.0),
         };
         chain.update_delay_time();
         chain.reset();
@@ -246,6 +250,26 @@ impl FxChain {
         &self.drive
     }
 
+    /// The reverb (plugins milestone hook): pre-delay, width and the wet filters are set
+    /// directly on it by the engine; size, damping and mix keep going through
+    /// [`set_param`](Self::set_param).
+    #[must_use]
+    pub fn reverb(&self) -> &Reverb {
+        &self.reverb
+    }
+
+    /// The reverb, mutably (see [`reverb`](Self::reverb)).
+    pub fn reverb_mut(&mut self) -> &mut Reverb {
+        &mut self.reverb
+    }
+
+    /// The reverb return `(left, right)` of the last [`process_bus`](Self::process_bus)
+    /// frame, after the return level (the plugins' wet-level meter reads its block peak).
+    #[must_use]
+    pub fn last_reverb_wet(&self) -> (f32, f32) {
+        self.last_reverb_wet
+    }
+
     /// Processes one stereo frame through drive, delay and reverb in series, each with its
     /// dry/wet mix (the M2 insert topology). Non-finite inputs are treated as `0.0`; the
     /// output is always finite.
@@ -286,6 +310,7 @@ impl FxChain {
         let (rl, rr) = self.reverb.process(clean(reverb_in.0), clean(reverb_in.1));
         let delay_level = self.delay_mix.current();
         let reverb_level = self.reverb_mix.current();
+        self.last_reverb_wet = (rl * reverb_level, rr * reverb_level);
         (
             clean(dry.0) + dl * delay_level + rl * reverb_level,
             clean(dry.1) + dr * delay_level + rr * reverb_level,

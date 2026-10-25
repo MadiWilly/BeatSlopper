@@ -9,7 +9,7 @@
 //!
 //! ```json
 //! {
-//!   "version": 5,
+//!   "version": 6,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
@@ -61,6 +61,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::Engine;
+use crate::fx::{EqState, ReverbState};
 use crate::mixer::MixerState;
 use crate::params::ParamId;
 use crate::pattern::{Bank, Pattern};
@@ -78,7 +79,10 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 /// - 4: adds `mixer` (six strips: level, pan, mute, solo, delay/reverb sends).
 /// - 5: each pattern's `synth` lane becomes a polyphonic `notes` list (start, length, pitch,
 ///   velocity); the lane is derived on load.
-pub const FORMAT_VERSION: u32 = 5;
+/// - 6: adds `eq` (the master parametric EQ, [`EqState`]) and `reverb` (every reverb value,
+///   [`ReverbState`]); both `#[serde(default)]`, so a version-5 file loads flat with the
+///   reverb built from its `reverb_size` / `reverb_damping` / `reverb_mix` params.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -106,6 +110,14 @@ pub struct Project {
     /// Mixer strips (M6). Absent in version-3 files, which load with the defaults.
     #[serde(default)]
     pub mixer: MixerState,
+    /// Master parametric EQ (plugins milestone, version 6). Absent in older files: flat.
+    #[serde(default)]
+    pub eq: EqState,
+    /// Every reverb value (plugins milestone, version 6). Absent in older files: built from
+    /// the `reverb_*` params on load. Size / damping / mix here are authoritative and are
+    /// copied into `params` on load so both views agree.
+    #[serde(default)]
+    pub reverb: ReverbState,
     /// Index of the selected built-in preset.
     pub preset_index: usize,
     /// Keyboard octave (the `Z`/`X` shift).
@@ -125,6 +137,8 @@ impl Default for Project {
             bank: Bank::default(),
             params: default_params(),
             mixer: MixerState::default(),
+            eq: EqState::default(),
+            reverb: ReverbState::default(),
             preset_index: 0,
             octave: DEFAULT_OCTAVE,
             velocity: DEFAULT_VELOCITY,
@@ -156,6 +170,8 @@ impl Project {
             bank: engine.bank().clone(),
             params,
             mixer: *engine.mixer(),
+            eq: *engine.eq(),
+            reverb: *engine.reverb(),
             preset_index,
             octave,
             velocity,
@@ -184,7 +200,18 @@ impl Project {
             engine.set_param(id, self.param(id));
         }
         engine.set_mixer_state(&self.mixer);
+        // After the params: the reverb state's size / damping / mix are authoritative.
+        engine.set_reverb_state(&self.reverb);
+        engine.set_eq_state(&self.eq);
         engine.set_bank(&self.bank);
+    }
+
+    /// Copies the reverb state's size / damping / mix into the matching `params` entries (the
+    /// state is the source of truth; the `ParamId` view must agree).
+    pub fn sync_reverb_params(&mut self) {
+        self.set_param(ParamId::ReverbSize, self.reverb.size);
+        self.set_param(ParamId::ReverbDamping, self.reverb.damping);
+        self.set_param(ParamId::ReverbMix, self.reverb.mix);
     }
 
     /// The selected (`current`) pattern of the bank: what the grid edits and pattern mode
@@ -254,6 +281,9 @@ impl Project {
             _ => None,
         };
 
+        // Versions before 6 had no `reverb`: build it from the reverb params.
+        let has_reverb = value.get("reverb").is_some();
+
         let mut project: Project = serde_json::from_value(value)?;
         project.version = FORMAT_VERSION;
         project.normalize_params();
@@ -265,6 +295,15 @@ impl Project {
         }
         project.bank.normalise();
         project.mixer.normalise();
+        project.eq.normalise();
+        project.reverb.normalise();
+        if !has_reverb {
+            project.reverb.size = project.param(ParamId::ReverbSize);
+            project.reverb.damping = project.param(ParamId::ReverbDamping);
+            project.reverb.mix = project.param(ParamId::ReverbMix);
+            project.reverb.normalise();
+        }
+        project.sync_reverb_params();
         Ok(project)
     }
 
@@ -378,7 +417,8 @@ mod tests {
     #[test]
     fn json_is_pretty_and_sorted() {
         let text = Project::default().to_json_pretty();
-        assert!(text.starts_with("{\n  \"version\": 5,"));
+        let head = format!("{{\n  \"version\": {FORMAT_VERSION},");
+        assert!(text.starts_with(&head));
         assert!(text.ends_with("}\n"));
         let amp = text.find("\"amp_attack\"").unwrap();
         let osc = text.find("\"osc1_wave\"").unwrap();
@@ -445,11 +485,12 @@ mod tests {
 
     #[test]
     fn newer_version_is_refused_and_garbage_is_a_json_error() {
-        let err = Project::from_json(r#"{ "version": 6 }"#).unwrap_err();
+        let err =
+            Project::from_json(&format!(r#"{{ "version": {} }}"#, FORMAT_VERSION + 1)).unwrap_err();
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 6,
+                found: 7,
                 supported: FORMAT_VERSION
             }
         ));

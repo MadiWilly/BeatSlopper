@@ -704,8 +704,8 @@ mod tests {
         assert_eq!(notes.len(), 4);
 
         let project = state.build_project();
-        assert_eq!(project.version, 5);
-        assert_eq!(engine::project::FORMAT_VERSION, 5);
+        assert_eq!(project.version, engine::project::FORMAT_VERSION);
+
         let json = project.to_json_pretty();
         assert!(json.contains("\"notes\""));
         assert_eq!(Project::from_json(&json).unwrap(), project);
@@ -737,7 +737,7 @@ mod tests {
                 { "note": 43, "accent": true } ] } ] }
         }"#;
         let old = Project::from_json(v4_text).unwrap();
-        assert_eq!(old.version, 5);
+        assert_eq!(old.version, engine::project::FORMAT_VERSION);
         loaded.apply_project(&old);
         assert_eq!(loaded.bpm, 110.0);
         assert_eq!(
