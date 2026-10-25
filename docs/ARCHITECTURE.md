@@ -190,3 +190,103 @@ position in the engine's `params` array.
 - `ui/fx_rack.rs` (right, 476 px): Drive (amount, mix), Reverb (size, damping, mix), Delay
   (time `segmented`, feedback, mix), Master (gain knob, limiter `toggle_button` + `lamp`).
 - The transport bar's master control becomes a `dial` Lg bound to `MasterGain`.
+
+### M2 as built (engine additions beyond the plan)
+`ParamId::is_synth()`, `Engine::synth_params()`, `Engine::limiter_on()`, `Engine::fx()`,
+`Engine::delay_samples()`, `Preset::value(id)`, `Wave::from_param`, `LfoTarget::from_param`.
+Glide is the time to cover 95 % of a pitch jump. The test tone is summed in after the FX chain.
+
+## M3 additions (first beat: transport, drums, sequencer, save/load, export)
+
+### engine: pattern (`pattern.rs`, plain data, serde)
+- `STEPS = 16`. `DrumRow { Kick, Snare, Clap, ClosedHat, OpenHat }` (exists in `drums`).
+- `DrumStep { on: bool, accent: bool }`, `SynthStep { note: Option<u8>, accent: bool }`.
+- `Pattern { drums: [[DrumStep; 16]; 5], synth: [SynthStep; 16], drum_volume: [f32; 5] (dB,
+  -24..=6, default 0), drum_tune: [f32; 5] (semitones, -12..=12, default 0) }` with
+  `Default`, `clear_row(row)`, `clear_synth()`, `clear_all()`, `is_empty()`, plus a
+  `Pattern::demo()` (the mock's kick/snare/clap/hat pattern and a C2 bassline).
+- Velocity: a normal step plays at 0.8, an accented step at 1.0.
+
+### engine: transport and scheduler (`transport.rs`, `engine.rs`)
+- `Transport { bpm (60..=200), swing (0..=0.75), playing }` exists; add the scheduler: a
+  sample counter within the 16-step bar; step `n` starts at `n * samples_per_step` where
+  `samples_per_step = sr * 60 / bpm / 4` (6000 at 120 BPM / 48 kHz, kept as f64 so the bar
+  length is exact); swing delays every odd step by `swing * samples_per_step * 0.5`... exact
+  definition: odd steps (1, 3, 5, ...) trigger at `(n + swing) * samples_per_step` with
+  `swing` in 0..=0.75 (0.5 = classic triplet feel). Triggers are sample-accurate inside
+  `render`: the loop checks, per sample, whether any step boundary falls on this sample and
+  fires drum triggers / synth note on/off at that sample. Synth lane notes last one step
+  (gate 90 % of a step, so repeated notes retrigger), with a `NoteOff` at the gate end.
+- `Message` gains `Play`, `Stop` (also releases sequencer notes, resets position to 0),
+  `SetSwing(f32)`, `SetDrumStep { row: DrumRow, step: u8, on: bool, accent: bool }`,
+  `SetSynthStep { step: u8, note: Option<u8>, accent: bool }`, `ClearRow(DrumRow)`,
+  `ClearSynth`, `ClearAll`, `SetDrumVolume { row, db }`, `SetDrumTune { row, semitones }`.
+  Everything stays `Copy`. Whole-pattern loads (project load) go through
+  `Engine::set_pattern(&Pattern)` directly before the stream starts, or as a burst of step
+  messages from the UI (16 * 6 messages fit the 1024 queue).
+- Playhead feedback to the UI without locks: `EngineHandle::position() -> Position { step:
+  u8, frac: f32, playing: bool }` read from atomics (`AtomicU32` step + `AtomicU32` for the
+  sample offset within the bar, `AtomicBool` playing) that `render` updates once per block;
+  `EngineHandle` and `Engine` share them through an `Arc` created in `new_engine` (allocation
+  happens there, never in `render`).
+- Direct API mirrors the messages: `Engine::play()`, `stop()`, `set_swing()`, `set_pattern()`,
+  `pattern() -> &Pattern`, `transport() -> &Transport`, `set_drum_step(..)`, `set_synth_step(..)`.
+- Drums go through the FX chain together with the synth (one mono bus), per the mock.
+
+### engine: drums (`drums/`)
+- `DrumKit::new(sample_rate)`: five procedural voices, pre-allocated, `trigger(row, velocity)`
+  (retrigger restarts the voice), `set_volume(row, db)`, `set_tune(row, semitones)`,
+  `tick() -> f32` (mono sum), `is_active()`, `reset()`.
+- Kick: sine with a fast exponential pitch sweep (about 150 Hz -> 50 Hz over 60 ms) plus a
+  short click (noise burst 2 ms), amp decay about 350 ms. Snare: 180 Hz tone with decay 120
+  ms plus band-passed noise decay 180 ms. Clap: 3-4 short noise bursts 10 ms apart through a
+  band-pass, then a 150 ms tail. Closed hat: high-passed (6 kHz) metallic noise (sum of a few
+  square oscillators or white noise), decay 60 ms. Open hat: same, decay 400 ms; triggering
+  the closed hat chokes the open hat. Tune shifts the tonal parts by semitones (and the noise
+  filter centre proportionally). Peak per drum about -6 dBFS at velocity 1.
+- Noise source: a tiny xorshift PRNG inside the kit (no `rand` dependency).
+
+### engine: project and export (`project.rs`, `export.rs`)
+- `Project { version: u32 (1), bpm, swing, pattern: Pattern, params: Vec<(String, f32)>
+  (ParamId label-independent names: use `ParamId::key()` -> `"osc1_wave"` style snake_case
+  strings; unknown keys are ignored on load, missing ones take defaults), preset_index: usize,
+  octave: i32, velocity: f32 }`. `Project::from_engine(&Engine, preset_index, octave,
+  velocity)`, `apply_to(&mut Engine)`, `to_json_pretty()`, `from_json(&str)`,
+  `save(path)`, `load(path)`; file extension `.beatslopper.json`. Round trip must be lossless.
+- `export::render_loop_wav(project: &Project, repeats: u32 (1/2/4/8), sample_rate: f32,
+  path) -> Result<ExportStats, ExportError>`: builds a fresh offline `Engine`, applies the
+  project, plays exactly `repeats` bars (bar length = 16 * samples_per_step, rounded), renders
+  in 512-frame blocks, then renders a 2 s tail with the transport stopped so delay/reverb
+  decay, writes 16-bit stereo WAV with `hound`; `ExportStats { frames, peak, duration_seconds }`.
+  A `render_loop(project, repeats, sr) -> Vec<f32>` helper does the same into memory for tests.
+
+### neu: M3 widgets
+- `step_cell(ui, &Theme, &StepCellSpec) -> Response`: 32 pt circle. `StepCellSpec { on,
+  accent, current: bool (playhead column), label: Option<&str> (bass note name, 11/500), beat_start:
+  bool }`. Off = raised-s surface; on = OnGlow accent (accent-hover fill when `accent` with a
+  6 pt on-accent dot like the mock); `current` draws the playhead treatment (off: inset-s;
+  on: accent-hover). Click toggles (the caller mutates). Shift-click reported via
+  `response.clicked()` + `ui.input(|i| i.modifiers.shift)`.
+- `playhead_dot(ui, &Theme, current: bool)`: 6 pt idle dot / 8 pt OnGlow dot (row under the
+  grid in the mock). Also `beat_number` text via `neu::label`.
+
+### app: M3
+- Transport bar: Play / Stop / Record icon buttons (48), BPM `stepper` 60..=200 (bound to
+  `SetBpm`), SWING knob Sm (0..=75 %), MASTER dial, theme toggle. Play toggles `Play/Stop`.
+- `ui/sequencer.rs`: a "SEQUENCER" panel: for each drum row a label (caps), a Sm VOL knob
+  (dB) and TUNE knob (st), 16 `step_cell`s in groups of 4 with beat numbers 1-4 above the
+  first row and the playhead dots under the grid, a CLEAR pill per row and CLEAR ALL top-right.
+  The BASS lane shows note names; click selects the step (highlight ring) and the next key
+  pressed (computer or on-screen piano) sets its note; shift-click cycles accent; a selected
+  step plus Delete/Backspace clears it.
+- Record-arm overdub: while playing and armed, each NoteOn is quantised to the nearest step
+  using `EngineHandle::position()` (step + frac, rounding frac >= 0.5 to the next step, wrapping
+  at 16) and written to the synth lane as a `SetSynthStep` (accent if velocity >= 0.95).
+- `AppState` keeps a `Pattern` mirror (source of truth for the UI) and sends step messages on
+  edits. Playhead comes from `position()` each frame while playing (request_repaint).
+- Save / Load / Export: pill buttons in the transport or a small "PROJECT" group: Save As and
+  Open use the `rfd` crate (MIT) file dialogs with the `.beatslopper.json` filter; Export opens
+  a save dialog for `.wav` after a `segmented` 1|2|4|8 repeats choice; export runs on a worker
+  thread (`std::thread`) with a "Exporting..." lamp, never on the UI or audio thread. Errors
+  show as a short status line in the panel (no modal).
+- Persisted: last project path, repeats choice.

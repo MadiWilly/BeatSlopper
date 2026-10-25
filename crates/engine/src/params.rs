@@ -137,6 +137,32 @@ impl ParamId {
         )
     }
 
+    /// `true` for the synth-voice parameters (oscillators, filter, amp envelope, LFO, glide):
+    /// everything the [`VoicePool`](crate::voice::VoicePool) consumes.
+    #[must_use]
+    pub const fn is_synth(self) -> bool {
+        matches!(
+            self,
+            ParamId::Osc1Wave
+                | ParamId::Osc1Detune
+                | ParamId::Osc1Mix
+                | ParamId::Osc2Wave
+                | ParamId::Osc2Detune
+                | ParamId::Osc2Mix
+                | ParamId::FilterCutoff
+                | ParamId::FilterResonance
+                | ParamId::FilterEnvAmount
+                | ParamId::AmpAttack
+                | ParamId::AmpDecay
+                | ParamId::AmpSustain
+                | ParamId::AmpRelease
+                | ParamId::LfoRate
+                | ParamId::LfoDepth
+                | ParamId::LfoTarget
+                | ParamId::Glide
+        )
+    }
+
     /// `true` for parameters that are an index into a fixed list (waveform, LFO target, delay
     /// division, limiter switch) and should be shown as a segmented control.
     #[must_use]
@@ -609,6 +635,11 @@ mod tests {
         }
         assert_eq!(ParamId::COUNT, 27);
         assert!(ParamId::DelayMix.is_fx() && !ParamId::FilterCutoff.is_fx());
+        assert!(ParamId::FilterCutoff.is_synth() && !ParamId::DelayMix.is_synth());
+        assert!(!ParamId::MasterGain.is_synth() && !ParamId::LimiterOn.is_synth());
+        for id in ParamId::ALL {
+            assert!(!(id.is_synth() && id.is_fx()), "{id:?}");
+        }
         assert!(ParamId::Osc1Wave.is_discrete() && !ParamId::Osc1Mix.is_discrete());
         assert_eq!(ParamId::AmpAttack.default_value(), 0.01);
         assert_eq!(ParamId::AmpDecay.default_value(), 0.2);

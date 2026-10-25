@@ -1,8 +1,20 @@
 //! Synthesizer building blocks.
 //!
-//! M2 adds band-limited oscillators (PolyBLEP saw/square/triangle), the SVF filter and the
-//! LFO as sibling modules (the amp ADSR lives in [`crate::params::Adsr`]). M0/M1 provide the
-//! plain [`SineOsc`] used by the engine's test tone and the M1 voices, plus [`note_to_hz`].
+//! - [`Oscillator`] / [`Wave`]: PolyBLEP band-limited saw and square, integrated triangle,
+//!   plain sine ([`oscillator`]).
+//! - [`Svf`]: TPT state-variable lowpass with cutoff and resonance ([`svf`]).
+//! - [`Lfo`] / [`LfoTarget`]: the sine LFO shared by all voices ([`lfo`]).
+//! - [`SineOsc`] and [`note_to_hz`]: the plain sine used by the engine's M0 test tone.
+//!
+//! The amp ADSR lives in [`crate::params::Adsr`]; the per-voice wiring is in [`crate::voice`].
+
+pub mod lfo;
+pub mod oscillator;
+pub mod svf;
+
+pub use lfo::{Lfo, LfoTarget};
+pub use oscillator::{Oscillator, Wave};
+pub use svf::Svf;
 
 use core::f64::consts::TAU;
 
@@ -11,6 +23,13 @@ use core::f64::consts::TAU;
 #[must_use]
 pub fn note_to_hz(note: f32) -> f32 {
     440.0 * 2.0_f32.powf((note - 69.0) / 12.0)
+}
+
+/// Detune in cents to a frequency ratio.
+#[inline]
+#[must_use]
+pub fn cents_to_ratio(cents: f32) -> f32 {
+    2.0_f32.powf(cents / 1200.0)
 }
 
 /// Naive sine oscillator with a drift-free phase accumulator.
@@ -75,6 +94,8 @@ mod tests {
     fn a4_is_440() {
         assert!((note_to_hz(69.0) - 440.0).abs() < 1e-3);
         assert!((note_to_hz(81.0) - 880.0).abs() < 1e-2);
+        assert!((cents_to_ratio(1200.0) - 2.0).abs() < 1e-5);
+        assert!((cents_to_ratio(0.0) - 1.0).abs() < 1e-7);
     }
 
     #[test]

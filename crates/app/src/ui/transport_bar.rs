@@ -1,30 +1,43 @@
-//! Transport bar (M0): wordmark, test-tone toggle, master gain, theme toggle.
+//! Transport bar: wordmark, test-tone toggle, the MASTER dial, theme toggle.
 //!
 //! Layout follows `design/preview-a.html` `<header class="transport">`: brand on the left
-//! (name 15/300 caps, sub-label 11 secondary), controls in groups, theme toggle flush right
-//! (sun, switch, moon). Play/stop/BPM/swing and the master dial arrive in M2/M3.
+//! (name 15/300 caps, sub-label 11 secondary), controls in groups, the large concentric dial
+//! (`neu::dial` Lg bound to `MasterGain`, shown in %), theme toggle flush right (sun, switch,
+//! moon). Play/stop/BPM/swing arrive in M3.
+//!
+//! The row is as tall as the dial. egui's horizontal layout pushes items taller than the row
+//! *down* rather than centring everything on them, so the dial's height from the previous
+//! frame sets the row height and the shorter groups centre on it.
 
 use egui::{Align, Layout, RichText, Ui};
-use neu::Theme;
+use engine::ParamId;
+use neu::{DialSize, Theme};
 
 use crate::app::AppState;
+use crate::ui::controls::{Knob, fmt_percent};
 
-/// Minimum height of the transport bar's content row.
+/// Minimum height of the transport bar's content row (the dial normally sets it).
 const ROW_HEIGHT: f32 = 48.0;
 
 /// Renders the transport bar into `ui` and applies any control changes to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::panel(ui, theme, |ui| {
-        ui.set_min_height(ROW_HEIGHT);
+        let height_id = ui.scope_id().with("transport_row_height");
+        let row_height: f32 = ui
+            .data(|d| d.get_temp(height_id))
+            .unwrap_or(ROW_HEIGHT)
+            .max(ROW_HEIGHT);
+        ui.set_min_height(row_height);
         ui.horizontal(|ui| {
-            ui.set_min_height(ROW_HEIGHT);
+            ui.set_min_height(row_height);
             ui.spacing_mut().item_spacing.x = theme.space_6;
 
             brand(ui, theme, state.audio_error.as_deref());
 
             ui.add_space(theme.space_2);
             test_tone_group(ui, state, theme);
-            master_gain_group(ui, state, theme);
+            let dial = master_dial(ui, state, theme);
+            ui.data_mut(|d| d.insert_temp(height_id, dial.rect.height()));
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 theme_group(ui, state, theme);
@@ -46,7 +59,7 @@ fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
                 .color(theme.text_primary),
         );
         match audio_error {
-            None => label(ui, theme, "M0 · SOFT CONSOLE"),
+            None => label(ui, theme, "M2 · SOFT CONSOLE"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };
     });
@@ -62,28 +75,11 @@ fn test_tone_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-fn master_gain_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = theme.space_1;
-        let master_label = label(ui, theme, "MASTER");
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = 140.0;
-            let slider = egui::Slider::new(&mut state.master_gain, 0.0..=1.0)
-                .show_value(false)
-                .trailing_fill(true);
-            if ui.add(slider).labelled_by(master_label.id).changed() {
-                state.send_master_gain();
-            }
-            ui.label(
-                RichText::new(format!(
-                    "{:>3}%",
-                    (state.master_gain * 100.0).round() as i32
-                ))
-                .size(13.0)
-                .color(theme.text_primary),
-            );
-        });
-    });
+/// The hero control: the large dial bound to `MasterGain` (label MASTER, value in %).
+fn master_dial(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> egui::Response {
+    Knob::new(ParamId::MasterGain, fmt_percent)
+        .label("Master")
+        .show_dial(ui, state, theme, DialSize::Lg)
 }
 
 fn theme_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {

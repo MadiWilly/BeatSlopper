@@ -3,8 +3,9 @@
 //!
 //! The public API below is the contract the `app` crate builds against (docs/ARCHITECTURE.md).
 //!
-//! Signal flow (M1): `voices (sum) + TestTone -> master gain (smoothed) -> Limiter ->
-//! interleaved stereo`.
+//! Signal flow (M2 synth): `voices (sum) + TestTone -> master gain (smoothed) -> Limiter
+//! (bypassable via `LimiterOn`) -> interleaved stereo`. The FX chain slots in between the
+//! voices and the master gain once it is integrated.
 //!
 //! Real-time rules: everything used by [`Engine::render`] is pre-allocated in [`new_engine`].
 //! `render` never allocates, locks, does I/O, logs or panics; it tolerates `out` buffers that
@@ -13,10 +14,10 @@
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::dsp::db_to_gain;
-use crate::fx::Limiter;
+use crate::fx::{FxChain, Limiter};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::synth::SineOsc;
-use crate::voice::VoicePool;
+use crate::voice::{SynthParams, VoicePool};
 
 /// Capacity of the UI -> audio message queue.
 pub const QUEUE_CAPACITY: usize = 1024;
@@ -140,7 +141,11 @@ pub struct Engine {
     /// Current value of every [`ParamId`] (clamped), indexed by [`ParamId::index`].
     params: [f32; ParamId::COUNT],
     master_gain: Smoother,
+    /// Drive -> delay -> reverb, between the voices and the master stage.
+    fx: FxChain,
     limiter: Limiter,
+    /// `ParamId::LimiterOn`: when `false` the limiter stage is bypassed.
+    limiter_on: bool,
     /// Tempo in BPM (60..=200), shared by the delay sync and the M3 transport.
     bpm: f32,
 }
@@ -168,7 +173,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
                 MASTER_GAIN_SMOOTH_MS,
                 ParamId::MasterGain.default_value(),
             ),
+            fx: FxChain::new(sample_rate),
             limiter: Limiter::new(),
+            limiter_on: ParamId::LimiterOn.default_value() >= 0.5,
             bpm: crate::transport::DEFAULT_BPM,
         },
     )
@@ -227,30 +234,52 @@ impl Engine {
     }
 
     /// Sets parameter `id` to `value`, clamped to [`ParamId::range`] (non-finite values
-    /// become the default). Envelope parameters re-time every voice immediately, running ones
-    /// included; the master gain is smoothed as in [`set_master_gain`](Self::set_master_gain).
+    /// become the default). Synth parameters (oscillators, filter, envelope, LFO, glide) reach
+    /// every voice immediately, running ones included; the master gain is smoothed as in
+    /// [`set_master_gain`](Self::set_master_gain); `LimiterOn` switches the limiter stage.
     pub fn set_param(&mut self, id: ParamId, value: f32) {
         let value = id.clamp(value);
         self.params[id.index()] = value;
         match id {
-            ParamId::AmpAttack | ParamId::AmpDecay | ParamId::AmpSustain | ParamId::AmpRelease => {
-                self.voices.set_adsr(
-                    self.params[ParamId::AmpAttack.index()],
-                    self.params[ParamId::AmpDecay.index()],
-                    self.params[ParamId::AmpSustain.index()],
-                    self.params[ParamId::AmpRelease.index()],
-                );
+            id if id.is_synth() => {
+                self.voices.set_param(id, value);
             }
             ParamId::MasterGain => self.set_master_gain(value),
-            // M2 synth and FX parameters are stored above and routed once those modules land.
+            ParamId::LimiterOn => self.limiter_on = value >= 0.5,
+            id if id.is_fx() => self.fx.set_param(id, value),
             _ => {}
         }
+    }
+
+    /// The synth parameters currently applied to the voices.
+    #[must_use]
+    pub fn synth_params(&self) -> &SynthParams {
+        self.voices.params()
+    }
+
+    /// The effect chain (read-only; parameters go through [`set_param`](Self::set_param)).
+    #[must_use]
+    pub fn fx(&self) -> &FxChain {
+        &self.fx
+    }
+
+    /// Current BPM-synced delay time in samples.
+    #[must_use]
+    pub fn delay_samples(&self) -> usize {
+        self.fx.delay_samples()
+    }
+
+    /// `true` while the master limiter stage is active (`ParamId::LimiterOn`).
+    #[must_use]
+    pub fn limiter_on(&self) -> bool {
+        self.limiter_on
     }
 
     /// Sets the tempo (clamped to 60..=200 BPM). Used by the BPM-synced delay and the transport.
     pub fn set_bpm(&mut self, bpm: f32) {
         if bpm.is_finite() {
             self.bpm = bpm.clamp(60.0, 200.0);
+            self.fx.set_bpm(self.bpm);
         }
     }
 
@@ -310,12 +339,21 @@ impl Engine {
         let frames = frames.min(out.len() / 2);
         let (body, tail) = out.split_at_mut(frames * 2);
         let (stereo_frames, _) = body.as_chunks_mut::<2>();
+        let limiter_on = self.limiter_on;
         for [l, r] in stereo_frames {
-            let dry = self.voices.tick() + self.tone.tick();
+            // Voices go through the effect chain; the diagnostic test tone bypasses it.
+            let synth = self.voices.tick();
+            let (fl, fr) = self.fx.process(synth, synth);
+            let tone = self.tone.tick();
             let gain = self.master_gain.tick();
-            let s = self.limiter.process(dry * gain);
-            *l = s;
-            *r = s;
+            let (pl, pr) = ((fl + tone) * gain, (fr + tone) * gain);
+            if limiter_on {
+                *l = self.limiter.process(pl);
+                *r = self.limiter.process(pr);
+            } else {
+                *l = if pl.is_finite() { pl } else { 0.0 };
+                *r = if pr.is_finite() { pr } else { 0.0 };
+            }
         }
         tail.fill(0.0);
     }

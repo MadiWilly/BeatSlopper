@@ -1,11 +1,81 @@
-//! egui_kittest: the M0/M1 screens render in both themes without a window or an audio device,
-//! and the computer keyboard plays the on-screen piano.
+//! egui_kittest: the M0-M2 screens render in both themes without a window or an audio device,
+//! the computer keyboard plays the on-screen piano, and the SYNTH / FX panels leave every
+//! parameter untouched until a control is used.
 
 use app::ui;
-use app::{AppState, BeatSlopperApp};
+use app::{AppState, BeatSlopperApp, default_params};
 use egui::{Event, Key, Modifiers};
 use egui_kittest::Harness;
 use neu::{Theme, ThemeMode};
+
+/// Renders one panel for a few frames at `size` and returns the state afterwards.
+fn render_one(
+    mode: ThemeMode,
+    size: egui::Vec2,
+    panel: fn(&mut egui::Ui, &mut AppState, &Theme),
+) -> AppState {
+    let (state, _engine) = AppState::headless(mode);
+    let theme = Theme::for_mode(mode);
+    let mut harness = Harness::builder().with_size(size).build_ui_state(
+        move |ui, state: &mut AppState| panel(ui, state, &theme),
+        state,
+    );
+    harness.run_steps(4);
+    harness.into_state()
+}
+
+#[test]
+fn synth_panel_renders_in_both_themes_without_touching_params() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let state = render_one(mode, egui::Vec2::new(780.0, 520.0), ui::synth_panel::show);
+        assert_eq!(state.mode, mode);
+        assert_eq!(state.preset_index, 0);
+        assert_eq!(
+            state.params,
+            default_params(),
+            "rendering must not change params"
+        );
+    }
+}
+
+#[test]
+fn fx_rack_renders_in_both_themes_without_touching_params() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let state = render_one(
+            mode,
+            egui::Vec2::new(ui::fx_rack::WIDTH + 40.0, 520.0),
+            ui::fx_rack::show,
+        );
+        assert_eq!(state.mode, mode);
+        assert!(state.limiter_on());
+        assert_eq!(
+            state.params,
+            default_params(),
+            "rendering must not change params"
+        );
+    }
+}
+
+#[test]
+fn main_area_renders_both_panels_side_by_side() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let state = render_one(mode, egui::Vec2::new(1240.0, 600.0), ui::main_area);
+        assert_eq!(state.params, default_params());
+    }
+}
+
+#[test]
+fn transport_dial_shows_master_gain_without_changing_it() {
+    let state = render_one(
+        ThemeMode::Dark,
+        egui::Vec2::new(1240.0, 200.0),
+        ui::transport_bar::show,
+    );
+    assert_eq!(
+        state.master_gain(),
+        engine::ParamId::MasterGain.default_value()
+    );
+}
 
 fn render_panels(mode: ThemeMode) -> AppState {
     let (state, _engine) = AppState::headless(mode);

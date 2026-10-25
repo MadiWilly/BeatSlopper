@@ -67,6 +67,32 @@ pub fn is_silent(buf: &[f32]) -> bool {
     buf.iter().all(|&s| s == 0.0)
 }
 
+/// RMS of the first difference `x[n] - x[n-1]`: a crude 6 dB/octave high-pass, so it grows
+/// with high-frequency content. Useful as a brightness / aliasing proxy.
+pub fn hp_rms(buf: &[f32]) -> f32 {
+    if buf.len() < 2 {
+        return 0.0;
+    }
+    let diff: Vec<f32> = buf.windows(2).map(|w| w[1] - w[0]).collect();
+    rms(&diff)
+}
+
+/// High-pass RMS relative to the plain RMS: how bright a signal is, independent of level.
+/// Returns `0.0` for a silent buffer.
+pub fn brightness(buf: &[f32]) -> f32 {
+    let level = rms(buf);
+    if level <= 0.0 {
+        0.0
+    } else {
+        hp_rms(buf) / level
+    }
+}
+
+/// Splits `mono` into consecutive windows of `len` samples and maps each through `f`.
+pub fn per_window<T>(mono: &[f32], len: usize, f: impl Fn(&[f32]) -> T) -> Vec<T> {
+    mono.chunks_exact(len).map(f).collect()
+}
+
 /// Estimates the fundamental frequency of a mono buffer from its positive-going
 /// zero crossings, with linear interpolation of each crossing instant.
 ///
@@ -93,4 +119,13 @@ pub fn estimate_pitch_hz(mono: &[f32], sample_rate: f32) -> Option<f32> {
         }
         _ => None,
     }
+}
+
+/// Bypasses the effect chain (drive, delay and reverb mixes to zero) so DSP measurements see
+/// the dry voice path. The engine's defaults are deliberately a little wet for the product.
+#[allow(dead_code)]
+pub fn dry_fx(engine: &mut engine::Engine) {
+    engine.set_param(engine::ParamId::DriveMix, 0.0);
+    engine.set_param(engine::ParamId::DelayMix, 0.0);
+    engine.set_param(engine::ParamId::ReverbMix, 0.0);
 }

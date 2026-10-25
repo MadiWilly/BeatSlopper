@@ -8,12 +8,14 @@
 //! - [`app`]: [`BeatSlopperApp`] (the `eframe::App`) and [`AppState`] (UI-facing state).
 //! - [`audio_io`]: the cpal output stream that owns the `engine::Engine`.
 //! - [`input`]: computer-keyboard piano input (key map, held keys, octave, velocity).
+//! - [`presets`]: the built-in synth presets shown in the SYNTH panel.
 //! - [`ui`]: the panels, as functions over `&mut AppState` and `&neu::Theme`.
 
 pub mod app;
 pub mod audio_io;
 pub mod input;
+pub mod presets;
 pub mod ui;
 
-pub use app::{AppState, BeatSlopperApp, resolve_theme_mode};
+pub use app::{AppState, BeatSlopperApp, default_params, resolve_theme_mode};
 pub use audio_io::AudioOutput;

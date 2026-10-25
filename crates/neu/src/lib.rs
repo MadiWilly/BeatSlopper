@@ -9,6 +9,8 @@
 //! * [`panel`], [`button`]: the M0 widgets.
 //! * [`piano_keys`], [`stepper`]: the M1 widgets (the on-screen keyboard and the "(-) n (+)"
 //!   control).
+//! * [`knob`], [`segmented`], [`slider`]: the M2 controls (rotary knobs and the concentric
+//!   dial, the segmented selector, the thin vertical slider and the indicator lamp).
 
 pub mod button;
 pub mod knob;
@@ -24,15 +26,20 @@ pub mod theme;
 pub use button::{
     Icon, button, icon_button, paint_icon, stepper_button, theme_toggle, toggle_button,
 };
-pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob};
+pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc};
 pub use panel::panel;
 pub use piano_keys::{
     PianoKey, PianoModel, PianoOutput, key_at, key_layout, keyboard_size, keyboard_width,
     note_name, piano_keys,
 };
+pub use segmented::segmented;
 pub use shadow::{
     Depth, paint_soft_circle, paint_soft_circle_with_fill, paint_soft_rect,
     paint_soft_rect_with_fill, soft_circle_shapes, soft_rect_shapes, soft_rect_shapes_with_fill,
+};
+pub use slider::{
+    SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL, SLIDER_WIDTH, SliderSpec, lamp, vslider,
+    vslider_fraction_at, vslider_thumb_pos,
 };
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, display, label, title, value};

@@ -10,10 +10,13 @@
 //! - [`engine`]: the audio-thread core (message queue, voices, test tone, master stage).
 //! - [`params`]: parameter ids ([`ParamId`]), smoothing ([`Smoother`]) and the [`Adsr`]
 //!   envelope.
-//! - [`voice`]: the polyphonic voice pool with voice stealing (M1).
+//! - [`voice`]: the polyphonic voice pool with voice stealing (M1) and the per-voice synth
+//!   path (M2): two oscillators, filter, envelope, glide, typed [`SynthParams`].
+//! - [`synth`]: band-limited [`synth::Oscillator`] / [`synth::Wave`], [`synth::Svf`] lowpass,
+//!   [`synth::Lfo`], plus [`synth::SineOsc`] / [`synth::note_to_hz`] for the test tone.
+//! - [`presets`]: built-in sounds as `(ParamId, value)` data ([`Preset`]).
 //! - [`dsp`]: small numeric helpers (denormal flushing, dB conversion).
-//! - [`fx`]: effects; M0 ships only the master [`fx::Limiter`].
-//! - [`synth`]: oscillators ([`synth::SineOsc`], [`synth::note_to_hz`]).
+//! - [`fx`]: effects (master [`fx::Limiter`] and the M2 chain).
 //! - [`drums`], [`transport`], [`project`]: skeletons for M3.
 
 #![warn(missing_docs)]
@@ -23,6 +26,7 @@ pub mod dsp;
 pub mod engine;
 pub mod fx;
 pub mod params;
+pub mod presets;
 pub mod project;
 pub mod synth;
 pub mod transport;
@@ -30,4 +34,6 @@ pub mod voice;
 
 pub use engine::{Engine, EngineHandle, Message, QUEUE_CAPACITY, new_engine};
 pub use params::{Adsr, AdsrStage, ParamId, Smoother};
-pub use voice::{MAX_VOICES, VoicePool};
+pub use presets::Preset;
+pub use synth::{LfoTarget, Wave};
+pub use voice::{MAX_VOICES, SynthParams, VoicePool};

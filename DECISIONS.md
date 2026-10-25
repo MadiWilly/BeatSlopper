@@ -44,3 +44,14 @@ shadow plus one dark shadow, staying within the two-shadows-per-element rule.
 Unicode-3.0, BSL-1.0, OFL-1.1 and Ubuntu-font-1.0. The last two are needed only because
 `epaint_default_fonts` bundles the Ubuntu and Noto fonts; both licenses permit embedding and
 redistribution. No copyleft licenses are allowed.
+
+## 2026-10-24: Effects routing and test patches
+- Signal flow: voices -> FxChain (drive -> delay -> reverb) -> master gain -> limiter. The
+  M0 diagnostic test tone is summed in AFTER the effects so it stays a clean reference.
+- Engine defaults are deliberately a little wet (drive 35 %/50 %, delay 25 %, reverb 20 %) so
+  the first sound has some space, as in the mock. DSP tests therefore call a `dry_fx` helper
+  (effect mixes to zero) before measuring; the M1 level/shape/pitch tests additionally pin a
+  plain sine patch (`sine_patch`) because the default patch is a filtered saw + sine mix. No
+  assertion was weakened; only the setup was made explicit.
+- `FxChain` is self-contained and tested on its own (`tests/fx.rs`), plus two engine-level
+  tests for BPM sync through `SetBpm` and an audible echo.

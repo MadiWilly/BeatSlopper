@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M2 (Synth + effects). M0, M1 tagged. design/WINNER.md is the token source of truth.
+**Current milestone:** M3 (First beat). M0, M1, M2 tagged. design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -33,16 +33,16 @@
 - [x] On-screen piano keys light with accent while held, clickable
 - [x] Gate green, tag m1
 
-## M2: Synth + effects
-- [ ] 2 band-limited oscillators (PolyBLEP: sine/saw/square/triangle), detune, mix
-- [ ] Lowpass SVF (cutoff, resonance), filter env amount
-- [ ] Amp ADSR
-- [ ] LFO (rate, depth, target pitch/cutoff)
-- [ ] FX chain: drive -> BPM-synced delay -> Freeverb-style reverb -> master gain + soft limiter
-- [ ] Neumorphic knobs for all params, double-click reset
-- [ ] 6-10 presets in dropdown
-- [ ] Pitch, NaN/peak, delay-sync tests
-- [ ] Gate green, tag m2
+## M2: Synth + effects (done 2026-10-24, tag m2)
+- [x] 2 band-limited oscillators (PolyBLEP: sine/saw/square/triangle), detune, mix
+- [x] Lowpass SVF (cutoff, resonance), filter env amount
+- [x] Amp ADSR
+- [x] LFO (rate, depth, target pitch/cutoff), glide
+- [x] FX chain: drive -> BPM-synced delay -> Freeverb-style reverb -> master gain + soft limiter
+- [x] Neumorphic knobs/dials/sliders for all params, double-click reset
+- [x] 8 presets, switchable from a segmented selector (the mock uses a segmented row, not a dropdown)
+- [x] Pitch, NaN/peak, delay-sync tests
+- [x] Gate green, tag m2
 
 ## M3: First beat
 - [ ] Transport: play/stop, BPM 60-200, swing, 16-step loop, sample-accurate scheduling (test)
@@ -57,12 +57,12 @@
 - [ ] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-24 M1: all green (fmt, clippy -D warnings, 111 tests, deny licenses ok, release build, smoke exit 0).
+2026-10-24 M2: all green (fmt, clippy -D warnings, 203 tests, deny licenses ok, release build, smoke exit 0).
 
 ## Next action
-M2: add M2 ParamIds + SetBpm, stub neu knob/dial/segmented/vslider/lamp signatures, then spawn
-engine-synth | engine-fx | neu widgets | app panels in parallel; integrate FxChain into engine.rs;
-gate.
+M3 per docs/ARCHITECTURE.md "M3 additions": write pattern.rs + M3 messages + playhead atomics + step_cell
+stub + rfd dep, then spawn engine-sequencer | engine-drums | engine-project+export | neu step_cell |
+app transport+sequencer+save/load/export; integrate DrumKit into render; gate; final summary.
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)

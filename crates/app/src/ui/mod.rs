@@ -3,21 +3,26 @@
 //! [`show`] lays them out in the real window.
 //!
 //! Page layout (design/WINNER.md): page padding 12 20 16, page gap 10, panels radius 24.
-//! Top to bottom: transport bar, main area (synth / FX / sequencer from M2-M3), KEYS panel.
+//! Top to bottom: transport bar, main area (SYNTH panel | FX rack from M2, the sequencer joins
+//! in M3), KEYS panel. The main area scrolls vertically when the window is at its minimum
+//! height.
 
-use egui::{CentralPanel, Frame, Margin, Panel, Ui};
+use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, ScrollArea, Ui, vec2};
 use neu::Theme;
 
 use crate::app::AppState;
 
+pub mod controls;
+pub mod fx_rack;
 pub mod keyboard;
+pub mod synth_panel;
 pub mod transport_bar;
 
 /// Page padding: top 12, sides 20, bottom 16.
 pub const PAGE_PAD_TOP: i8 = 12;
 pub const PAGE_PAD_SIDE: i8 = 20;
 pub const PAGE_PAD_BOTTOM: i8 = 16;
-/// Gap between the transport bar and the main area.
+/// Gap between the transport bar and the main area, and between the panels of the main area.
 pub const PAGE_GAP: i8 = 10;
 
 /// Full-window layout: transport bar on top, KEYS panel at the bottom, main area between.
@@ -55,24 +60,28 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         .show(ui, |ui| main_area(ui, state, theme));
 }
 
-/// Placeholder panel for the M2-M3 screens (synth, FX, sequencer).
-pub fn main_area(ui: &mut Ui, _state: &mut AppState, theme: &Theme) {
-    let avail = ui.available_size();
-    neu::panel(ui, theme, |ui| {
-        ui.set_min_size(avail - egui::vec2(theme.panel_padding * 2.0, theme.panel_padding * 2.0));
-        ui.vertical_centered(|ui| {
-            ui.add_space(theme.space_8);
-            ui.label(
-                egui::RichText::new("INSTRUMENTS")
-                    .size(12.0)
-                    .color(theme.text_secondary),
-            );
-            ui.add_space(theme.space_2);
-            ui.label(
-                egui::RichText::new("Synth, FX and sequencer arrive in M2-M3.")
-                    .size(13.0)
-                    .color(theme.text_secondary),
-            );
+/// The main area: SYNTH panel (flexible width) | FX rack ([`fx_rack::WIDTH`]), both as tall
+/// as the space available. When the panels need more height than there is (minimum window
+/// size) the area scrolls vertically.
+pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let height = ui.available_height();
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let gap = f32::from(PAGE_GAP);
+            let synth_width = (ui.available_width() - fx_rack::WIDTH - gap).max(0.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.allocate_ui_with_layout(
+                    vec2(synth_width, height),
+                    Layout::top_down(Align::Min),
+                    |ui| synth_panel::show(ui, state, theme),
+                );
+                ui.allocate_ui_with_layout(
+                    vec2(fx_rack::WIDTH, height),
+                    Layout::top_down(Align::Min),
+                    |ui| fx_rack::show(ui, state, theme),
+                );
+            });
         });
-    });
 }

@@ -1,0 +1,320 @@
+//! The M2 effect chain: drive -> delay -> reverb, driven by [`ParamId`] values.
+//!
+//! [`FxChain`] owns the three effects plus one [`Smoother`] per continuous parameter, so a
+//! knob move glides over about 10 ms instead of stepping. The delay time is the one discrete
+//! parameter: it is a note division synced to the BPM (see [`division_seconds`]) and the
+//! [`StereoDelay`] crossfades between the old and new time itself.
+//!
+//! The master gain and the limiter are *not* part of the chain; the engine applies them after
+//! [`FxChain::process`].
+//!
+//! Real-time safe after [`FxChain::new`]: nothing here allocates, locks, logs or panics.
+
+use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
+
+use super::delay::StereoDelay;
+use super::drive::Drive;
+use super::reverb::Reverb;
+
+/// Longest delay the chain can produce, in seconds (the pre-allocated buffer length).
+pub const MAX_DELAY_SECONDS: f32 = 4.0;
+
+/// Smallest BPM accepted by [`FxChain::set_bpm`]; smaller values clamp.
+pub const MIN_BPM: f32 = 1.0;
+
+/// Largest BPM accepted by [`FxChain::set_bpm`]; larger values clamp.
+pub const MAX_BPM: f32 = 999.0;
+
+/// BPM a fresh chain starts with (and the fallback for non-finite input).
+pub const DEFAULT_BPM: f32 = 120.0;
+
+/// Beats per note division, indexed like `ParamId::DelayTime`: 1/16, 1/8, 1/4, 1/2.
+const DIVISION_BEATS: [f32; 4] = [0.25, 0.5, 1.0, 2.0];
+
+/// Length in seconds of the delay division `index` at `bpm`.
+///
+/// `index` is the `ParamId::DelayTime` value: 0 = 1/16 (`15 / bpm`), 1 = 1/8 (`30 / bpm`),
+/// 2 = 1/4 (`60 / bpm`), 3 = 1/2 (`120 / bpm`). Fractional indices round to the nearest
+/// division and out-of-range ones clamp; a non-positive or non-finite `bpm` is treated as
+/// [`DEFAULT_BPM`].
+#[must_use]
+pub fn division_seconds(index: f32, bpm: f32) -> f32 {
+    let bpm = if bpm.is_finite() && bpm > 0.0 {
+        bpm
+    } else {
+        DEFAULT_BPM
+    };
+    let i = if index.is_finite() {
+        // `as usize` saturates at 0 for negatives; the clamp handles the top.
+        (index.round() as usize).min(DIVISION_BEATS.len() - 1)
+    } else {
+        1
+    };
+    DIVISION_BEATS[i] * 60.0 / bpm
+}
+
+/// Drive -> delay -> reverb, with smoothed parameters and BPM-synced delay time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FxChain {
+    sample_rate: f32,
+    bpm: f32,
+    /// Clamped target values, indexed by `ParamId::index()`; only FX ids are meaningful.
+    values: [f32; ParamId::COUNT],
+    drive: Drive,
+    delay: StereoDelay,
+    reverb: Reverb,
+    drive_amount: Smoother,
+    drive_mix: Smoother,
+    delay_feedback: Smoother,
+    delay_mix: Smoother,
+    reverb_size: Smoother,
+    reverb_damping: Smoother,
+    reverb_mix: Smoother,
+    delay_seconds: f32,
+}
+
+impl FxChain {
+    /// Pre-allocates the chain for `sample_rate` (non-finite or non-positive rates fall back
+    /// to 48 kHz). Every FX parameter starts at its [`ParamId::default_value`] and the BPM at
+    /// [`DEFAULT_BPM`].
+    #[must_use]
+    pub fn new(sample_rate: f32) -> Self {
+        let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
+            sample_rate
+        } else {
+            48_000.0
+        };
+        let mut values = [0.0; ParamId::COUNT];
+        for id in ParamId::ALL {
+            values[id.index()] = id.default_value();
+        }
+        let smoother =
+            |id: ParamId| Smoother::new(sample_rate, DEFAULT_SMOOTH_MS, id.default_value());
+        let mut chain = Self {
+            sample_rate,
+            bpm: DEFAULT_BPM,
+            values,
+            drive: Drive::new(),
+            delay: StereoDelay::new(sample_rate, MAX_DELAY_SECONDS),
+            reverb: Reverb::new(sample_rate),
+            drive_amount: smoother(ParamId::DriveAmount),
+            drive_mix: smoother(ParamId::DriveMix),
+            delay_feedback: smoother(ParamId::DelayFeedback),
+            delay_mix: smoother(ParamId::DelayMix),
+            reverb_size: smoother(ParamId::ReverbSize),
+            reverb_damping: smoother(ParamId::ReverbDamping),
+            reverb_mix: smoother(ParamId::ReverbMix),
+            delay_seconds: 0.0,
+        };
+        chain.update_delay_time();
+        chain.reset();
+        chain
+    }
+
+    /// Sample rate the chain was built for.
+    #[must_use]
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    /// Current tempo used for the delay sync.
+    #[must_use]
+    pub fn bpm(&self) -> f32 {
+        self.bpm
+    }
+
+    /// Sets the tempo (clamped to `MIN_BPM..=MAX_BPM`; non-finite values are ignored) and
+    /// re-syncs the delay time.
+    pub fn set_bpm(&mut self, bpm: f32) {
+        if !bpm.is_finite() {
+            return;
+        }
+        self.bpm = bpm.clamp(MIN_BPM, MAX_BPM);
+        self.update_delay_time();
+    }
+
+    /// Current synced delay time in seconds (the time the delay is at or fading towards).
+    #[must_use]
+    pub fn delay_seconds(&self) -> f32 {
+        self.delay_seconds
+    }
+
+    /// Current synced delay time in whole samples.
+    #[must_use]
+    pub fn delay_samples(&self) -> usize {
+        self.delay.delay_samples()
+    }
+
+    fn update_delay_time(&mut self) {
+        let index = self.values[ParamId::DelayTime.index()];
+        self.delay_seconds = division_seconds(index, self.bpm).min(MAX_DELAY_SECONDS);
+        self.delay.set_delay_seconds(self.delay_seconds);
+    }
+
+    /// Sets an effect parameter. The value is clamped with [`ParamId::clamp`]; non-FX ids are
+    /// ignored. Continuous parameters glide to the new value; the delay time crossfades.
+    pub fn set_param(&mut self, id: ParamId, value: f32) {
+        if !id.is_fx() {
+            return;
+        }
+        let v = id.clamp(value);
+        self.values[id.index()] = v;
+        match id {
+            ParamId::DriveAmount => self.drive_amount.set_target(v),
+            ParamId::DriveMix => self.drive_mix.set_target(v),
+            ParamId::DelayTime => self.update_delay_time(),
+            ParamId::DelayFeedback => self.delay_feedback.set_target(v),
+            ParamId::DelayMix => self.delay_mix.set_target(v),
+            ParamId::ReverbSize => self.reverb_size.set_target(v),
+            ParamId::ReverbDamping => self.reverb_damping.set_target(v),
+            ParamId::ReverbMix => self.reverb_mix.set_target(v),
+            _ => {}
+        }
+    }
+
+    /// Current (clamped target) value of an effect parameter. Non-FX ids return `0.0`.
+    #[must_use]
+    pub fn param(&self, id: ParamId) -> f32 {
+        if id.is_fx() {
+            self.values[id.index()]
+        } else {
+            0.0
+        }
+    }
+
+    /// Clears every delay line and reverb tail, snaps all smoothers to their targets and
+    /// completes any pending delay-time crossfade. The one call here that may click; use it
+    /// on project load or when the stream (re)starts, not while audible.
+    pub fn reset(&mut self) {
+        self.delay.reset();
+        self.reverb.reset();
+        for s in [
+            &mut self.drive_amount,
+            &mut self.drive_mix,
+            &mut self.delay_feedback,
+            &mut self.delay_mix,
+            &mut self.reverb_size,
+            &mut self.reverb_damping,
+            &mut self.reverb_mix,
+        ] {
+            s.snap(s.target());
+        }
+        self.apply_smoothed();
+    }
+
+    /// Pushes the smoothers' current values into the effects.
+    #[inline]
+    fn apply_smoothed(&mut self) {
+        self.drive.set_amount(self.drive_amount.current());
+        self.drive.set_mix(self.drive_mix.current());
+        self.delay.set_feedback(self.delay_feedback.current());
+        self.delay.set_mix(self.delay_mix.current());
+        self.reverb.set_size(self.reverb_size.current());
+        self.reverb.set_damping(self.reverb_damping.current());
+        self.reverb.set_mix(self.reverb_mix.current());
+    }
+
+    /// Processes one stereo frame through drive, delay and reverb. Non-finite inputs are
+    /// treated as `0.0`; the output is always finite.
+    #[inline]
+    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.drive_amount.tick();
+        self.drive_mix.tick();
+        self.delay_feedback.tick();
+        self.delay_mix.tick();
+        self.reverb_size.tick();
+        self.reverb_damping.tick();
+        self.reverb_mix.tick();
+        self.apply_smoothed();
+
+        let l = if l.is_finite() { l } else { 0.0 };
+        let r = if r.is_finite() { r } else { 0.0 };
+        let (l, r) = (self.drive.process(l), self.drive.process(r));
+        let (l, r) = self.delay.process(l, r);
+        self.reverb.process(l, r)
+    }
+
+    /// Processes an interleaved stereo buffer in place. A trailing odd sample (an incomplete
+    /// frame) is left untouched.
+    pub fn process_buffer(&mut self, buf: &mut [f32]) {
+        let (frames, _odd_tail) = buf.as_chunks_mut::<2>();
+        for [l, r] in frames {
+            (*l, *r) = self.process(*l, *r);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SR: f32 = 48_000.0;
+
+    #[test]
+    fn division_table() {
+        assert!((division_seconds(0.0, 120.0) - 0.125).abs() < 1e-6);
+        assert!((division_seconds(1.0, 120.0) - 0.25).abs() < 1e-6);
+        assert!((division_seconds(2.0, 120.0) - 0.5).abs() < 1e-6);
+        assert!((division_seconds(3.0, 120.0) - 1.0).abs() < 1e-6);
+        assert!((division_seconds(1.0, 90.0) - 1.0 / 3.0).abs() < 1e-6);
+        // Rounding, clamping and junk.
+        assert_eq!(division_seconds(1.4, 120.0), division_seconds(1.0, 120.0));
+        assert_eq!(division_seconds(9.0, 120.0), division_seconds(3.0, 120.0));
+        assert_eq!(division_seconds(-4.0, 120.0), division_seconds(0.0, 120.0));
+        assert_eq!(division_seconds(1.0, 0.0), 0.25);
+        assert_eq!(division_seconds(1.0, f32::NAN), 0.25);
+        assert_eq!(division_seconds(f32::NAN, 120.0), 0.25);
+    }
+
+    #[test]
+    fn defaults_and_bpm_sync() {
+        let fx = FxChain::new(SR);
+        assert_eq!(fx.bpm(), 120.0);
+        assert_eq!(fx.param(ParamId::DelayTime), 1.0);
+        assert_eq!(fx.delay_samples(), 12_000);
+        assert!((fx.delay_seconds() - 0.25).abs() < 1e-6);
+        for id in ParamId::ALL.iter().filter(|id| id.is_fx()) {
+            assert_eq!(fx.param(*id), id.default_value(), "{id:?}");
+        }
+        assert_eq!(fx.param(ParamId::MasterGain), 0.0);
+    }
+
+    #[test]
+    fn set_bpm_clamps_and_resyncs() {
+        let mut fx = FxChain::new(SR);
+        fx.set_bpm(90.0);
+        assert_eq!(fx.delay_samples(), 16_000);
+        fx.set_bpm(f32::INFINITY);
+        assert_eq!(fx.bpm(), 90.0);
+        fx.set_bpm(-5.0);
+        assert_eq!(fx.bpm(), MIN_BPM);
+        // 1/2 note at 1 BPM is 120 s, clamped to the 4 s buffer.
+        fx.set_param(ParamId::DelayTime, 3.0);
+        assert_eq!(fx.delay_seconds(), MAX_DELAY_SECONDS);
+        assert_eq!(fx.delay_samples(), 192_000);
+    }
+
+    #[test]
+    fn set_param_filters_and_clamps() {
+        let mut fx = FxChain::new(SR);
+        fx.set_param(ParamId::DelayFeedback, 3.0);
+        assert_eq!(fx.param(ParamId::DelayFeedback), 0.95);
+        fx.set_param(ParamId::DriveMix, -1.0);
+        assert_eq!(fx.param(ParamId::DriveMix), 0.0);
+        fx.set_param(ParamId::ReverbSize, f32::NAN);
+        assert_eq!(
+            fx.param(ParamId::ReverbSize),
+            ParamId::ReverbSize.default_value()
+        );
+        let before = fx.clone();
+        fx.set_param(ParamId::MasterGain, 0.1);
+        fx.set_param(ParamId::FilterCutoff, 100.0);
+        assert_eq!(fx, before);
+    }
+
+    #[test]
+    fn weird_sample_rate_falls_back() {
+        let fx = FxChain::new(0.0);
+        assert_eq!(fx.sample_rate(), 48_000.0);
+    }
+}

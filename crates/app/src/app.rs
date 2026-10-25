@@ -9,17 +9,45 @@
 //! [`crate::input::InputState`] and forwards the resulting note events to the engine as
 //! `Message::NoteOn` / `Message::NoteOff`, mirroring them into [`AppState::held_notes`] for
 //! the on-screen keys. Mouse presses on the on-screen piano go through the same path.
+//!
+//! Parameters (M2): [`AppState::params`] mirrors the engine's parameter array. Every control
+//! edits it through [`AppState::set_param`], which clamps, stores and sends
+//! `Message::SetParam`; [`AppState::apply_preset`] resets to defaults, overlays a preset and
+//! sends every value. After the audio stream starts, every parameter and the tempo are sent
+//! once so the engine matches the UI. The chosen preset index is persisted next to the theme
+//! override and re-applied on the next launch.
 
 use eframe::{App, CreationContext, Frame, Storage};
-use engine::{EngineHandle, Message};
+use engine::{EngineHandle, Message, ParamId};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_io::AudioOutput;
 use crate::input::{InputState, NoteEvent};
+use crate::presets;
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
+
+/// eframe storage key for the selected preset index.
+pub const PRESET_INDEX_KEY: &str = "preset_index";
+
+/// Tempo sent to the engine at startup (the M3 transport will own it).
+pub const DEFAULT_BPM: f32 = 120.0;
+
+/// Lowest / highest tempo the engine accepts (`Engine::set_bpm` clamps to the same range).
+pub const MIN_BPM: f32 = 60.0;
+pub const MAX_BPM: f32 = 200.0;
+
+/// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
+#[must_use]
+pub fn default_params() -> [f32; ParamId::COUNT] {
+    let mut params = [0.0; ParamId::COUNT];
+    for id in ParamId::ALL {
+        params[id.index()] = id.default_value();
+    }
+    params
+}
 
 /// Frames to render before `--smoke-test` closes the window.
 pub const SMOKE_TEST_FRAMES: u32 = 60;
@@ -81,8 +109,13 @@ pub struct AppState {
     pub engine: EngineHandle,
     /// Whether the M0 test tone is on.
     pub test_tone: bool,
-    /// Master gain, linear 0..=1 in the UI.
-    pub master_gain: f32,
+    /// UI-side mirror of every engine parameter, indexed by [`ParamId::index`]. Always within
+    /// [`ParamId::range`]; edit through [`AppState::set_param`] so the engine follows.
+    pub params: [f32; ParamId::COUNT],
+    /// Index into [`presets::ALL`] of the preset shown as selected.
+    pub preset_index: usize,
+    /// Tempo in BPM (M3's transport will edit it; M2 only sends the default for the delay).
+    pub bpm: f32,
     /// `Some` while an output stream is running; `None` when no device could be opened.
     pub audio: Option<AudioOutput>,
     /// Set when the audio device could not be opened (shown in the transport bar).
@@ -103,42 +136,37 @@ impl AppState {
     /// `Engine` too so tests can render offline and check the messages arrived.
     pub fn headless(mode: ThemeMode) -> (Self, engine::Engine) {
         let (handle, engine) = engine::new_engine(48_000.0);
-        (
-            Self {
-                theme_override: None,
-                mode,
-                engine: handle,
-                test_tone: false,
-                master_gain: 0.8,
-                audio: None,
-                audio_error: None,
-                input: InputState::new(),
-                held_notes: [false; 128],
-                note_on_count: 0,
-                note_off_count: 0,
-            },
+        (Self::from_parts(mode, handle, None), engine)
+    }
+
+    /// Fresh state (defaults everywhere) around an engine handle and an optional stream.
+    fn from_parts(mode: ThemeMode, engine: EngineHandle, audio: Option<AudioOutput>) -> Self {
+        Self {
+            theme_override: None,
+            mode,
             engine,
-        )
+            test_tone: false,
+            params: default_params(),
+            preset_index: 0,
+            bpm: DEFAULT_BPM,
+            audio,
+            audio_error: None,
+            input: InputState::new(),
+            held_notes: [false; 128],
+            note_on_count: 0,
+            note_off_count: 0,
+        }
     }
 
     /// Tries to open the default audio device. On failure the app keeps running silently.
+    /// With a stream running, every parameter and the tempo are sent so the engine matches
+    /// the UI from the first buffer.
     pub fn with_audio(mode: ThemeMode) -> Self {
         match AudioOutput::start(engine::new_engine) {
             Ok((audio, handle)) => {
-                let mut state = Self {
-                    theme_override: None,
-                    mode,
-                    engine: handle,
-                    test_tone: false,
-                    master_gain: 0.8,
-                    audio: Some(audio),
-                    audio_error: None,
-                    input: InputState::new(),
-                    held_notes: [false; 128],
-                    note_on_count: 0,
-                    note_off_count: 0,
-                };
-                state.send_master_gain();
+                let mut state = Self::from_parts(mode, handle, Some(audio));
+                state.resend_all_params();
+                state.set_bpm(DEFAULT_BPM);
                 state
             }
             Err(err) => {
@@ -161,10 +189,72 @@ impl AppState {
         self.engine.send(Message::TestTone(on));
     }
 
-    /// Sends the current master gain to the engine.
-    pub fn send_master_gain(&mut self) {
-        let gain = self.master_gain.clamp(0.0, 1.0);
-        self.engine.send(Message::MasterGain(gain));
+    /// Current UI value of parameter `id` (always within [`ParamId::range`]).
+    #[must_use]
+    pub fn param(&self, id: ParamId) -> f32 {
+        self.params[id.index()]
+    }
+
+    /// Master gain, linear (`1.0` = unity); the same value as `param(MasterGain)`.
+    #[must_use]
+    pub fn master_gain(&self) -> f32 {
+        self.param(ParamId::MasterGain)
+    }
+
+    /// `true` when the soft limiter is switched on.
+    #[must_use]
+    pub fn limiter_on(&self) -> bool {
+        self.param(ParamId::LimiterOn) >= 0.5
+    }
+
+    /// Clamps `value` into the parameter's range, stores it and tells the engine. Returns the
+    /// stored value.
+    pub fn set_param(&mut self, id: ParamId, value: f32) -> f32 {
+        let value = id.clamp(value);
+        self.params[id.index()] = value;
+        self.engine.send(Message::SetParam(id, value));
+        value
+    }
+
+    /// Sends every parameter to the engine (startup, or after the UI state was rebuilt).
+    pub fn resend_all_params(&mut self) {
+        for id in ParamId::ALL {
+            self.engine
+                .send(Message::SetParam(*id, self.params[id.index()]));
+        }
+    }
+
+    /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine.
+    pub fn set_bpm(&mut self, bpm: f32) {
+        let bpm = if bpm.is_finite() {
+            bpm.clamp(MIN_BPM, MAX_BPM)
+        } else {
+            DEFAULT_BPM
+        };
+        self.bpm = bpm;
+        self.engine.send(Message::SetBpm(bpm));
+    }
+
+    /// Selects preset `index` (clamped to the list): every parameter goes back to its default,
+    /// the preset's values are applied on top and everything is sent to the engine.
+    pub fn apply_preset(&mut self, index: usize) {
+        let index = index.min(presets::ALL.len().saturating_sub(1));
+        self.preset_index = index;
+        self.params = default_params();
+        if let Some(preset) = presets::ALL.get(index) {
+            for (id, value) in preset.values {
+                self.params[id.index()] = id.clamp(*value);
+            }
+        }
+        self.resend_all_params();
+    }
+
+    /// Name of the selected preset.
+    #[must_use]
+    pub fn preset_name(&self) -> &'static str {
+        presets::ALL
+            .get(self.preset_index)
+            .map_or("", |preset| preset.name)
     }
 
     /// Starts `note` (MIDI) at `velocity` (0..=1): tells the engine and lights the key.
@@ -264,9 +354,16 @@ impl BeatSlopperApp {
             .flatten()
             .map(ThemeMode::from);
         let mode = resolve_theme_mode(theme_override, cc.egui_ctx.system_theme());
+        let preset_index: Option<usize> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<usize>(s, PRESET_INDEX_KEY));
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
+        if let Some(index) = preset_index {
+            // Re-apply the remembered preset so the sound matches the highlighted name.
+            state.apply_preset(index);
+        }
 
         let mut app = Self {
             theme: Theme::for_mode(mode),
@@ -372,6 +469,7 @@ impl App for BeatSlopperApp {
     fn save(&mut self, storage: &mut dyn Storage) {
         let stored: Option<StoredThemeMode> = self.state.theme_override.map(Into::into);
         eframe::set_value(storage, THEME_OVERRIDE_KEY, &stored);
+        eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -445,12 +543,26 @@ mod tests {
 
         state.toggle_test_tone();
         assert!(!state.test_tone);
-        // The engine may fade the tone out; give it half a second, then expect silence.
+        // The tone fades out and the FX chain (delay feedback, reverb) adds a tail; wait for
+        // silence rather than assuming a tail length.
+        assert!(
+            renders_silent_within(&mut engine, 6.0, 1e-4),
+            "tone did not stop"
+        );
+    }
+
+    /// Renders up to `seconds` of audio in 4096-frame blocks; `true` as soon as one whole
+    /// block stays below `threshold`.
+    fn renders_silent_within(engine: &mut engine::Engine, seconds: f32, threshold: f32) -> bool {
         let mut out = vec![0.0f32; 4096 * 2];
-        for _ in 0..6 {
+        let blocks = (seconds * 48_000.0 / 4096.0).ceil() as usize;
+        for _ in 0..blocks {
             engine.render(&mut out, 4096);
+            if out.iter().all(|s| s.abs() < threshold) {
+                return true;
+            }
         }
-        assert!(out.iter().all(|s| s.abs() < 1e-4), "tone did not stop");
+        false
     }
 
     #[test]
@@ -469,12 +581,11 @@ mod tests {
         state.apply_note_events(&[NoteEvent::Off { note: 60 }]);
         assert!(!state.held_notes[60]);
         assert_eq!(state.note_off_count, 1);
-        // Two seconds covers any sensible default release tail.
-        let mut out = vec![0.0f32; 4096 * 2];
-        for _ in 0..24 {
-            engine.render(&mut out, 4096);
-        }
-        assert!(out.iter().all(|s| s.abs() < 1e-3), "note did not release");
+        // Release tail plus the FX chain's delay/reverb tail: wait for silence.
+        assert!(
+            renders_silent_within(&mut engine, 6.0, 1e-3),
+            "note did not release"
+        );
     }
 
     #[test]
@@ -486,6 +597,127 @@ mod tests {
         state.all_notes_off();
         assert!(state.held_notes.iter().all(|h| !h));
         assert!(state.input.held.is_empty());
+    }
+
+    #[test]
+    fn fresh_state_holds_the_defaults() {
+        let (state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.params, default_params());
+        assert_eq!(state.preset_index, 0);
+        assert_eq!(state.bpm, DEFAULT_BPM);
+        assert_eq!(state.master_gain(), ParamId::MasterGain.default_value());
+        assert!(state.limiter_on());
+        for id in ParamId::ALL {
+            assert!(id.range().contains(&state.param(*id)), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn set_param_clamps_stores_and_reaches_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.set_param(ParamId::FilterCutoff, 1.0e9), 20_000.0);
+        assert_eq!(state.set_param(ParamId::Osc1Detune, -999.0), -50.0);
+        assert_eq!(state.set_param(ParamId::MasterGain, 0.5), 0.5);
+        assert_eq!(
+            state.set_param(ParamId::AmpSustain, f32::NAN),
+            ParamId::AmpSustain.default_value()
+        );
+        assert_eq!(state.set_param(ParamId::LimiterOn, 0.0), 0.0);
+        assert_eq!(state.param(ParamId::FilterCutoff), 20_000.0);
+        assert_eq!(state.param(ParamId::Osc1Detune), -50.0);
+        assert_eq!(state.master_gain(), 0.5);
+        assert!(!state.limiter_on());
+
+        engine.process_messages();
+        assert_eq!(engine.param(ParamId::FilterCutoff), 20_000.0);
+        assert_eq!(engine.param(ParamId::Osc1Detune), -50.0);
+        assert_eq!(engine.param(ParamId::MasterGain), 0.5);
+        assert_eq!(
+            engine.param(ParamId::AmpSustain),
+            ParamId::AmpSustain.default_value()
+        );
+        assert_eq!(engine.param(ParamId::LimiterOn), 0.0);
+        // Untouched parameters keep their defaults on both sides.
+        assert_eq!(
+            engine.param(ParamId::ReverbMix),
+            state.param(ParamId::ReverbMix)
+        );
+    }
+
+    #[test]
+    fn every_preset_sends_all_params_and_stays_in_range() {
+        assert_eq!(presets::ALL.len(), 8);
+        for (i, preset) in presets::ALL.iter().enumerate() {
+            let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+            // Dirty a value first so we can see the preset reset it.
+            state.set_param(ParamId::Glide, 0.9);
+            let free_before = state.engine.free_slots();
+            state.apply_preset(i);
+            assert_eq!(state.preset_index, i);
+            assert_eq!(state.preset_name(), preset.name);
+            assert_eq!(
+                free_before - state.engine.free_slots(),
+                ParamId::COUNT,
+                "preset {} must send one SetParam per id",
+                preset.name
+            );
+
+            engine.process_messages();
+            for id in ParamId::ALL {
+                let value = state.param(*id);
+                assert!(
+                    id.range().contains(&value),
+                    "{}: {id:?} = {value} out of range",
+                    preset.name
+                );
+                assert_eq!(engine.param(*id), value, "{}: {id:?}", preset.name);
+            }
+            for (id, value) in preset.values {
+                assert_eq!(
+                    state.param(*id),
+                    id.clamp(*value),
+                    "{}: {id:?}",
+                    preset.name
+                );
+            }
+            if !preset.values.iter().any(|(id, _)| *id == ParamId::Glide) {
+                assert_eq!(state.param(ParamId::Glide), ParamId::Glide.default_value());
+            }
+        }
+    }
+
+    #[test]
+    fn preset_index_is_clamped_to_the_list() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.apply_preset(usize::MAX);
+        assert_eq!(state.preset_index, presets::ALL.len() - 1);
+        assert_eq!(
+            state.preset_name(),
+            presets::ALL[presets::ALL.len() - 1].name
+        );
+    }
+
+    #[test]
+    fn bpm_is_clamped_and_sent() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_bpm(1000.0);
+        assert_eq!(state.bpm, MAX_BPM);
+        state.set_bpm(f32::NAN);
+        assert_eq!(state.bpm, DEFAULT_BPM);
+        state.set_bpm(90.0);
+        engine.process_messages();
+        assert_eq!(engine.bpm(), 90.0);
+    }
+
+    #[test]
+    fn resend_all_params_sends_one_message_per_id() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.params[ParamId::DriveMix.index()] = 0.9;
+        let free_before = state.engine.free_slots();
+        state.resend_all_params();
+        assert_eq!(free_before - state.engine.free_slots(), ParamId::COUNT);
+        engine.process_messages();
+        assert_eq!(engine.param(ParamId::DriveMix), 0.9);
     }
 
     #[test]

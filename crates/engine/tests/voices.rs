@@ -18,9 +18,22 @@ fn flat_envelope(engine: &mut Engine, release_s: f32) {
     engine.set_param(ParamId::AmpRelease, release_s);
 }
 
+/// The M1 voice: one plain sine at full mix, filter wide open, no modulation. The M2 default
+/// patch is a filtered saw + sine mix, so level and waveform-shape assertions use this.
+fn sine_patch(engine: &mut Engine) {
+    engine.set_param(ParamId::Osc1Wave, 0.0);
+    engine.set_param(ParamId::Osc1Mix, 1.0);
+    engine.set_param(ParamId::Osc2Mix, 0.0);
+    engine.set_param(ParamId::FilterCutoff, 20_000.0);
+    engine.set_param(ParamId::FilterResonance, 0.0);
+    engine.set_param(ParamId::FilterEnvAmount, 0.0);
+    engine.set_param(ParamId::LfoDepth, 0.0);
+}
+
 #[test]
 fn note_on_sounds_and_note_off_goes_silent_after_release() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     assert!(!engine.is_active());
     engine.set_param(ParamId::AmpRelease, 0.050);
 
@@ -46,6 +59,8 @@ fn note_on_sounds_and_note_off_goes_silent_after_release() {
 #[test]
 fn a4_pitch_is_440_hz_within_one_percent() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
+    sine_patch(&mut engine);
     flat_envelope(&mut engine, 0.1);
     engine.note_on(A4, 1.0);
     let _warmup = render(&mut engine, ms_to_frames(100.0));
@@ -66,6 +81,8 @@ fn a4_pitch_is_440_hz_within_one_percent() {
 #[test]
 fn voice_level_is_minus_12_dbfs_at_full_velocity() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
+    sine_patch(&mut engine);
     flat_envelope(&mut engine, 0.1);
     engine.note_on(A4, 1.0);
     let _warmup = render(&mut engine, ms_to_frames(100.0));
@@ -82,6 +99,7 @@ fn voice_level_is_minus_12_dbfs_at_full_velocity() {
 fn lower_velocity_is_quieter() {
     let measure = |velocity: f32| {
         let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+        dry_fx(&mut engine);
         flat_envelope(&mut engine, 0.1);
         engine.note_on(A4, velocity);
         let _warmup = render(&mut engine, ms_to_frames(50.0));
@@ -100,6 +118,7 @@ fn lower_velocity_is_quieter() {
 #[test]
 fn voice_stealing_keeps_max_polyphony_and_finite_output() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     for n in 0..MAX_VOICES as u8 {
         engine.note_on(48 + n, 1.0);
     }
@@ -127,6 +146,7 @@ fn voice_stealing_keeps_max_polyphony_and_finite_output() {
 #[test]
 fn held_note_retriggers_instead_of_taking_a_new_voice() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     engine.note_on(60, 1.0);
     engine.note_on(64, 1.0);
     let _ = render(&mut engine, ms_to_frames(50.0));
@@ -147,6 +167,8 @@ fn held_note_retriggers_instead_of_taking_a_new_voice() {
 #[test]
 fn retrigger_does_not_click() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
+    sine_patch(&mut engine);
     engine.set_param(ParamId::AmpAttack, 0.005);
     engine.set_param(ParamId::AmpRelease, 0.200);
     engine.note_on(A4, 1.0);
@@ -169,6 +191,7 @@ fn retrigger_does_not_click() {
 #[test]
 fn all_notes_off_silences_everything_within_release_time() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     engine.set_param(ParamId::AmpRelease, 0.050);
     for n in 0..MAX_VOICES as u8 {
         engine.note_on(48 + n, 1.0);
@@ -188,6 +211,7 @@ fn all_notes_off_silences_everything_within_release_time() {
 #[test]
 fn messages_through_the_queue_drive_voices() {
     let (mut handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     assert!(handle.send(Message::SetParam(ParamId::AmpRelease, 0.020)));
     assert!(handle.send(Message::NoteOn {
         note: A4,
@@ -226,6 +250,7 @@ fn messages_through_the_queue_drive_voices() {
 fn set_param_attack_changes_the_envelope() {
     let first_10ms_rms = |attack_s: f32| {
         let (mut handle, mut engine) = new_engine(SAMPLE_RATE);
+        dry_fx(&mut engine);
         assert!(handle.send(Message::SetParam(ParamId::AmpAttack, attack_s)));
         assert!(handle.send(Message::NoteOn {
             note: A4,
@@ -245,6 +270,7 @@ fn set_param_attack_changes_the_envelope() {
 fn set_param_retimes_running_voices() {
     // A note held with a very long release, then the release is shortened while it fades.
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     engine.set_param(ParamId::AmpRelease, 4.0);
     engine.note_on(A4, 1.0);
     let _ = render(&mut engine, ms_to_frames(100.0));
@@ -281,6 +307,7 @@ fn set_param_clamps_and_reads_back() {
 #[test]
 fn full_chord_at_max_gain_is_finite_and_limited() {
     let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut engine);
     flat_envelope(&mut engine, 0.1);
     engine.set_master_gain(MAX_MASTER_GAIN);
     engine.set_test_tone(true);
@@ -297,7 +324,9 @@ fn full_chord_at_max_gain_is_finite_and_limited() {
 #[test]
 fn voices_render_identically_regardless_of_block_size() {
     let (_h1, mut single) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut single);
     let (_h2, mut blocked) = new_engine(SAMPLE_RATE);
+    dry_fx(&mut blocked);
     for e in [&mut single, &mut blocked] {
         e.note_on(60, 1.0);
         e.note_on(67, 0.7);
