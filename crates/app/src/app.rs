@@ -92,8 +92,11 @@ use engine::{
     Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern, PatternLength,
     PlayMode, Position, STEPS,
 };
+use engine::{EqParam, EqState, ReverbParam, ReverbState};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
+
+use crate::plugins::{PLUGIN_WINDOWS_KEY, PluginEdit, PluginHost, PluginKind, PluginWindows};
 
 use crate::audio_io::AudioOutput;
 use crate::input::{InputState, NoteEvent};
@@ -262,6 +265,13 @@ pub enum EditKey {
     DrumTune(DrumRow),
     /// A mixer strip's continuous value (level, pan, a send); mute / solo are discrete.
     Mixer(Channel, ChannelParam),
+    /// An EQ band's frequency / gain / Q (plugins; one key per band so a node drag that moves
+    /// frequency and gain together is one undo step); on and kind are discrete.
+    Eq(u8),
+    /// The EQ output gain.
+    EqGain,
+    /// A reverb value edited from the plugin window.
+    Reverb(ReverbParam),
 }
 
 /// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
@@ -436,6 +446,19 @@ pub struct AppState {
     /// The last continuous control edited and when (undo coalescing of knob drags).
     pub last_continuous_edit: Option<(EditKey, Instant)>,
 
+    // ---- Plugins (EQ / reverb pop-out windows) ----
+    /// UI-side mirror of the master EQ. Edit through [`AppState::set_eq_band`] and friends.
+    pub eq: EqState,
+    /// The EQ preset last applied (list highlight and MODIFIED marker).
+    pub eq_preset: Option<usize>,
+    /// UI-side mirror of every reverb value; `size` / `damping` / `mix` always equal
+    /// `params[ReverbSize / ReverbDamping / ReverbMix]`.
+    pub reverb: ReverbState,
+    /// The reverb preset last applied.
+    pub reverb_preset: Option<usize>,
+    /// Which plugin windows are open, indexed by [`PluginKind::index`] (persisted).
+    pub plugin_open: [bool; 2],
+
     // ---- MIDI ----
     /// `false` disables MIDI entirely (`--smoke-test`): no port listing, no connecting.
     pub midi_enabled: bool,
@@ -531,6 +554,11 @@ impl AppState {
             pending_action: None,
             dialogs_enabled: true,
             last_continuous_edit: None,
+            eq: EqState::default(),
+            eq_preset: Some(0),
+            reverb: ReverbState::default(),
+            reverb_preset: None,
+            plugin_open: [false; 2],
             midi_enabled: true,
             midi_ports: Vec::new(),
             midi_ports_refreshed: None,
@@ -635,6 +663,13 @@ impl AppState {
             self.begin_continuous_edit(EditKey::Param(id), false);
         }
         self.params[id.index()] = value;
+        // The reverb's size / damping / mix are shared with the plugin window's state.
+        match id {
+            ParamId::ReverbSize => self.reverb.size = value,
+            ParamId::ReverbDamping => self.reverb.damping = value,
+            ParamId::ReverbMix => self.reverb.mix = value,
+            _ => {}
+        }
         self.send(Message::SetParam(id, value));
         value
     }
@@ -662,7 +697,186 @@ impl AppState {
         self.send(Message::SetBpm(self.bpm));
         self.send(Message::SetSwing(self.swing));
         self.resend_mixer();
+        self.send_eq();
+        self.send_reverb();
         self.send_bank();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Plugins: the master EQ and the reverb state (pop-out windows). Every setter mirrors,
+    // sends the engine message, marks the project dirty and records undo (discrete for
+    // on / kind / presets, coalesced per drag for the continuous values).
+
+    /// Sets one value of EQ band `band` (clamped by the band). `drag_started` begins a new
+    /// undo step; on / kind changes are always their own step. Returns the stored value.
+    pub fn set_eq_band(
+        &mut self,
+        band: usize,
+        param: EqParam,
+        value: f32,
+        drag_started: bool,
+    ) -> f32 {
+        let band = band % engine::fx::BAND_COUNT;
+        let mut probe = self.eq.bands[band];
+        let stored = probe.set(param, value);
+        if probe == self.eq.bands[band] {
+            return stored;
+        }
+        match param {
+            EqParam::On | EqParam::Kind => self.begin_edit(),
+            _ => self.begin_continuous_edit(EditKey::Eq(band as u8), drag_started),
+        }
+        self.eq.bands[band] = probe;
+        self.send(Message::SetEq {
+            band: band as u8,
+            param,
+            value: stored,
+        });
+        stored
+    }
+
+    /// Switches the master EQ on or off (one undo step when it changes).
+    pub fn set_eq_on(&mut self, on: bool) {
+        if self.eq.on == on {
+            return;
+        }
+        self.begin_edit();
+        self.eq.on = on;
+        self.send(Message::SetEqOn(on));
+    }
+
+    /// Sets the EQ output gain in dB (clamped; undo coalesced per drag). Returns the stored
+    /// value.
+    pub fn set_eq_gain(&mut self, db: f32, drag_started: bool) -> f32 {
+        let mut probe = self.eq;
+        let stored = probe.set_gain_db(db);
+        if stored != self.eq.gain_db {
+            self.begin_continuous_edit(EditKey::EqGain, drag_started);
+            self.eq.gain_db = stored;
+            self.send(Message::SetEqGain(stored));
+        }
+        stored
+    }
+
+    /// Replaces the whole EQ (one undo step when it changes) and sends every value.
+    pub fn set_eq_state(&mut self, state: EqState) {
+        let mut state = state;
+        state.normalise();
+        if state == self.eq {
+            return;
+        }
+        self.begin_edit();
+        self.eq = state;
+        self.send_eq();
+    }
+
+    /// Applies EQ preset `index` (clamped to the list): one undo step, all bands sent.
+    pub fn apply_eq_preset(&mut self, index: usize) {
+        let index = index.min(engine::fx::eq::PRESETS.len().saturating_sub(1));
+        if let Some(preset) = engine::fx::eq::PRESETS.get(index) {
+            self.set_eq_state(preset.state);
+            self.eq_preset = Some(index);
+        }
+    }
+
+    /// Sends the whole EQ to the engine ([`eq_messages`]).
+    pub fn send_eq(&mut self) {
+        for msg in eq_messages(&self.eq) {
+            self.send(msg);
+        }
+    }
+
+    /// Sets one reverb value (clamped). Size / damping / mix also update the matching
+    /// `params` entry (the engine does the same). Undo coalesces per drag. Returns the stored
+    /// value.
+    pub fn set_reverb(&mut self, param: ReverbParam, value: f32, drag_started: bool) -> f32 {
+        let stored = param.clamp(value);
+        if stored == self.reverb.get(param) {
+            return stored;
+        }
+        self.begin_continuous_edit(EditKey::Reverb(param), drag_started);
+        self.reverb.set(param, stored);
+        match param {
+            ReverbParam::Size => self.params[ParamId::ReverbSize.index()] = stored,
+            ReverbParam::Damping => self.params[ParamId::ReverbDamping.index()] = stored,
+            ReverbParam::Mix => self.params[ParamId::ReverbMix.index()] = stored,
+            _ => {}
+        }
+        self.send(Message::SetReverb {
+            param,
+            value: stored,
+        });
+        stored
+    }
+
+    /// Replaces every reverb value (one undo step when anything changes) and sends them.
+    pub fn set_reverb_state(&mut self, state: ReverbState) {
+        let mut state = state;
+        state.normalise();
+        if state == self.reverb {
+            return;
+        }
+        self.begin_edit();
+        self.reverb = state;
+        self.params[ParamId::ReverbSize.index()] = state.size;
+        self.params[ParamId::ReverbDamping.index()] = state.damping;
+        self.params[ParamId::ReverbMix.index()] = state.mix;
+        self.send_reverb();
+    }
+
+    /// Applies reverb preset `index` (clamped to the list): one undo step.
+    pub fn apply_reverb_preset(&mut self, index: usize) {
+        let index = index.min(engine::fx::reverb::PRESETS.len().saturating_sub(1));
+        if let Some(preset) = engine::fx::reverb::PRESETS.get(index) {
+            self.set_reverb_state(preset.state);
+            self.reverb_preset = Some(index);
+        }
+    }
+
+    /// Sends every reverb value to the engine ([`reverb_messages`]).
+    pub fn send_reverb(&mut self) {
+        for msg in reverb_messages(&self.reverb) {
+            self.send(msg);
+        }
+    }
+
+    /// Routes one edit made in a plugin window through the setters above.
+    pub fn apply_plugin_edit(&mut self, edit: PluginEdit) {
+        match edit {
+            PluginEdit::EqBand {
+                band,
+                param,
+                value,
+                drag_started,
+            } => {
+                self.set_eq_band(band, param, value, drag_started);
+            }
+            PluginEdit::EqOn(on) => self.set_eq_on(on),
+            PluginEdit::EqGain { db, drag_started } => {
+                self.set_eq_gain(db, drag_started);
+            }
+            PluginEdit::EqPreset(i) => self.apply_eq_preset(i),
+            PluginEdit::Reverb {
+                param,
+                value,
+                drag_started,
+            } => {
+                self.set_reverb(param, value, drag_started);
+            }
+            PluginEdit::ReverbPreset(i) => self.apply_reverb_preset(i),
+            PluginEdit::Close(kind) => self.plugin_open[kind.index()] = false,
+        }
+    }
+
+    /// Whether the plugin window of `kind` is open.
+    #[must_use]
+    pub fn is_plugin_open(&self, kind: PluginKind) -> bool {
+        self.plugin_open[kind.index()]
+    }
+
+    /// Opens or closes the plugin window of `kind` (not an edit).
+    pub fn toggle_plugin(&mut self, kind: PluginKind) {
+        self.plugin_open[kind.index()] = !self.plugin_open[kind.index()];
     }
 
     // -----------------------------------------------------------------------------------------
@@ -802,6 +1016,10 @@ impl AppState {
                 self.params[id.index()] = id.clamp(*value);
             }
         }
+        // Presets carry reverb values: keep the plugin's reverb mirror in step.
+        self.reverb.size = self.params[ParamId::ReverbSize.index()];
+        self.reverb.damping = self.params[ParamId::ReverbDamping.index()];
+        self.reverb.mix = self.params[ParamId::ReverbMix.index()];
         self.resend_all_params();
     }
 
@@ -1403,6 +1621,8 @@ impl AppState {
             swing: self.swing,
             preset_index: self.preset_index,
             mixer: self.mixer,
+            eq: self.eq,
+            reverb: self.reverb,
             project_path: self.project_path.clone(),
         }
     }
@@ -1481,6 +1701,8 @@ impl AppState {
             swing,
             preset_index,
             mixer,
+            eq,
+            reverb,
             project_path,
         } = snapshot;
         self.bank = bank;
@@ -1489,6 +1711,8 @@ impl AppState {
         self.swing = swing;
         self.preset_index = preset_index;
         self.mixer = mixer;
+        self.eq = eq;
+        self.reverb = reverb;
         self.project_path = project_path;
         self.last_continuous_edit = None;
         self.dirty = true;
@@ -1880,6 +2104,37 @@ pub fn note_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
     out
 }
 
+/// The messages that put `eq` into the engine: `SetEqOn`, `SetEqGain` and one `SetEq` per
+/// band and parameter (`BAND_COUNT * EqParam::ALL.len()` = 35), bands low to high.
+#[must_use]
+pub fn eq_messages(eq: &EqState) -> Vec<Message> {
+    let mut out = Vec::with_capacity(2 + eq.bands.len() * EqParam::ALL.len());
+    out.push(Message::SetEqOn(eq.on));
+    out.push(Message::SetEqGain(eq.gain_db));
+    for (i, band) in eq.bands.iter().enumerate() {
+        for param in EqParam::ALL {
+            out.push(Message::SetEq {
+                band: i as u8,
+                param,
+                value: band.get(param),
+            });
+        }
+    }
+    out
+}
+
+/// The messages that put `reverb` into the engine: one `SetReverb` per [`ReverbParam`].
+#[must_use]
+pub fn reverb_messages(reverb: &ReverbState) -> Vec<Message> {
+    ReverbParam::ALL
+        .iter()
+        .map(|&param| Message::SetReverb {
+            param,
+            value: reverb.get(param),
+        })
+        .collect()
+}
+
 /// The messages that put `mixer` into the engine: one `SetMixer` per channel and parameter
 /// (`Channel::COUNT * ChannelParam::ALL.len()` = 36), in strip then parameter order.
 #[must_use]
@@ -1946,6 +2201,8 @@ pub struct BeatSlopperApp {
     title: Option<String>,
     /// Whether the first-frame window size check has run (see [`crate::window`]).
     size_checked: bool,
+    /// The pop-out plugin windows (plugins milestone).
+    plugins: PluginHost,
 }
 
 impl BeatSlopperApp {
@@ -1981,8 +2238,16 @@ impl BeatSlopperApp {
         let roll_low_pitch: Option<u8> = cc
             .storage
             .and_then(|s| eframe::get_value::<u8>(s, ROLL_LOW_PITCH_KEY));
+        let plugin_windows: PluginWindows = cc
+            .storage
+            .and_then(|s| eframe::get_value::<PluginWindows>(s, PLUGIN_WINDOWS_KEY))
+            .unwrap_or_default();
 
         let mut state = AppState::with_audio(mode);
+        // Windows that were open last time reopen where they were (never in the smoke test).
+        if !smoke_test {
+            state.plugin_open = plugin_windows.open_flags();
+        }
         state.theme_override = theme_override;
         state.right_panel = right_panel.unwrap_or_default();
         state.set_lane_view(lane_view.unwrap_or_default());
@@ -2010,6 +2275,8 @@ impl BeatSlopperApp {
         state.dirty = false;
         state.dialogs_enabled = !smoke_test;
 
+        let mut plugins = PluginHost::new(Theme::for_mode(mode));
+        plugins.restore(plugin_windows);
         let mut app = Self {
             theme: Theme::for_mode(mode),
             state,
@@ -2019,6 +2286,7 @@ impl BeatSlopperApp {
             applied: false,
             title: None,
             size_checked: false,
+            plugins,
         };
         app.apply_theme(&cc.egui_ctx);
         app
@@ -2039,9 +2307,51 @@ impl BeatSlopperApp {
                 applied: false,
                 title: None,
                 size_checked: false,
+                plugins: PluginHost::new(Theme::for_mode(mode)),
             },
             engine,
         )
+    }
+
+    /// The plugin windows' host (shared state and viewports).
+    pub fn plugins(&self) -> &PluginHost {
+        &self.plugins
+    }
+
+    /// The plugin windows' host, mutably (tests queue edits through it).
+    pub fn plugins_mut(&mut self) -> &mut PluginHost {
+        &mut self.plugins
+    }
+
+    /// Applies the edits and shortcuts queued by the plugin windows, pushes the current state
+    /// down to them and shows a viewport per open window. Part of [`tick`](Self::tick).
+    pub fn sync_plugins(&mut self, ctx: &egui::Context) {
+        let (edits, shortcuts) = self.plugins.take_edits();
+        for edit in edits {
+            self.state.apply_plugin_edit(edit);
+        }
+        if !self.smoke_test {
+            for shortcut in shortcuts {
+                self.run_shortcut(shortcut);
+            }
+        }
+        let spectrum = Some(self.state.engine.spectrum());
+        let reverb_level = self.state.engine.reverb_level();
+        self.plugins.sync(
+            &self.theme,
+            self.state.sample_rate(),
+            self.state.playing || self.state.playhead.playing,
+            &self.state.eq,
+            self.state.eq_preset,
+            &self.state.reverb,
+            self.state.reverb_preset,
+            reverb_level,
+            spectrum,
+            self.state.plugin_open,
+        );
+        if !ctx.embed_viewports() {
+            self.plugins.show_viewports(ctx, self.state.plugin_open);
+        }
     }
 
     /// The window title last sent to the viewport (`None` before the first frame).
@@ -2107,6 +2417,7 @@ impl BeatSlopperApp {
         self.state.handle_keyboard(ctx);
         self.sync_title(ctx);
         self.check_window_size(ctx);
+        self.sync_plugins(ctx);
         // ---- MIDI ----
         let midi_events = self.state.poll_midi();
 
@@ -2227,6 +2538,11 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
         eframe::set_value(storage, LANE_VIEW_KEY, &self.state.lane_view);
         eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
+        eframe::set_value(
+            storage,
+            PLUGIN_WINDOWS_KEY,
+            &self.plugins.geometry(self.state.plugin_open),
+        );
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -2630,6 +2946,8 @@ mod tests {
         let expected = ParamId::COUNT
             + 2
             + mixer_messages(&state.mixer).len()
+            + eq_messages(&state.eq).len()
+            + reverb_messages(&state.reverb).len()
             + bank_messages(&state.bank, None).len();
         assert!(expected < engine::QUEUE_CAPACITY, "{expected}");
         assert_eq!(free_before - state.engine.free_slots(), expected);
@@ -4067,6 +4385,7 @@ mod tests {
         assert_eq!(state.bpm, 150.0);
         assert!(state.undo()); // bpm
         assert_eq!(state.bpm, DEFAULT_BPM);
+        state.flush_outbox();
         engine.process_messages();
         assert_eq!(engine.bpm(), DEFAULT_BPM);
         assert_eq!(engine.transport().swing(), 0.0);
@@ -4085,6 +4404,7 @@ mod tests {
         assert_eq!(state.preset_index, 3);
         assert_eq!(state.bpm, 150.0);
         assert_eq!(state.swing, 0.5);
+        state.flush_outbox();
         engine.process_messages();
         assert_eq!(engine.bpm(), 150.0);
         for id in ParamId::ALL {

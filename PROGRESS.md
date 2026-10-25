@@ -192,3 +192,10 @@ opens, renders 60 frames and exits 0. Full gate: `cargo fmt --all -- --check`,
   keyboard plays (record-arm overdub still writes length-1 notes).
 - No MIDI device was connected on the build machine, so live MIDI input was verified only by
   parser tests and the engine queue test.
+
+## Plugins: EQ + reverb pop-out windows (side branch `madi/plugins-eq-reverb-1bffdb`, 2026-10-25)
+- [x] engine: 7-band parametric EQ on the master bus (`fx/eq.rs`), 12 presets, response curve
+- [x] engine: reverb pre-delay / width / wet low+high cut (`ReverbState`), 10 presets, impulse envelope, RT60
+- [x] engine: lock-free master spectrum tap + FFT analyser (`spectrum.rs`); project v6 (`eq`, `reverb`)
+- [x] app: deferred-viewport windows (EQ graph with draggable nodes + analyser; reverb envelope + wet meter), preset lists with MODIFIED lamp, PLUGINS pills in the FX / MIXER head, geometry persisted, shortcuts forwarded
+- [x] tests: 12 engine offline tests, 9 kittest / state tests, unit tests; gate green on the branch

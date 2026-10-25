@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use engine::{Bank, MixerState, ParamId};
+use engine::{Bank, EqState, MixerState, ParamId, ReverbState};
 
 /// Most undo steps remembered; older ones are dropped.
 pub const UNDO_CAP: usize = 100;
@@ -37,6 +37,10 @@ pub struct Snapshot {
     pub preset_index: usize,
     /// The six mixer strips (M6).
     pub mixer: MixerState,
+    /// The master EQ (plugins milestone).
+    pub eq: EqState,
+    /// Every reverb value (plugins milestone).
+    pub reverb: ReverbState,
     /// The file the project was saved to / opened from, so undoing Open / New restores it.
     pub project_path: Option<PathBuf>,
 }
@@ -141,6 +145,8 @@ mod tests {
             swing: 0.0,
             preset_index: 0,
             mixer: MixerState::default(),
+            eq: EqState::default(),
+            reverb: ReverbState::default(),
             project_path: None,
         }
     }

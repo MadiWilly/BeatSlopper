@@ -232,6 +232,7 @@ dependencies = [
  "neu",
  "rfd",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

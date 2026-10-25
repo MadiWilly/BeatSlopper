@@ -100,3 +100,27 @@ pluck mode, 7-voice unison, sub and noise sources, a filter ADSR with LP/BP/HP t
 envelope, velocity response, a lo-fi insert (bits, rate, wobble, vinyl noise, tone), chorus and
 a kick-triggered sidechain ducker. M9 builds about 80 presets on top with a browser. Sound
 design is done by DSP reasoning and measurable tests since the build machine cannot listen.
+
+## 2026-10-25: Plugins (EQ + reverb pop-out windows, side branch)
+- Pop-out windows are egui *deferred* viewports so they keep repainting (spectrum, meters)
+  while the main window sleeps. Their callback must be `Send + Sync + 'static`, so the windows
+  draw from a `PluginShared` behind an `Arc<Mutex>` and send edits back as `PluginEdit`s that
+  the main frame routes through the `AppState` setters (engine message, dirty, undo). The lock
+  is never touched by the audio thread. Under `egui_kittest` the window bodies render as plain
+  panels; viewports themselves are not testable headless.
+- The EQ sits on the master bus after the effect returns and before master gain / limiter,
+  and bypasses the diagnostic test tone, so every existing level test is unchanged. Flat and
+  off states are bit-transparent (identity biquads); band / master toggles are 10 ms fades.
+- `ReverbState` is the source of truth for the reverb; `ParamId::ReverbSize/Damping/Mix` keep
+  working by writing into it (both in the engine and in `AppState::set_param`). On load a
+  version-6 file's reverb state wins over a stale param; a version-5 file builds the state from
+  its params.
+- The spectrum analyser uses a hand-written radix-2 FFT (2048 points) instead of `rustfft`:
+  the engine keeps its tiny dependency set and `deny.toml` is untouched.
+- RT60 is an analytic estimate from the longest comb's loop time and feedback (plus a small
+  damping term) rather than measured from the rendered tail, so the UI can show it instantly
+  and the plot span never depends on a render; the rendered envelope is computed on a worker
+  thread 100 ms after the last change.
+- `FORMAT_VERSION` was bumped 5 -> 6 on this branch as instructed; main's M8 also bumps it, so
+  the merge must resolve the version (and the doc list) by hand. Existing tests now compare
+  against `FORMAT_VERSION` instead of a literal.

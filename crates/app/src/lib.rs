@@ -9,6 +9,7 @@
 //! - [`audio_io`]: the cpal output stream that owns the `engine::Engine`.
 //! - [`input`]: computer-keyboard piano input (key map, held keys, octave, velocity).
 //! - [`midi`]: MIDI input (`midir` port on its own thread, pure message parser).
+//! - [`plugins`]: the pop-out EQ / reverb windows' shared state and viewport host.
 //! - [`presets`]: the built-in synth presets shown in the SYNTH panel.
 //! - [`project`]: save / load / WAV export glue over `engine::Project` (worker thread).
 //! - [`shortcuts`]: keyboard shortcuts as a pure mapping from egui input.
@@ -20,6 +21,7 @@ pub mod app;
 pub mod audio_io;
 pub mod input;
 pub mod midi;
+pub mod plugins;
 pub mod presets;
 pub mod project;
 pub mod shortcuts;

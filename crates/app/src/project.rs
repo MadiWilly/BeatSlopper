@@ -148,6 +148,8 @@ impl AppState {
             bank: self.bank.clone(),
             params,
             mixer: self.mixer,
+            eq: self.eq,
+            reverb: self.reverb,
             preset_index: self.preset_index,
             octave: self.input.octave,
             velocity: self.input.velocity,
@@ -183,6 +185,15 @@ impl AppState {
         // M6: the mixer (a v3 file has none and loads with the defaults).
         self.mixer = project.mixer;
         self.mixer.normalise();
+        // Plugins: the EQ and the reverb state (a v5 file loads flat / from its params; the
+        // reverb's size / damping / mix are the source of truth for the matching params).
+        self.eq = project.eq;
+        self.eq.normalise();
+        self.reverb = project.reverb;
+        self.reverb.normalise();
+        self.params[ParamId::ReverbSize.index()] = self.reverb.size;
+        self.params[ParamId::ReverbDamping.index()] = self.reverb.damping;
+        self.params[ParamId::ReverbMix.index()] = self.reverb.mix;
         self.bank = project.bank.clone();
         self.bank.normalise();
         self.selected_step = None;

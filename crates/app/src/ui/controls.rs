@@ -352,14 +352,31 @@ pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str)
 /// Items of the top row's right-slot tab, in [`RightPanel`] order.
 pub const RIGHT_PANEL_TABS: [&str; 2] = ["FX", "Mixer"];
 
-/// The head row shared by the FX rack and the MIXER panel (M6): the title on the left and the
-/// `FX | Mixer` tab (`neu::segmented`) flush right. A click switches
-/// [`AppState::right_panel`].
+/// The head row shared by the FX rack and the MIXER panel (M6): the title on the left, the
+/// PLUGINS pills (`EQ` / `Reverb`, lit while their pop-out window is open; plugins
+/// milestone) and the `FX | Mixer` tab (`neu::segmented`) flush right. A click on the tab
+/// switches [`AppState::right_panel`]; a pill toggles [`AppState::plugin_open`].
 pub fn right_panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
         neu::title(ui, theme, title);
         right_aligned(ui, "right_panel_tabs", |ui| {
+            ui.spacing_mut().item_spacing.x = KNOB_GAP;
+            neu::label(ui, theme, "Plugins");
+            for kind in crate::plugins::PluginKind::ALL {
+                let open = state.is_plugin_open(kind);
+                if neu::toggle_button(ui, theme, kind.pill_label(), open)
+                    .on_hover_text(format!(
+                        "{} the {} window",
+                        if open { "Close" } else { "Open" },
+                        kind.title()
+                    ))
+                    .clicked()
+                {
+                    state.toggle_plugin(kind);
+                }
+            }
+            ui.add_space(HEAD_GAP - KNOB_GAP);
             let before = match state.right_panel {
                 RightPanel::Fx => 0,
                 RightPanel::Mixer => 1,

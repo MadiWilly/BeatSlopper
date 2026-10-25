@@ -549,3 +549,119 @@ second row; keep the whole-sequencer visibility tests green.
 - app: `ui/preset_browser.rs` (category segmented, scrollable name list, prev/next, search
   text field styled by the theme; shortcuts suppressed while it is focused), `preset_name`
   persisted, "modified" marker, Ctrl+Up/Down stepping.
+
+## Plugins: EQ and Reverb (pop-out windows, branch `madi/plugins-eq-reverb-1bffdb`)
+
+Two FL-style "plugin" windows, opened from the PLUGINS pills (`EQ` / `REVERB`) in the FX rack
+/ MIXER head. Everything is additive: no `ParamId` was added, `fx/chain.rs` only gained
+`reverb()` / `reverb_mut()` / `last_reverb_wet()`, and the new state lives in its own structs
+and messages.
+
+### engine: master EQ (`fx/eq.rs`)
+- `EqKind { LowCut, LowShelf, Peak, HighShelf, HighCut }` (`ALL`, `index`, `from_index`,
+  `from_value`, `label`, `has_gain`), `EqParam { On, Kind, Freq, Gain, Q }` (`ALL`, `range`,
+  `label`), `EqBand { on, kind, freq (20..=20000 Hz), gain_db (-18..=18), q (0.1..=10) }`
+  (serde, `#[serde(default)]`, `set` / `get` by `EqParam`, `normalise`, `response_db(hz, sr)`),
+  `EqState { bands: [EqBand; 7], on, gain_db }` (serde; `Default` = `FLAT`: low cut 30 Hz off,
+  low shelf 100, peaks 250 / 1k / 4k, high shelf 10k, high cut 18k off; `layout(gains, on)`,
+  `set`, `set_gain_db`, `response_db(hz, sr)` = sum of the enabled bands + output gain, exactly
+  `0` when off, `is_flat`). `PRESETS: &[EqPreset { name, state }]` (12: Flat, Bass Boost, Sub
+  Cut, Lofi Telephone, Air, De-Mud, Presence, Radio, Warm Tape, Club Low End, Scooped, Vocal
+  Clarity) and `preset_index_of(&EqState)`.
+- DSP: `Coeffs::compute(kind, freq, gain_db, q, sr)` (RBJ cookbook, `f64`, freq clamped below
+  `0.49 sr`) with `response_db`; `BiquadState::tick` (transposed direct form II,
+  denormal-flushed); `ParametricEq::new(sr)` with `set(band, param, value)`, `set_on`,
+  `set_gain_db`, `set_state` (snap), `reset`, `state()`, `process(l, r)`. Per band the
+  frequency, gain and an on/off wet amount are `Smoother`s (10 ms); coefficients are recomputed
+  only while a band's smoothers move (or on kind / Q / on changes). The master on/off and the
+  output gain are smoothed too. Off and flat states are bit-transparent.
+- Engine: the EQ runs after `FxChain::process_bus` and before the test tone, master gain and
+  limiter. `Message::SetEq { band: u8, param: EqParam, value }`, `SetEqOn(bool)`,
+  `SetEqGain(f32)`; `Engine::{eq, set_eq, set_eq_on, set_eq_gain, set_eq_state}`.
+
+### engine: reverb extensions (`fx/reverb.rs`)
+- `Reverb` gains a pre-allocated pre-delay line (`0..=200 ms`, linearly interpolated, the read
+  position glides over 50 ms), `width` (mid/side blend of the two wet channels, smoothed; `0`
+  = L == R), and wet `low_cut` / `high_cut` second-order filters (`fx::eq::Coeffs`), bypassed
+  exactly at 20 Hz / 20 kHz, so the default state renders bit-identically to M2. Setters:
+  `set_pre_delay_ms`, `set_width`, `set_low_cut_hz`, `set_high_cut_hz`, `apply_state`,
+  `state()`, getters; `reset` also snaps the new smoothers.
+- `ReverbParam { Size, Damping, PreDelay, Width, LowCut, HighCut, Mix }` (`ALL`, `range`,
+  `default_value`, `label`, `is_log`, `clamp`), `ReverbState { size, damping, pre_delay_ms,
+  width, low_cut_hz, high_cut_hz, mix }` (serde, `DEFAULT` = the M2 sound, `new`, `set` /
+  `get`, `normalise`, `comb_feedback`, `decay_time_60db()` (analytic: longest comb loop /
+  loss per pass, a little shorter with damping, capped at 15 s, monotonic in size),
+  `impulse_envelope(sr, seconds) -> Vec<f32>` (RMS per 10 ms bin of a throwaway wet-only
+  reverb; UI / tests only). `PRESETS: &[ReverbPreset]` (10: Small Room, Studio, Plate, Hall,
+  Cathedral, Lofi Spring, Dark Ambient, Bright Chamber, Gated, Infinite Wash),
+  `preset_index_of`.
+- Engine: `Message::SetReverb { param: ReverbParam, value }`; `Engine::{reverb, set_reverb,
+  set_reverb_state}`. `ReverbState` is the source of truth: `set_reverb(Size | Damping | Mix)`
+  goes through `set_param(ParamId::Reverb*)`, and `set_param(ParamId::Reverb*)` writes the
+  state, so both views always agree. The pre-delay / width / cuts reach the DSP through
+  `FxChain::reverb_mut()`.
+- Reverb level meter: `FxChain::last_reverb_wet()` (the return after its level) is peak-held
+  per block and published through one more atomic; `EngineHandle::reverb_level() -> f32`.
+
+### engine: spectrum (`spectrum.rs`)
+`SPECTRUM_SIZE = 2048`, `SPECTRUM_BINS = 1025`. `spectrum_pair() -> (SpectrumTap,
+SpectrumReader)`: the tap (audio side, created in `new_engine`) `push`es every mono output
+sample `(l + r) / 2` into a ring of `AtomicU32` bit patterns and `publish`es the write index
+once per block; the reader (UI side, `EngineHandle::spectrum()`, `Clone`) `snapshot`s the ring
+in time order. `fft_radix2(re, im)` is a hand-written iterative Cooley-Tukey (no new crate);
+`Analyzer::analyse(&samples, dt) -> &[f32]` Hann-windows, FFTs, converts to dB (full-scale
+sine = 0 dB, floor -90 dB) and applies attack / 40 dB/s decay smoothing per bin;
+`level_at(hz, sr)` interpolates; `bin_hz(bin, sr)`.
+
+### engine: project
+`Project` version 6 adds `eq: EqState` and `reverb: ReverbState` (both `#[serde(default)]`).
+`apply_to` sets the params first, then `set_reverb_state` and `set_eq_state`;
+`from_json` builds the reverb from `reverb_size` / `reverb_damping` / `reverb_mix` when a
+file has no `reverb` (version <= 5) and always copies the state's size / damping / mix back
+into `params` (`sync_reverb_params`), so the state wins over a stale param. Exports honour
+both.
+
+### app
+- `plugins.rs`: `PluginKind { Eq, Reverb }` (`ALL`, `index`, `title`, `pill_label`,
+  `default_size`, `viewport_id`), `WindowGeom { open, pos, size }`, `PluginWindows { eq,
+  reverb }` (persisted under `plugin_windows`), `PluginEdit { EqBand { band, param, value,
+  drag_started }, EqOn, EqGain { db, drag_started }, EqPreset(i), Reverb { param, value,
+  drag_started }, ReverbPreset(i), Close(kind) }`, `PluginShared` (theme, sample rate, the EQ /
+  reverb mirrors and preset indices, the selected band, the graph rect, the `SpectrumReader` +
+  `Analyzer`, the reverb level with its decayed meter value, the `EnvelopeCache` and its
+  debounced worker thread (`ENVELOPE_DEBOUNCE` 100 ms, rendered at 24 kHz over
+  `max(RT60, 1 s)` capped at 10 s), the queued edits and shortcuts, the window geometry) and
+  `PluginHost { shared: Arc<Mutex<PluginShared>> }` with `restore`, `take_edits`, `sync(..)`,
+  `show_viewports(ctx, open)`, `geometry(open)`.
+- Deferred viewports: `show_viewports` calls `Context::show_viewport_deferred` once per open
+  window every main frame (the callback is `Send + Sync + 'static`, hence the `Arc<Mutex>`; the
+  lock is only ever taken on UI threads). `ui::plugins::viewport_ui` paints the surface,
+  records the window geometry, turns `close_requested` into `PluginEdit::Close`, forwards
+  `shortcuts::take_shortcuts` from the window's input, and requests a repaint of the root
+  viewport whenever it queued something. Under `egui_kittest` (`embed_viewports`) no viewport
+  is shown; the window bodies are tested as plain panels.
+- `AppState` gains `eq`, `eq_preset`, `reverb`, `reverb_preset`, `plugin_open: [bool; 2]`
+  and the setters `set_eq_band(band, param, value, drag_started)`, `set_eq_on`,
+  `set_eq_gain(db, drag_started)`, `set_eq_state`, `apply_eq_preset`, `send_eq`,
+  `set_reverb(param, value, drag_started)`, `set_reverb_state`, `apply_reverb_preset`,
+  `send_reverb`, `apply_plugin_edit(PluginEdit)`, `is_plugin_open` / `toggle_plugin`; `set_param`
+  on `ReverbSize / Damping / Mix` mirrors into `reverb`, `apply_preset` too. `EditKey` gains
+  `Eq(band)` (one key per band: a node drag that moves frequency and gain is one undo step),
+  `EqGain`, `Reverb(param)`. `Snapshot` (undo) and the project glue carry `eq` and `reverb`;
+  `resend_all` sends `eq_messages` (37) and `reverb_messages` (7). `BeatSlopperApp::sync_plugins`
+  runs in `tick`.
+- `ui/plugins/`: `eq_graph.rs` (geometry helpers `freq_to_x` / `x_to_freq` / `db_to_y` /
+  `y_to_db` / `spectrum_to_y` / `node_pos` / `hit_node` / `plot_rect`; painting: inset-m
+  graph, log grid 20 Hz..20 kHz with labels, dB grid -18..+18, the spectrum as a mesh in
+  accent at 20 % alpha, the response curve 2 pt accent, 12 pt nodes (OnGlow when selected,
+  raised-s with an accent ring otherwise, a faint hollow dot for off bands); interaction: drag
+  = freq / gain, wheel = Q, double-click = on / off, right-click = select + cycle kind, click =
+  select; hover tooltip), `eq_window.rs` (head with `EQ On`, graph, `BAND n` controls: TYPE
+  segmented, ON, FREQ / GAIN / Q knobs, OUTPUT knob; PRESETS column with the MODIFIED lamp and
+  a scrollable pill list), `reverb_window.rs` (RT60 readout, the envelope plot on a log dB
+  scale with time ticks and the RT60 marker, the wet meter, the seven knobs, PRESETS column).
+- Tests: `crates/engine/tests/plugins.rs` (12), unit tests in `fx/eq.rs`, `fx/reverb.rs`,
+  `spectrum.rs`, `plugins.rs`, `eq_graph.rs`; `crates/app/tests/plugins_ui.rs` (both windows
+  render in both themes, preset pills apply through the app state, a node drag moves the band
+  and is one undo step, double-click / wheel, the pills open / close the windows and the host
+  routes edits).
