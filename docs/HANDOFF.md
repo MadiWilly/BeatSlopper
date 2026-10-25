@@ -83,3 +83,11 @@ yet, leave it; its session reports to the old orchestrator session, so check the
 Paste this to run unattended:
 
     /loop Continue the BeatSlopper build: read docs/HANDOFF.md first, then follow docs/PLAN.md "Loop procedure" and the "Phase 3 brief", using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state; merge the side-session branches listed in HANDOFF.md into main as they finish. Stop the loop when M9 is done and green and every finished branch is merged, or everything is blocked.
+
+## Added after the handoff was written
+- `madi/design-cleanup-3a9db8` (session "Design cleanup: selection states and polish"): the
+  segmented control's selected item becomes an accent chip, plus a panel-by-panel alignment,
+  contrast and labelling sweep; touches crates/neu widgets and small crates/app ui fixes. Merge
+  it like the others when its session reports done.
+- Main now also carries the M8 synth DSP commit (77dd850); M8 still needs only the engine
+  wiring listed above, then the gate and tag m8.
