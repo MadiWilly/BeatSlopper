@@ -61,9 +61,8 @@
 release build, smoke exit 0).
 
 ## Next action
-M8: params subagent adds the ids; then engine-synth (osc extras, FM, pluck, filter ADSR, pitch env,
-velocity) | engine-fx (lo-fi, chorus, ducker) | app (new panel groups) in parallel; gate, tag m8.
-Then M9: presets subagent (80+ EDM/lofi presets) + app browser; gate, tag m9.
+HANDOFF: see docs/HANDOFF.md. The next orchestrator session pulls, finishes the M8 engine wiring
+(synth insert, ducker, v6), gates and tags m8, then M9, merging side-session branches as they finish.
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
