@@ -1441,6 +1441,264 @@ fn roll_handle_drags_the_roll_taller_and_shorter() {
     );
 }
 
+fn pointer_press_with<S>(harness: &mut Harness<'_, S>, pos: Pos2, modifiers: Modifiers) {
+    harness.event(Event::ModifiersChanged(modifiers));
+    harness.event(Event::PointerMoved(pos));
+    harness.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers,
+    });
+    harness.step();
+}
+
+fn pointer_release_with<S>(harness: &mut Harness<'_, S>, pos: Pos2, modifiers: Modifiers) {
+    harness.event(Event::PointerMoved(pos));
+    harness.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers,
+    });
+    harness.event(Event::ModifiersChanged(Modifiers::default()));
+    harness.step();
+}
+
+fn secondary_press<S>(harness: &mut Harness<'_, S>, pos: Pos2, pressed: bool) {
+    harness.event(Event::PointerMoved(pos));
+    harness.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+}
+
+/// The roll over three one-step notes (E2 at 3, G#2 at 5, B2 at 7), nothing to undo.
+fn three_note_roll() -> Harness<'static, AppState> {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    let state = harness.state_mut();
+    state.add_note(Note::new(2, 1, 40, 0.8));
+    state.add_note(Note::new(4, 1, 44, 0.8));
+    state.add_note(Note::new(6, 1, 47, 0.8));
+    state.undo.clear();
+    state.dirty = false;
+    harness.run_steps(2);
+    harness
+}
+
+/// A click selects one note, Ctrl-click adds another, dragging one of them moves both (one
+/// undo step), a Ctrl-drag marquee selects every note it touches and Delete removes them all.
+#[test]
+fn ctrl_click_marquee_and_group_drag_edit_a_selection_together() {
+    let mut harness = three_note_roll();
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    pointer_click(&mut harness, roll_cell(&model, grid, 2, 40));
+    assert_eq!(harness.state().roll_selected, Some(0));
+    assert_eq!(harness.state().roll_selection, [0]);
+
+    let second = roll_cell(&model, grid, 4, 44);
+    pointer_press_with(&mut harness, second, Modifiers::COMMAND);
+    pointer_release_with(&mut harness, second, Modifiers::COMMAND);
+    assert_eq!(harness.state().roll_selection, [0, 1]);
+    assert_eq!(
+        harness.state().roll_selected,
+        Some(1),
+        "the last clicked is primary"
+    );
+    assert_eq!(harness.state().undo.len(), 0, "selecting is not an edit");
+
+    // Drag the second note two steps right: both selected notes move, the third stays.
+    pointer_drag(&mut harness, second, roll_cell(&model, grid, 6, 44));
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[
+            Note::new(4, 1, 40, 0.8),
+            Note::new(6, 1, 44, 0.8),
+            Note::new(6, 1, 47, 0.8)
+        ]
+    );
+    assert_eq!(harness.state().undo.len(), 1, "one undo step for the group");
+    assert_eq!(
+        harness.state().roll_selection,
+        [0, 1],
+        "the selection follows"
+    );
+    assert_eq!(harness.state().roll_selected, Some(1));
+
+    // Ctrl-click the primary again: it leaves the selection.
+    let moved_second = roll_cell(&model, grid, 6, 44);
+    pointer_press_with(&mut harness, moved_second, Modifiers::COMMAND);
+    pointer_release_with(&mut harness, moved_second, Modifiers::COMMAND);
+    assert_eq!(harness.state().roll_selection, [0]);
+    assert_eq!(harness.state().roll_selected, Some(0));
+
+    // A Ctrl-drag marquee from an empty corner over everything selects all three.
+    let from = roll_cell(&model, grid, 0, 38);
+    let to = roll_cell(&model, grid, 9, 50);
+    pointer_press_with(&mut harness, from, Modifiers::COMMAND);
+    harness.event(Event::PointerMoved(to));
+    harness.step();
+    pointer_release_with(&mut harness, to, Modifiers::COMMAND);
+    assert_eq!(harness.state().roll_selection.len(), 3);
+    assert_eq!(
+        harness.state().pattern().notes().len(),
+        3,
+        "a marquee adds nothing"
+    );
+
+    harness.key_press_modifiers(Modifiers::NONE, Key::Delete);
+    harness.step();
+    assert!(harness.state().pattern().notes().is_empty());
+    assert_eq!(harness.state().undo.len(), 2);
+    assert!(harness.state().roll_selection.is_empty());
+    assert!(harness.state_mut().undo());
+    assert_eq!(harness.state().pattern().notes().len(), 3);
+}
+
+/// The arrow keys nudge the selection by a row or a step; Ctrl+Up / Ctrl+Down move it an
+/// octave; a nudge that would push a note off the grid does nothing.
+#[test]
+fn arrow_keys_nudge_the_selection_and_ctrl_arrows_shift_an_octave() {
+    let mut harness = three_note_roll();
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    pointer_click(&mut harness, roll_cell(&model, grid, 2, 40));
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowUp);
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes()[0],
+        Note::new(2, 1, 41, 0.8)
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowUp);
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes()[0],
+        Note::new(2, 1, 53, 0.8)
+    );
+    harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes()[0],
+        Note::new(3, 1, 53, 0.8)
+    );
+    assert_eq!(harness.state().undo.len(), 3);
+    assert_eq!(harness.state().roll_selected, Some(0), "still selected");
+
+    // Add the third note (B2) to the selection: Ctrl+Down drops both an octave.
+    let third = roll_cell(&model, grid, 6, 47);
+    pointer_press_with(&mut harness, third, Modifiers::COMMAND);
+    pointer_release_with(&mut harness, third, Modifiers::COMMAND);
+    assert_eq!(harness.state().roll_selection, [0, 2]);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+    harness.step();
+    let notes = harness.state().pattern().notes().to_vec();
+    assert_eq!(notes[0], Note::new(3, 1, 41, 0.8));
+    assert_eq!(
+        notes[1],
+        Note::new(4, 1, 44, 0.8),
+        "not selected, unchanged"
+    );
+    assert_eq!(notes[2], Note::new(6, 1, 35, 0.8));
+    assert_eq!(harness.state().undo.len(), 4);
+    assert_eq!(harness.state().roll_selection, [0, 2]);
+
+    // Ten steps left would push the first note off the grid: nobody moves.
+    for _ in 0..10 {
+        harness.key_press_modifiers(Modifiers::NONE, Key::ArrowLeft);
+        harness.step();
+    }
+    // (The list re-sorts by start, so compare by value.)
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[
+            Note::new(0, 1, 41, 0.8),
+            Note::new(3, 1, 35, 0.8),
+            Note::new(4, 1, 44, 0.8)
+        ]
+    );
+    assert_eq!(harness.state().undo.len(), 7, "three nudges fitted");
+    assert_eq!(
+        harness.state().roll_selection,
+        [0, 1],
+        "the selection followed"
+    );
+}
+
+/// A right-click on a note removes it; the right button held while crossing a note removes
+/// that one too. Each is one undo step.
+#[test]
+fn right_click_and_right_drag_remove_notes() {
+    let mut harness = three_note_roll();
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    let first = roll_cell(&model, grid, 2, 40);
+    secondary_press(&mut harness, first, true);
+    secondary_press(&mut harness, first, false);
+    assert_eq!(harness.state().pattern().notes().len(), 2);
+    assert_eq!(
+        harness.state().pattern().notes()[0],
+        Note::new(4, 1, 44, 0.8)
+    );
+    assert_eq!(harness.state().undo.len(), 1);
+
+    // Right button down on empty space, then across the B2: gone.
+    secondary_press(&mut harness, roll_cell(&model, grid, 9, 50), true);
+    assert_eq!(
+        harness.state().pattern().notes().len(),
+        2,
+        "empty space: nothing"
+    );
+    harness.event(Event::PointerMoved(roll_cell(&model, grid, 6, 47)));
+    harness.step();
+    secondary_press(&mut harness, roll_cell(&model, grid, 6, 47), false);
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[Note::new(4, 1, 44, 0.8)]
+    );
+    assert_eq!(harness.state().undo.len(), 2);
+}
+
+/// The BLACK KEYS pill hides the black-key rows: every row is a white key and notes on black
+/// keys have no row until it is turned back on. Persisted view state, not an edit.
+#[test]
+fn black_keys_pill_hides_the_black_rows() {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    harness.state_mut().add_note(Note::new(0, 1, 37, 0.8));
+    harness.state_mut().undo.clear();
+    harness.run_steps(2);
+    let (model, _grid) = roll_geometry(&harness, harness.state());
+    assert!(model.black_keys && model.is_visible(37));
+
+    harness
+        .get_by_label(ui::sequencer::BLACK_KEYS_LABEL)
+        .click();
+    harness.run_steps(2);
+    assert!(!harness.state().roll_black_keys);
+    let (model, _grid) = roll_geometry(&harness, harness.state());
+    assert!(!model.black_keys);
+    assert_eq!(model.pitch_at_row(0), Some(36));
+    assert_eq!(model.pitch_at_row(1), Some(38), "D2 is the next row");
+    assert!(!model.is_visible(37), "C#2 has no row");
+    assert_eq!(harness.state().undo.len(), 0);
+
+    harness
+        .get_by_label(ui::sequencer::BLACK_KEYS_LABEL)
+        .click();
+    harness.run_steps(2);
+    assert!(harness.state().roll_black_keys);
+    assert!(roll_geometry(&harness, harness.state()).0.is_visible(37));
+    // The pill is only there in ROLL view.
+    radio(&harness, "Grid").click();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label(ui::sequencer::BLACK_KEYS_LABEL)
+            .is_none()
+    );
+}
+
 /// Keys held on the computer keyboard reach the roll's model (its key column lights them).
 #[test]
 fn held_keys_reach_the_roll_model() {

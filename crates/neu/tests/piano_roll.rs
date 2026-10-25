@@ -28,7 +28,7 @@ impl Roll {
             || out.selected.is_some()
             || out.scrolled
         {
-            self.log.push(out);
+            self.log.push(out.clone());
         }
         if let Some(n) = out.add {
             self.notes.push(n);
@@ -45,7 +45,7 @@ impl Roll {
     }
 
     fn last(&self) -> PianoRollOutput {
-        self.log.last().copied().unwrap_or_default()
+        self.log.last().cloned().unwrap_or_default()
     }
 }
 

@@ -117,6 +117,8 @@ pub const CHORD_PILL: Vec2 = vec2(84.0, 26.0);
 pub const CHORD_PILL_GAP: f32 = 6.0;
 /// Caps title over the chord pills.
 pub const CHORDS_TITLE: &str = "Chords";
+/// Label of the head pill that shows / hides the roll's black-key rows.
+pub const BLACK_KEYS_LABEL: &str = "Black keys";
 
 /// Height of the roll itself for `state`: the roll area minus the handle strip, plus the rows
 /// the handle was dragged to ([`AppState::roll_extra_rows`]).
@@ -154,13 +156,29 @@ pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
         row_height: ROLL_ROW_HEIGHT,
         playhead_step: state.roll_playhead(),
         selected: state.roll_selected,
+        selection: roll_selection(state),
         held: state.held_notes,
+        black_keys: state.roll_black_keys,
     };
-    model.low_pitch = model.low_pitch.min(model.max_low_pitch());
+    model.normalise(state.pattern().notes().len());
     model
 }
 
-/// The roll's view of a pattern note (`selected` when it is `state.roll_selected`).
+/// The roll's selection: [`AppState::roll_selection`] plus the primary
+/// [`AppState::roll_selected`] when it is missing from it (older paths set the primary
+/// alone).
+#[must_use]
+pub fn roll_selection(state: &AppState) -> Vec<usize> {
+    let mut selection = state.roll_selection.clone();
+    if let Some(primary) = state.roll_selected
+        && !selection.contains(&primary)
+    {
+        selection.push(primary);
+    }
+    selection
+}
+
+/// The roll's view of a pattern note (`selected` when it is in the roll selection).
 #[must_use]
 pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
     state
@@ -173,7 +191,7 @@ pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
             length: n.length,
             pitch: n.pitch,
             velocity: n.velocity,
-            selected: state.roll_selected == Some(i),
+            selected: state.roll_selected == Some(i) || state.roll_selection.contains(&i),
         })
         .collect()
 }
@@ -184,16 +202,33 @@ pub fn to_note(n: RollNote) -> Note {
     Note::new(n.start, n.length, n.pitch, n.velocity)
 }
 
-/// Applies what the roll reported this frame: the scrolled bottom pitch and the click
-/// selection (view state the widget edits in `model`), then the one edit, if any, through
-/// [`AppState::add_note`] / [`AppState::set_note`] / [`AppState::remove_note`]. The selection
-/// follows its note across the re-sort an add or move causes.
+/// Applies what the roll reported this frame: the scrolled bottom pitch and the selection
+/// (view state the widget edits in `model`), then the one edit, if any, through
+/// [`AppState::add_note`] / [`AppState::add_chord`] / [`AppState::set_note`] /
+/// [`AppState::move_notes`] / [`AppState::remove_note`] / [`AppState::remove_notes`]. The
+/// selection follows its notes across the re-sort an add or move causes: every selected
+/// note is remembered by value (as the edit leaves it), then found again in the new list.
 pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: PianoRollOutput) {
     state.set_roll_low_pitch(model.low_pitch);
-    state.roll_selected = model.selected;
-    let selected_note = model
-        .selected
-        .and_then(|i| state.pattern().notes().get(i).copied());
+    let before = state.pattern().notes().to_vec();
+    let mut wanted: Vec<Note> = model
+        .selection
+        .iter()
+        .filter_map(|&i| before.get(i).copied())
+        .collect();
+    let mut primary: Option<Note> = model.selected.and_then(|i| before.get(i).copied());
+    // What a moved note becomes, carried into the remembered selection.
+    let mut follow = |old: Option<&Note>, new: Note, wanted: &mut Vec<Note>| {
+        if let Some(old) = old {
+            for w in wanted.iter_mut().filter(|w| *w == old) {
+                *w = new;
+            }
+            if primary.as_ref() == Some(old) {
+                primary = Some(new);
+            }
+        }
+    };
+
     if let Some(n) = out.add {
         // With a chord armed the drawn note is the root: every chord tone lands at once.
         match state.armed_chord.and_then(|i| CHORDS.get(i)) {
@@ -204,19 +239,54 @@ pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: Pian
                 state.add_note(to_note(n));
             }
         }
-        state.roll_selected =
-            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s));
+    } else if !out.moved_many.is_empty() {
+        let edits: Vec<(usize, Note)> = out
+            .moved_many
+            .iter()
+            .map(|&(i, n)| (i, to_note(n)))
+            .collect();
+        state.move_notes(&edits);
+        for (i, n) in &edits {
+            let mut n = *n;
+            n.normalise();
+            follow(before.get(*i), n, &mut wanted);
+        }
     } else if let Some((i, n)) = out.moved {
-        let new_index = state.set_note(i, to_note(n));
-        state.roll_selected = if model.selected == Some(i) {
-            new_index
-        } else {
-            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s))
-        };
+        let mut note = to_note(n);
+        note.normalise();
+        state.set_note(i, note);
+        follow(before.get(i), note, &mut wanted);
+    } else if !out.removed_many.is_empty() {
+        state.remove_notes(&out.removed_many);
+        for i in &out.removed_many {
+            if let Some(gone) = before.get(*i) {
+                wanted.retain(|w| w != gone);
+                if primary.as_ref() == Some(gone) {
+                    primary = None;
+                }
+            }
+        }
     } else if let Some(i) = out.removed {
-        // `remove_note` shifts the selection past the removed index itself.
         state.remove_note(i);
+        if let Some(gone) = before.get(i) {
+            wanted.retain(|w| w != gone);
+            if primary.as_ref() == Some(gone) {
+                primary = None;
+            }
+        }
     }
+
+    let after = state.pattern().notes();
+    let mut selection: Vec<usize> = wanted
+        .iter()
+        .filter_map(|w| after.iter().position(|n| n == w))
+        .collect();
+    selection.dedup();
+    let primary = primary
+        .and_then(|p| after.iter().position(|n| *n == p))
+        .or_else(|| selection.last().copied());
+    state.roll_selection = selection;
+    state.roll_selected = primary;
 }
 
 /// Left edge of cell `i` relative to the grid's left edge.
@@ -463,6 +533,13 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         pattern_tabs(ui, state, theme);
         queued_indicator(ui, state, theme);
         lane_view_tabs(ui, state, theme);
+        if state.lane_view == LaneView::Roll
+            && neu::toggle_button(ui, theme, BLACK_KEYS_LABEL, state.roll_black_keys)
+                .on_hover_text("Show the black-key rows on the roll (off: white keys only)")
+                .clicked()
+        {
+            state.toggle_black_keys();
+        }
         controls::right_aligned(ui, "sequencer_head", |ui| {
             ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
             length_selector(ui, state, theme);
