@@ -1,7 +1,9 @@
 //! The piano roll (M7): time on X in steps, pitch on Y, notes as rounded accent bars.
 //!
-//! Layout: a [`KEY_COLUMN_WIDTH`] key column on the left (one raised-s tile per octave C,
-//! labelled "C3" etc.), then `steps` columns of `step_width` by `pitches` rows of `row_height`.
+//! Layout: a [`KEY_COLUMN_WIDTH`] key column on the left (one key per row, see [`key_rect`]:
+//! white keys as lit surface tiles labelled "D3" etc., black keys as shorter `key_black`
+//! stubs; a key in `model.held` paints accent and its grid row gets a faint accent wash),
+//! then `steps` columns of `step_width` by `pitches` rows of `row_height`.
 //! The bottom row is `low_pitch`; pitch rises upwards. The whole widget is one inset-m surface;
 //! black-key rows get a faint shadow-dark tint, beat lines fall every [`BEAT`] steps (1 pt) and
 //! bar lines every [`BAR`] steps (2 pt), the playhead is a 2 pt accent line at a fractional step.
@@ -64,8 +66,21 @@ pub const ACCENT_DOT_INSET: f32 = 8.0;
 pub const ROLL_RADIUS: f32 = 10.0;
 /// How far the surface is lerped towards shadow-dark on black-key rows (6 %).
 pub const BLACK_ROW_TINT: f32 = 0.06;
-/// Size of the "C3" key tile in the key column.
+/// Size of the "C3" key tile in the key column (the M7 look; kept for layouts that still
+/// measure it).
 pub const KEY_TILE: Vec2 = vec2(40.0, 20.0);
+/// Horizontal inset of a key tile inside the key column.
+pub const KEY_INSET_X: f32 = 3.0;
+/// Vertical inset of a key tile inside its row.
+pub const KEY_INSET_Y: f32 = 0.5;
+/// Width of a black key as a fraction of a white key's width.
+pub const BLACK_KEY_FRACTION: f32 = 0.6;
+/// How far a white key is lerped from the surface towards shadow-highlight (it reads as lit).
+pub const WHITE_KEY_LIFT: f32 = 0.5;
+/// Distance from a white key's right edge to the end of its note name.
+pub const KEY_LABEL_INSET: f32 = 4.0;
+/// Opacity of the accent wash across the grid row of a held key.
+pub const HELD_ROW_WASH: f32 = 0.12;
 
 /// One note on the roll, in grid units.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,10 +115,14 @@ pub struct PianoRollModel {
     pub playhead_step: Option<f32>,
     /// Index of the selected note, if any. Set by a click, cleared when that note is removed.
     pub selected: Option<usize>,
+    /// Pitches currently sounding (the host's held keys): their key in the key column paints
+    /// accent and their grid row gets a faint accent wash. View state only, never an edit.
+    pub held: [bool; 128],
 }
 
 impl Default for PianoRollModel {
-    /// 16 steps, three octaves (36 rows) from C2 (36), 24 x 14 cells, no playhead.
+    /// 16 steps, three octaves (36 rows) from C2 (36), 24 x 14 cells, no playhead, no held
+    /// keys.
     fn default() -> Self {
         Self {
             steps: 16,
@@ -113,6 +132,7 @@ impl Default for PianoRollModel {
             row_height: 14.0,
             playhead_step: None,
             selected: None,
+            held: [false; 128],
         }
     }
 }
@@ -196,6 +216,23 @@ pub fn row_rect(model: &PianoRollModel, grid: Rect, pitch: u8) -> Rect {
     Rect::from_min_max(
         pos2(grid.min.x, bottom - model.row_height),
         pos2(grid.max.x, bottom),
+    )
+}
+
+/// The key tile painted for `pitch` in the key column of a roll allocated in `outer`: its row
+/// inset [`KEY_INSET_Y`] vertically and [`KEY_INSET_X`] horizontally; a black key is only
+/// [`BLACK_KEY_FRACTION`] of that width, against the left edge. Not clipped to `outer`.
+pub fn key_rect(model: &PianoRollModel, outer: Rect, pitch: u8) -> Rect {
+    let row = row_rect(model, grid_rect(outer), pitch);
+    let full = KEY_COLUMN_WIDTH - 2.0 * KEY_INSET_X;
+    let width = if is_black_key(pitch) {
+        full * BLACK_KEY_FRACTION
+    } else {
+        full
+    };
+    Rect::from_min_max(
+        pos2(outer.min.x + KEY_INSET_X, row.min.y + KEY_INSET_Y),
+        pos2(outer.min.x + KEY_INSET_X + width, row.max.y - KEY_INSET_Y),
     )
 }
 
@@ -538,6 +575,9 @@ fn paint(
             let full = Rect::from_min_max(pos2(outer.min.x, r.min.y), r.max);
             painter.rect_filled(full, 0.0, tint);
         }
+        if model.held[usize::from(pitch)] {
+            painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(HELD_ROW_WASH));
+        }
         if row > 0 {
             painter.hline(grid.x_range(), r.max.y, separator);
         }
@@ -634,29 +674,45 @@ fn paint(
         }
     }
 
-    // Key column: a raised tile per octave C.
+    // Key column: one key per row. White keys are surface tiles spanning the column with their
+    // note name; black keys are shorter `key_black` stubs on the left. A held key (the
+    // computer keyboard, the on-screen piano or MIDI) is accent with its name in on-accent.
+    let white = theme
+        .surface
+        .lerp_to_gamma(theme.shadow_highlight, WHITE_KEY_LIFT);
     for row in 0..model.pitches {
         let Ok(pitch) = u8::try_from(usize::from(model.low_pitch) + row) else {
             break;
         };
-        if pitch % 12 != 0 {
-            continue;
+        let key = key_rect(model, outer, pitch);
+        let held = model.held[usize::from(pitch)];
+        let black = is_black_key(pitch);
+        let fill = if held {
+            theme.accent
+        } else if black {
+            theme.key_black
+        } else {
+            white
+        };
+        let radius = if black { 3.0 } else { 4.0 };
+        painter.rect_filled(key, radius, fill);
+        if !black {
+            let colour = if held {
+                theme.on_accent
+            } else if pitch % 12 == 0 {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            };
+            text::paint_text(
+                &painter,
+                pos2(key.max.x - KEY_LABEL_INSET, key.center().y),
+                Align2::RIGHT_CENTER,
+                &note_name(pitch),
+                TextKind::Label,
+                colour,
+            );
         }
-        let r = row_rect(model, grid, pitch);
-        let cy = r.center().y.clamp(
-            outer.min.y + KEY_TILE.y * 0.5 + 2.0,
-            outer.max.y - KEY_TILE.y * 0.5 - 2.0,
-        );
-        let tile = Rect::from_center_size(pos2(outer.min.x + KEY_COLUMN_WIDTH * 0.5, cy), KEY_TILE);
-        paint_soft_rect(&painter, tile, NOTE_RADIUS, Depth::RaisedS, theme);
-        text::paint_text(
-            &painter,
-            tile.center(),
-            Align2::CENTER_CENTER,
-            &note_name(pitch),
-            TextKind::Label,
-            theme.text_secondary,
-        );
     }
 }
 
@@ -679,6 +735,30 @@ mod tests {
         assert_eq!(g.min, pos2(58.0, 20.0));
         assert_eq!(g.max, outer.max);
         assert_eq!(model.max_low_pitch(), 91);
+    }
+
+    #[test]
+    fn key_rects_fill_the_key_column_one_per_row() {
+        let model = PianoRollModel::default();
+        let outer = Rect::from_min_size(pos2(10.0, 20.0), model.size());
+        // The bottom row is C2 (36): a white key spanning the column minus the insets.
+        let c2 = key_rect(&model, outer, 36);
+        assert_eq!(c2.min.x, 10.0 + KEY_INSET_X);
+        assert_eq!(c2.max.x, 10.0 + KEY_COLUMN_WIDTH - KEY_INSET_X);
+        assert_eq!(c2.max.y, outer.max.y - KEY_INSET_Y);
+        assert_eq!(c2.height(), model.row_height - 2.0 * KEY_INSET_Y);
+        // C#2 sits one row up and is a short stub on the left.
+        let cs2 = key_rect(&model, outer, 37);
+        assert_eq!(cs2.min.x, c2.min.x);
+        assert_eq!(cs2.width(), c2.width() * BLACK_KEY_FRACTION);
+        assert_eq!(cs2.max.y, c2.min.y - 2.0 * KEY_INSET_Y);
+        // Every visible row has a key inside the column.
+        for pitch in 36..72u8 {
+            let k = key_rect(&model, outer, pitch);
+            assert!(outer.contains_rect(k), "{pitch}: {k:?}");
+            assert!(k.max.x < grid_rect(outer).min.x);
+        }
+        assert!(!model.held.iter().any(|h| *h), "nothing held by default");
     }
 
     #[test]

@@ -30,14 +30,22 @@
 //!
 //! Piano roll (M7): the head's `GRID | ROLL` tab ([`LANE_VIEW_TABS`], [`AppState::lane_view`])
 //! swaps the grid area for `neu::piano_roll` over the edit pattern's whole note list (every
-//! bar, every bar line). The roll takes exactly the space of the six rows and the bottom row
-//! ([`ROLL_AREA_HEIGHT`]) under a beat-number row aligned to its columns; the panel height is
-//! the same in both views. Its geometry comes from [`roll_model`] (columns fitted to the
-//! width, rows to the height, [`AppState::roll_low_pitch`] at the bottom) and every edit the
+//! bar, every bar line). The roll takes the space of the six rows and the bottom row
+//! ([`ROLL_AREA_HEIGHT`], less the [`ROLL_HANDLE_HEIGHT`] strip under it) under a beat-number
+//! row aligned to its columns, so the panel height is the same in both views until the
+//! handle is dragged: each [`ROLL_ROW_HEIGHT`] of drag adds a row
+//! ([`AppState::roll_extra_rows`], persisted) and the panel grows with it. Its geometry comes
+//! from [`roll_model`] (columns fitted to the width left of the CHORDS column, rows to the
+//! height, [`AppState::roll_low_pitch`] at the bottom, the held keys lit) and every edit the
 //! widget reports is applied by [`apply_roll_output`] through the undoable note methods on
-//! `AppState`.
+//! `AppState`. The CHORDS column ([`CHORD_COLUMN_WIDTH`], right of the roll) lists
+//! [`CHORDS`] as toggle pills: with one armed, a draw on the roll places the whole chord on
+//! the drawn root ([`AppState::add_chord`], one undo step).
 
-use egui::{Align, Align2, Layout, Response, Role, Sense, Ui, Vec2, WidgetInfo, vec2};
+use egui::{
+    Align, Align2, CursorIcon, Layout, Response, Role, ScrollArea, Sense, Ui, Vec2, WidgetInfo,
+    vec2,
+};
 use engine::pattern::pattern_letter;
 use engine::{DrumRow, Note, PATTERN_COUNT, PatternLength, STEPS};
 use neu::{
@@ -46,6 +54,7 @@ use neu::{
 };
 
 use crate::app::{AppState, EditKey, LaneView, queued_blink_visible};
+use crate::chords::CHORDS;
 use crate::ui::controls;
 
 /// Width of the row-name column (`.seq-row .name`).
@@ -93,14 +102,43 @@ pub const MIN_ROLL_PITCHES: usize = 12;
 /// Narrowest and widest step column of the roll (64 steps in a narrow panel / 16 in a wide one).
 pub const MIN_ROLL_STEP_WIDTH: f32 = 12.0;
 pub const MAX_ROLL_STEP_WIDTH: f32 = 48.0;
+/// Height of the resize handle strip under the roll (inside [`ROLL_AREA_HEIGHT`], leaving
+/// the default roll exactly 17 rows).
+pub const ROLL_HANDLE_HEIGHT: f32 = 8.0;
+/// Size of the grip painted in the middle of the handle strip.
+pub const ROLL_GRIP: Vec2 = vec2(36.0, 4.0);
+/// Accessible name of the handle under the roll.
+pub const ROLL_HANDLE_LABEL: &str = "Resize roll";
+/// Width of the CHORDS column to the right of the roll.
+pub const CHORD_COLUMN_WIDTH: f32 = 96.0;
+/// Size of one chord pill (the column minus room for the scroll bar).
+pub const CHORD_PILL: Vec2 = vec2(84.0, 26.0);
+/// Vertical gap between chord pills.
+pub const CHORD_PILL_GAP: f32 = 6.0;
+/// Caps title over the chord pills.
+pub const CHORDS_TITLE: &str = "Chords";
+
+/// Height of the roll itself for `state`: the roll area minus the handle strip, plus the rows
+/// the handle was dragged to ([`AppState::roll_extra_rows`]).
+#[must_use]
+pub fn roll_height(state: &AppState) -> f32 {
+    ROLL_AREA_HEIGHT - ROLL_HANDLE_HEIGHT + roll_extra_height(state)
+}
+
+/// How much taller than the grid view the roll view makes the panel.
+#[must_use]
+pub fn roll_extra_height(state: &AppState) -> f32 {
+    state.roll_extra_rows as f32 * ROLL_ROW_HEIGHT
+}
 
 /// The roll's view model for a roll of `size` (the space it may take: `ROLL_AREA_HEIGHT` tall
 /// and the panel's width): one column per step of the edit pattern, the column width fitted
 /// to the width (whole points, `MIN_ROLL_STEP_WIDTH..=MAX_ROLL_STEP_WIDTH`), as many
 /// [`ROLL_ROW_HEIGHT`] rows as fit the height (at least [`MIN_ROLL_PITCHES`]),
 /// [`AppState::roll_low_pitch`] at the bottom (clamped so the rows stay within MIDI), the
-/// playhead while the edit pattern plays and the roll selection. Feeding the model's own
-/// `size()` back in reproduces it, so tests can rebuild it from the rendered rect.
+/// playhead while the edit pattern plays, the roll selection and the held keys
+/// ([`AppState::held_notes`], lit in the key column). Feeding the model's own `size()` back
+/// in reproduces it, so tests can rebuild it from the rendered rect.
 #[must_use]
 pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
     let steps = state.pattern().len().max(1);
@@ -116,6 +154,7 @@ pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
         row_height: ROLL_ROW_HEIGHT,
         playhead_step: state.roll_playhead(),
         selected: state.roll_selected,
+        held: state.held_notes,
     };
     model.low_pitch = model.low_pitch.min(model.max_low_pitch());
     model
@@ -156,7 +195,15 @@ pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: Pian
         .selected
         .and_then(|i| state.pattern().notes().get(i).copied());
     if let Some(n) = out.add {
-        state.add_note(to_note(n));
+        // With a chord armed the drawn note is the root: every chord tone lands at once.
+        match state.armed_chord.and_then(|i| CHORDS.get(i)) {
+            Some(chord) => {
+                state.add_chord(chord, n.pitch, n.start, n.length, n.velocity);
+            }
+            None => {
+                state.add_note(to_note(n));
+            }
+        }
         state.roll_selected =
             selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s));
     } else if let Some((i, n)) = out.moved {
@@ -234,10 +281,15 @@ fn label_row_height(ui: &Ui) -> f32 {
 }
 
 /// Height of the whole panel (padding included), from the layout constants, so the page can
-/// reserve the exact space without measuring a frame first.
+/// reserve the exact space without measuring a frame first. In ROLL view the rows the roll
+/// was dragged taller by ([`roll_extra_height`]) are added.
 #[must_use]
-pub fn panel_height(ui: &Ui, theme: &Theme) -> f32 {
+pub fn panel_height(ui: &Ui, theme: &Theme, state: &AppState) -> f32 {
     let rows = (DrumRow::COUNT + 1) as f32;
+    let extra = match state.lane_view {
+        LaneView::Grid => 0.0,
+        LaneView::Roll => roll_extra_height(state),
+    };
     2.0 * theme.panel_padding
         + controls::ROW_HEIGHT
         + HEAD_GAP
@@ -245,6 +297,7 @@ pub fn panel_height(ui: &Ui, theme: &Theme) -> f32 {
         + ROW_GAP
         + rows * (ROW_HEIGHT + ROW_GAP)
         + BOTTOM_ROW
+        + extra
 }
 
 /// Renders the SEQUENCER panel into `ui` and applies any edit to `state`.
@@ -267,7 +320,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 bottom_row(ui, state, theme);
             }
             LaneView::Roll => {
-                let model = roll_model(state, vec2(ui.available_width(), ROLL_AREA_HEIGHT));
+                let roll_width =
+                    (ui.available_width() - COLUMN_GAP - CHORD_COLUMN_WIDTH).max(KEY_COLUMN_WIDTH);
+                let model = roll_model(state, vec2(roll_width, roll_height(state)));
                 roll_beat_numbers(ui, theme, &model);
                 ui.add_space(ROW_GAP);
                 roll_area(ui, state, theme, model);
@@ -306,17 +361,96 @@ fn roll_beat_numbers(ui: &mut Ui, theme: &Theme, model: &PianoRollModel) {
     });
 }
 
-/// The piano roll over the edit pattern's notes, in the space of the grid rows and the bottom
-/// row; whatever it reports is applied by [`apply_roll_output`].
+/// The piano roll over the edit pattern's notes with the resize handle under it, and the
+/// CHORDS column to its right, in the space of the grid rows and the bottom row (plus the
+/// extra rows); whatever the roll reports is applied by [`apply_roll_output`].
 fn roll_area(ui: &mut Ui, state: &mut AppState, theme: &Theme, mut model: PianoRollModel) {
-    let notes = roll_notes(state);
-    let out = neu::piano_roll(ui, theme, &mut model, &notes);
-    apply_roll_output(state, &model, out);
-    // Whole rows only: pad the rest so the panel is as tall as in GRID view.
-    let rest = ROLL_AREA_HEIGHT - model.size().y;
-    if rest > 0.0 {
-        ui.add_space(rest);
+    let height = roll_height(state);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let notes = roll_notes(state);
+            let out = neu::piano_roll(ui, theme, &mut model, &notes);
+            apply_roll_output(state, &model, out);
+            // Whole rows only: pad the rest so the handle sits at the same place.
+            let rest = height - model.size().y;
+            if rest > 0.0 {
+                ui.add_space(rest);
+            }
+            roll_handle(ui, state, theme, model.size().x);
+        });
+        ui.add_space(COLUMN_GAP);
+        chord_column(ui, state, theme, height + ROLL_HANDLE_HEIGHT);
+    });
+}
+
+/// The strip under the roll: dragging it down adds rows to the roll, dragging it up takes
+/// them away ([`AppState::set_roll_extra_rows`], one row per [`ROLL_ROW_HEIGHT`] points from
+/// where the drag started). Painted as a [`ROLL_GRIP`] pill, accent while hovered or dragged.
+fn roll_handle(ui: &mut Ui, state: &mut AppState, theme: &Theme, width: f32) {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, ROLL_HANDLE_HEIGHT), Sense::drag());
+    let origin_id = response.id.with("origin");
+    if response.dragged()
+        && let Some(p) = response.interact_pointer_pos()
+    {
+        let origin = ui
+            .data(|d| d.get_temp::<(f32, usize)>(origin_id))
+            .filter(|_| !response.drag_started())
+            .unwrap_or((p.y, state.roll_extra_rows));
+        ui.data_mut(|d| d.insert_temp(origin_id, origin));
+        let delta = ((p.y - origin.0) / ROLL_ROW_HEIGHT).round() as i64;
+        let rows = (origin.1 as i64 + delta).max(0) as usize;
+        if rows != state.roll_extra_rows {
+            state.set_roll_extra_rows(rows);
+        }
     }
+    if ui.is_rect_visible(rect) {
+        let lit = response.hovered() || response.dragged();
+        let grip = egui::Rect::from_center_size(rect.center(), ROLL_GRIP);
+        let fill = if lit { theme.accent } else { theme.shadow_dark };
+        ui.painter().rect_filled(grip, ROLL_GRIP.y * 0.5, fill);
+    }
+    response
+        .on_hover_cursor(CursorIcon::ResizeVertical)
+        .on_hover_text("Drag to make the roll taller or shorter")
+        .widget_info(|| WidgetInfo::labeled(Role::Slider, ui.is_enabled(), ROLL_HANDLE_LABEL));
+}
+
+/// The CHORDS column: a caps title and one toggle pill per [`CHORDS`] entry (most common at
+/// the top) in a scroll area of the roll's height. The lit pill is the armed chord
+/// ([`AppState::armed_chord`]); clicking it again disarms. With a chord armed, drawing on
+/// the roll places the whole chord with the drawn note as its root.
+fn chord_column(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32) {
+    ui.allocate_ui_with_layout(
+        vec2(CHORD_COLUMN_WIDTH, height),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = CHORD_PILL_GAP;
+            let title = neu::label(ui, theme, CHORDS_TITLE)
+                .on_hover_text("Pick a chord, then draw on the roll to place it");
+            let list_height = (height - title.rect.height() - CHORD_PILL_GAP).max(0.0);
+            ScrollArea::vertical()
+                .id_salt("chords")
+                .max_height(list_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = CHORD_PILL_GAP;
+                    let mut clicked = None;
+                    for (i, chord) in CHORDS.iter().enumerate() {
+                        let on = state.armed_chord == Some(i);
+                        let response =
+                            neu::toggle_button_sized(ui, theme, chord.name, on, CHORD_PILL);
+                        if response.clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                    if clicked.is_some() {
+                        state.arm_chord(clicked);
+                    }
+                });
+        },
+    );
 }
 
 /// Title, pattern tabs and the queued letter on the left; LENGTH, FOLLOW, COPY, PASTE and the

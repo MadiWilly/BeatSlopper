@@ -7,6 +7,7 @@
 //! Modules:
 //! - [`app`]: [`BeatSlopperApp`] (the `eframe::App`) and [`AppState`] (UI-facing state).
 //! - [`audio_io`]: the cpal output stream that owns the `engine::Engine`.
+//! - [`chords`]: the chord shapes the piano roll's CHORDS column places.
 //! - [`input`]: computer-keyboard piano input (key map, held keys, octave, velocity).
 //! - [`midi`]: MIDI input (`midir` port on its own thread, pure message parser).
 //! - [`presets`]: the built-in synth presets shown in the SYNTH panel.
@@ -18,6 +19,7 @@
 
 pub mod app;
 pub mod audio_io;
+pub mod chords;
 pub mod input;
 pub mod midi;
 pub mod presets;

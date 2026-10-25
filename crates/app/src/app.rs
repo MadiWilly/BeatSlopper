@@ -131,6 +131,13 @@ pub const ROLL_LOW_PITCH_KEY: &str = "roll_low_pitch";
 /// Bottom pitch of a fresh piano roll (C2).
 pub const DEFAULT_ROLL_LOW_PITCH: u8 = 36;
 
+/// eframe storage key for how many rows taller than default the piano roll is.
+pub const ROLL_EXTRA_ROWS_KEY: &str = "roll_extra_rows";
+
+/// Most extra rows the roll can be dragged to (the default roll shows about 16 rows, so the
+/// whole MIDI range fits at the maximum).
+pub const MAX_ROLL_EXTRA_ROWS: usize = 112;
+
 /// How fast a shown meter falls after its peak, in dB per second (M6).
 pub const METER_DECAY_DB_PER_S: f32 = 20.0;
 
@@ -376,6 +383,12 @@ pub struct AppState {
     pub roll_low_pitch: u8,
     /// Index into [`Pattern::notes`] of the note selected on the piano roll, if any.
     pub roll_selected: Option<usize>,
+    /// How many rows taller than its default the piano roll is (persisted; the handle under
+    /// the roll drags it, `0..=MAX_ROLL_EXTRA_ROWS`).
+    pub roll_extra_rows: usize,
+    /// Index into [`crate::chords::CHORDS`] of the chord the next roll draw places, if any
+    /// (the CHORDS column beside the roll arms it; not an edit, not persisted).
+    pub armed_chord: Option<usize>,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
@@ -505,6 +518,8 @@ impl AppState {
             lane_view: LaneView::Grid,
             roll_low_pitch: DEFAULT_ROLL_LOW_PITCH,
             roll_selected: None,
+            roll_extra_rows: 0,
+            armed_chord: None,
             song_selected: Some(0),
             mixer: MixerState::default(),
             meters: Meters::SILENT,
@@ -1216,6 +1231,56 @@ impl AppState {
     /// Sets the piano roll's bottom pitch (clamped so `pitches` rows stay within MIDI).
     pub fn set_roll_low_pitch(&mut self, low_pitch: u8) {
         self.roll_low_pitch = low_pitch.min(127);
+    }
+
+    /// Makes the piano roll `rows` rows taller than its default (clamped to
+    /// `0..=MAX_ROLL_EXTRA_ROWS`). View state, not an edit.
+    pub fn set_roll_extra_rows(&mut self, rows: usize) {
+        self.roll_extra_rows = rows.min(MAX_ROLL_EXTRA_ROWS);
+    }
+
+    /// Arms chord `index` of [`crate::chords::CHORDS`] for the next roll draw, or disarms it
+    /// when it is the armed one already (or `None` / out of range). Not an edit.
+    pub fn arm_chord(&mut self, index: Option<usize>) {
+        self.armed_chord = match index {
+            Some(i) if i < crate::chords::CHORDS.len() && self.armed_chord != Some(i) => Some(i),
+            _ => None,
+        };
+    }
+
+    /// Adds every note of `chord` on `root` at `start` for `length` steps (velocity
+    /// `velocity`), skipping pitches above 127 and pitches the pattern already has a note on at
+    /// that step, as one undo step. Returns how many notes were added (`0` means no edit: the
+    /// pattern is full, `length == 0` or `start` is past the pattern end).
+    pub fn add_chord(
+        &mut self,
+        chord: &crate::chords::Chord,
+        root: u8,
+        start: u8,
+        length: u8,
+        velocity: f32,
+    ) -> usize {
+        if length == 0 || usize::from(start) >= self.pattern().len() {
+            return 0;
+        }
+        let wanted: Vec<u8> = crate::chords::chord_pitches(chord, root)
+            .filter(|&p| self.pattern().note_at(start, p).is_none())
+            .collect();
+        let room = MAX_NOTES.saturating_sub(self.pattern().notes().len());
+        let wanted = &wanted[..wanted.len().min(room)];
+        if wanted.is_empty() {
+            return 0;
+        }
+        self.begin_edit();
+        let mut added = 0;
+        for &pitch in wanted {
+            let note = Note::new(start, length, pitch, velocity);
+            if self.pattern_mut().add_note(note).is_some() {
+                added += 1;
+            }
+        }
+        self.send_notes();
+        added
     }
 
     /// The piano roll's playhead in fractional steps of the edit pattern (`bar * 16 + step +
@@ -2010,6 +2075,10 @@ impl BeatSlopperApp {
         state.right_panel = right_panel.unwrap_or_default();
         state.set_lane_view(lane_view.unwrap_or_default());
         state.set_roll_low_pitch(roll_low_pitch.unwrap_or(DEFAULT_ROLL_LOW_PITCH));
+        let roll_extra_rows: Option<usize> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<usize>(s, ROLL_EXTRA_ROWS_KEY));
+        state.set_roll_extra_rows(roll_extra_rows.unwrap_or(0));
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -2250,6 +2319,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
         eframe::set_value(storage, LANE_VIEW_KEY, &self.state.lane_view);
         eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
+        eframe::set_value(storage, ROLL_EXTRA_ROWS_KEY, &self.state.roll_extra_rows);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -3785,6 +3855,70 @@ mod tests {
         state.roll_selected = Some(state.pattern().notes().len() - 1);
         state.clear_notes();
         assert_eq!(state.roll_selected, None);
+    }
+
+    #[test]
+    fn roll_extra_rows_and_armed_chord_are_view_state() {
+        use crate::chords::CHORDS;
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.roll_extra_rows, 0);
+        state.set_roll_extra_rows(5);
+        assert_eq!(state.roll_extra_rows, 5);
+        state.set_roll_extra_rows(usize::MAX);
+        assert_eq!(state.roll_extra_rows, MAX_ROLL_EXTRA_ROWS);
+
+        assert_eq!(state.armed_chord, None);
+        state.arm_chord(Some(1));
+        assert_eq!(state.armed_chord, Some(1));
+        state.arm_chord(Some(1));
+        assert_eq!(state.armed_chord, None, "arming the armed chord disarms it");
+        state.arm_chord(Some(0));
+        state.arm_chord(Some(2));
+        assert_eq!(state.armed_chord, Some(2), "another chord takes over");
+        state.arm_chord(Some(CHORDS.len()));
+        assert_eq!(state.armed_chord, None, "out of range disarms");
+        state.arm_chord(Some(0));
+        state.arm_chord(None);
+        assert_eq!(state.armed_chord, None);
+        assert!(!state.dirty, "none of this is an edit");
+        assert_eq!(state.undo.len(), 0);
+    }
+
+    #[test]
+    fn add_chord_places_every_tone_as_one_undo_step() {
+        use crate::chords::CHORDS;
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_notes();
+        state.undo.clear();
+        state.dirty = false;
+        let major = &CHORDS[0];
+        assert_eq!(state.add_chord(major, 48, 2, 3, 0.8), 3);
+        let notes = state.pattern().notes().to_vec();
+        assert_eq!(notes.len(), 3);
+        for (n, pitch) in notes.iter().zip([48, 52, 55]) {
+            assert_eq!((n.start, n.length, n.pitch), (2, 3, pitch), "{n:?}");
+        }
+        assert!(state.dirty);
+        assert_eq!(state.undo.len(), 1, "one undo step for the whole chord");
+
+        // The root and the fifth are there already: minor adds only its third.
+        assert_eq!(state.add_chord(&CHORDS[1], 48, 2, 1, 0.8), 1);
+        assert_eq!(state.pattern().notes().len(), 4);
+        assert_eq!(state.undo.len(), 2);
+        // Nothing to add, zero length or past the end: no edit.
+        assert_eq!(state.add_chord(major, 48, 2, 1, 0.8), 0);
+        assert_eq!(state.add_chord(major, 60, 0, 0, 0.8), 0);
+        assert_eq!(state.add_chord(major, 60, 16, 1, 0.8), 0);
+        assert_eq!(state.undo.len(), 2);
+        // Tones above MIDI 127 are dropped.
+        assert_eq!(state.add_chord(major, 125, 5, 1, 0.8), 1);
+        assert_eq!(state.pattern().notes().len(), 5);
+
+        assert!(state.undo());
+        assert!(state.undo());
+        assert!(state.undo());
+        assert!(state.pattern().notes().is_empty());
+        assert!(!state.undo());
     }
 
     // -----------------------------------------------------------------------------------------
