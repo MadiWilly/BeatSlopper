@@ -30,8 +30,8 @@
 
 use egui::epaint::Mesh;
 use egui::{
-    Color32, CornerRadius, Id, Painter, Pos2, Rect, Response, Role, Sense, Shape, Stroke, Ui,
-    Vec2, WidgetInfo, pos2, vec2,
+    Color32, CornerRadius, Id, Painter, Pos2, Rect, Response, Role, Sense, Shape, Stroke, Ui, Vec2,
+    WidgetInfo, pos2, vec2,
 };
 
 use crate::Theme;
@@ -115,9 +115,7 @@ impl Palette {
         match self {
             Palette::Accent => theme.accent,
             Palette::Hover => theme.accent_hover,
-            Palette::Blend => theme
-                .accent
-                .lerp_to_gamma(theme.accent_hover, safe_unit(t)),
+            Palette::Blend => theme.accent.lerp_to_gamma(theme.accent_hover, safe_unit(t)),
         }
     }
 }
@@ -376,11 +374,19 @@ pub fn visualizer(
 // Shared helpers.
 
 fn safe_unit(v: f32) -> f32 {
-    if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 fn safe_sample(v: f32) -> f32 {
-    if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
+    if v.is_finite() {
+        v.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Allocates the widget's rect (the available space, at least [`MIN_SIZE`]) and tags it.
@@ -670,7 +676,12 @@ impl Default for Rings {
 /// Circular spectrum: bars radiate from a centre circle whose radius follows the master
 /// peak; every kick hit starts a ring that expands to the edge and fades over
 /// [`RING_SECONDS`]. `mirror` draws the spectrum symmetrically on both halves.
-pub fn radial(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &VisualStyle) -> Response {
+pub fn radial(
+    ui: &mut Ui,
+    theme: &Theme,
+    input: &VisualInput<'_>,
+    style: &VisualStyle,
+) -> Response {
     let (rect, response) = allocate(ui, Visualizer::Radial);
     if !ui.is_rect_visible(rect) {
         return response;
@@ -700,11 +711,14 @@ pub fn radial(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visua
             let len = v * reach;
             let color = style.palette.color(theme, v);
             let angles: [Option<f32>; 2] = if style.mirror {
-                let a = -std::f32::consts::FRAC_PI_2 + (i as f32 + 0.5) / n as f32 * std::f32::consts::PI;
+                let a = -std::f32::consts::FRAC_PI_2
+                    + (i as f32 + 0.5) / n as f32 * std::f32::consts::PI;
                 [Some(a), Some(-std::f32::consts::PI - a)]
             } else {
                 [
-                    Some(-std::f32::consts::FRAC_PI_2 + i as f32 / n as f32 * std::f32::consts::TAU),
+                    Some(
+                        -std::f32::consts::FRAC_PI_2 + i as f32 / n as f32 * std::f32::consts::TAU,
+                    ),
                     None,
                 ]
             };
@@ -740,7 +754,11 @@ pub fn radial(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visua
         let radius = r0 + t * (outer - r0);
         let color = theme.accent.gamma_multiply((1.0 - t) * 0.9);
         if style.glow {
-            painter.circle_stroke(c, radius, Stroke::new(thickness * 3.0, glow_color(theme).gamma_multiply(1.0 - t)));
+            painter.circle_stroke(
+                c,
+                radius,
+                Stroke::new(thickness * 3.0, glow_color(theme).gamma_multiply(1.0 - t)),
+            );
         }
         painter.circle_stroke(c, radius, Stroke::new(thickness, color));
     }
@@ -783,7 +801,12 @@ pub fn correlation(left: &[f32], right: &[f32]) -> f32 {
 /// Vectorscope: the newest [`VECTOR_POINTS`] stereo samples as a point cloud (`x = L - R`,
 /// `y = L + R`), each a small quad whose alpha falls with age (`fade` sets how fast), with a
 /// glow pass of larger quads and a small stereo [`correlation`] meter along the bottom.
-pub fn vector(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &VisualStyle) -> Response {
+pub fn vector(
+    ui: &mut Ui,
+    theme: &Theme,
+    input: &VisualInput<'_>,
+    style: &VisualStyle,
+) -> Response {
     let (rect, response) = allocate(ui, Visualizer::Vector);
     if !ui.is_rect_visible(rect) {
         return response;
@@ -822,7 +845,12 @@ pub fn vector(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visua
             let color = style.palette.color(theme, age);
             add_point_quad(&mut mesh, p, q, color.gamma_multiply(alpha));
             if style.glow {
-                add_point_quad(&mut glow, p, q * 3.0, glow_color(theme).gamma_multiply(alpha * 0.35));
+                add_point_quad(
+                    &mut glow,
+                    p,
+                    q * 3.0,
+                    glow_color(theme).gamma_multiply(alpha * 0.35),
+                );
             }
         }
         if style.glow {
@@ -927,8 +955,10 @@ pub fn waves(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visual
         return response;
     }
     let thickness = style.thickness() * 0.75;
-    let amp_h = inner.height() * if style.mirror { 0.25 } else { 0.45 };
-    let dy = inner.height() * 0.75 / WAVE_LAYERS as f32;
+    // Hills about three layer spacings tall: enough overlap for the front layers to hide the
+    // ones behind without turning the strip into a dense mesh of crossing lines.
+    let amp_h = inner.height() * if style.mirror { 0.18 } else { 0.3 };
+    let dy = inner.height() * 0.8 / WAVE_LAYERS as f32;
     let front_y = if style.mirror {
         inner.max.y - amp_h
     } else {
@@ -979,7 +1009,10 @@ pub fn waves(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visual
             ));
         }
         if style.mirror {
-            let flipped: Vec<Pos2> = points.iter().map(|p| pos2(p.x, 2.0 * base_y - p.y)).collect();
+            let flipped: Vec<Pos2> = points
+                .iter()
+                .map(|p| pos2(p.x, 2.0 * base_y - p.y))
+                .collect();
             painter.add(Shape::line(flipped, Stroke::new(thickness, color)));
         }
         painter.add(Shape::line(points.clone(), Stroke::new(thickness, color)));
@@ -1137,8 +1170,13 @@ pub fn particles(
     paint_bars(&painter, theme, inner, &values, None, &faint, 0.3);
 
     let id: Id = response.id.with("particles");
-    let (time, hits, size, thickness, fade) =
-        (input.time, input.hits, rect.size(), style.thickness(), style.fade());
+    let (time, hits, size, thickness, fade) = (
+        input.time,
+        input.hits,
+        rect.size(),
+        style.thickness(),
+        style.fade(),
+    );
     let field = ui.data_mut(|d| {
         let state = d.get_temp_mut_or_default::<ParticleField>(id);
         state.step(time, fade);
@@ -1156,7 +1194,11 @@ pub fn particles(
         let radius = p.size * (0.6 + 0.4 * t);
         let color = style.palette.color(theme, f32::from(p.row) / 4.0);
         if style.glow {
-            painter.circle_filled(center, radius * 2.2, glow_color(theme).gamma_multiply(t * 0.5));
+            painter.circle_filled(
+                center,
+                radius * 2.2,
+                glow_color(theme).gamma_multiply(t * 0.5),
+            );
         }
         painter.circle_filled(center, radius, color.gamma_multiply(t));
     }
@@ -1219,7 +1261,11 @@ mod tests {
         let loud = [1.0_f32; 2048];
         assert!(wave_envelope(&loud).iter().all(|v| *v == 1.0));
         let quiet = [0.1_f32; 100];
-        assert!(wave_envelope(&quiet).iter().all(|v| (*v - 0.25).abs() < 1e-5));
+        assert!(
+            wave_envelope(&quiet)
+                .iter()
+                .all(|v| (*v - 0.25).abs() < 1e-5)
+        );
     }
 
     #[test]
@@ -1234,7 +1280,10 @@ mod tests {
         }
         for kind in Visualizer::ALL {
             assert_eq!(
-                PRESETS.iter().filter(|p| p.visualizer == Some(kind)).count(),
+                PRESETS
+                    .iter()
+                    .filter(|p| p.visualizer == Some(kind))
+                    .count(),
                 1,
                 "{} should have exactly one preset",
                 kind.label()
@@ -1286,7 +1335,12 @@ mod tests {
         assert!(field.alive() <= MAX_PARTICLES);
         field.step(1.0, 1.0);
         field.step(1.05, 1.0);
-        assert!(field.particles.iter().any(|p| p.life > 0.0 && p.vel.y > -300.0));
+        assert!(
+            field
+                .particles
+                .iter()
+                .any(|p| p.life > 0.0 && p.vel.y > -300.0)
+        );
         for i in 0..100 {
             field.step(1.1 + i as f64 * 0.05, 1.0);
         }

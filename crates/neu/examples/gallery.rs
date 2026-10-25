@@ -7,7 +7,8 @@
 //! segmented selectors, vertical sliders, the limiter lamp), the SEQUENCER panel (the mock's
 //! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills),
 //! the PIANO ROLL panel (a chord, a long note and the full draw / move / resize / delete
-//! interaction on a scrollable three-octave grid with the running playhead) and a KEYS panel
+//! interaction on a scrollable three-octave grid with the running playhead), a VISUALIZERS
+//! panel (the six presets over a synthetic beat, animated while Play is on) and a KEYS panel
 //! (two octaves of piano keys with a few held notes and the octave/swing steppers), so the
 //! look can be checked against `design/preview-a.html`. The transport line carries the brand
 //! wordmark (M4), and every knob, dial and slider shows a styled value tooltip after a short
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Align, Align2, Layout, Rect, Vec2, pos2, vec2};
 use neu::{
     Depth, DialSize, Icon, KnobSize, KnobSpec, PianoRollModel, RollNote, SliderSpec, StepCellSpec,
-    TextKind, Theme, ThemeMode,
+    TextKind, Theme, ThemeMode, VisualInput,
 };
 
 /// The mock's drum rows (`rows` in `design/preview-a.html`): name, volume and the demo
@@ -574,6 +575,7 @@ impl eframe::App for Gallery {
                     }
                     self.sequencer_panel(ui, &theme);
                     self.piano_roll_panel(ui, &theme);
+                    self.visualizer_panel(ui, &theme);
 
                     // KEYS panel, like the mock: title + octave stepper in the head, two octaves
                     // of keys below. Padding is the mock's 16 20 18 (approximated by the panel's
@@ -1186,6 +1188,120 @@ impl Gallery {
     /// The M7 PIANO ROLL panel: title, a gesture hint, the selection read-out and a Clear pill
     /// in the head; the roll below with the sequencer's playhead (fractional while playing).
     /// The gallery owns the notes and applies every edit the roll reports.
+    /// VISUALIZERS panel: the six drawings side by side over a synthetic "beat" (a decaying
+    /// 55 Hz bass tone retriggered every beat, a hat-like noise burst every 16th, a kick hit
+    /// bit on each beat, a spectrum shaped from the same envelopes), animated while "Play"
+    /// is on, each with its preset's style.
+    fn visualizer_panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        let t = self.started.elapsed().as_secs_f64();
+        let playing = self.playing;
+        let beat_phase = ((t * 2.0) % 1.0) as f32; // 120 BPM: a beat every 0.5 s
+        let step_phase = ((t * 8.0) % 1.0) as f32; // a 16th every 125 ms
+        let env = if playing {
+            (-beat_phase * 6.0).exp()
+        } else {
+            0.0
+        };
+        let hat = if playing {
+            (-step_phase * 20.0).exp() * 0.35
+        } else {
+            0.0
+        };
+        let n = 2048;
+        let mut seed = 0x2545_F491_u32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        };
+        let left: Vec<f32> = (0..n)
+            .map(|i| {
+                let x = i as f32 / 48_000.0;
+                let bass = (x * 55.0 * std::f32::consts::TAU).sin() * 0.8 * env;
+                let click = (x * 880.0 * std::f32::consts::TAU).sin() * 0.3 * env * env;
+                (bass + click + noise() * hat).clamp(-1.0, 1.0)
+            })
+            .collect();
+        let right: Vec<f32> = left
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s * 0.8 + noise() * hat * 0.5 * (i % 2) as f32).clamp(-1.0, 1.0))
+            .collect();
+        let spectrum: Vec<f32> = (0..64)
+            .map(|k| {
+                let low = (-(k as f32 - 6.0).powi(2) / 18.0).exp() * env;
+                let mid = (-(k as f32 - 30.0).powi(2) / 60.0).exp() * env * 0.5;
+                let high = (k as f32 / 64.0) * hat * 2.0;
+                (low + mid + high).clamp(0.0, 1.0)
+            })
+            .collect();
+        let hits = if playing && beat_phase < 0.05 {
+            0b1_1111
+        } else if playing && step_phase < 0.2 {
+            0b1000
+        } else {
+            0
+        };
+        let peak = (env * 0.9 + hat).clamp(0.0, 1.0);
+        let input = VisualInput {
+            samples: &left,
+            samples_r: Some(&right),
+            spectrum: &spectrum,
+            peak: (peak, peak * 0.85),
+            hits,
+            playhead: beat_phase,
+            bpm: 120.0,
+            time: t,
+        };
+        if playing {
+            ui.ctx().request_repaint();
+        }
+        neu::panel(ui, theme, |ui| {
+            ui.horizontal(|ui| {
+                neu::title(ui, theme, "Visualizers");
+                ui.add_space(24.0);
+                neu::label(
+                    ui,
+                    theme,
+                    "Press Play in the sequencer to animate; each tile is one preset",
+                );
+            });
+            ui.add_space(14.0);
+            let presets: Vec<&neu::VisualPreset> =
+                neu::PRESETS.iter().filter(|p| !p.is_off()).collect();
+            let columns = 3;
+            let gap = 16.0;
+            let tile_w = (ui.available_width() - gap * (columns as f32 - 1.0)) / columns as f32;
+            let tile_h = 150.0;
+            for row in presets.chunks(columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for preset in row {
+                        ui.allocate_ui_with_layout(
+                            vec2(tile_w, tile_h + 24.0),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_max_width(tile_w);
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                neu::label(ui, theme, preset.name);
+                                ui.allocate_ui_with_layout(
+                                    vec2(tile_w, tile_h),
+                                    Layout::top_down(Align::Min),
+                                    |ui| {
+                                        ui.set_min_size(vec2(tile_w, tile_h));
+                                        preset.show(ui, theme, &input);
+                                    },
+                                );
+                            },
+                        );
+                    }
+                });
+                ui.add_space(gap);
+            }
+        });
+    }
+
     fn piano_roll_panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
         self.roll.playhead_step = self.playing.then(|| {
             let ms = self.started.elapsed().as_millis() as f32;

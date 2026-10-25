@@ -322,30 +322,34 @@ pub fn group_head<R>(
 }
 
 /// Items of the right-hand column's tab selector, in [`RightTab`] order.
-pub const RIGHT_TABS: [&str; 2] = ["Project", "Chain"];
+pub const RIGHT_TABS: [&str; 3] = ["Project", "Chain", "Visual"];
 
-/// The head row shared by the PROJECT and SONG CHAIN panels: the title on the left and the
-/// `Project | Chain` tab (`neu::segmented`) flush right. A click switches
-/// [`AppState::right_tab`].
+/// The head row shared by the PROJECT, SONG CHAIN and VISUALIZER panels: the
+/// `Project | Chain | Visual` tab (`neu::segmented`), whose selected item doubles as the
+/// panel title. A click switches [`AppState::right_tab`].
 pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
+    // With three tabs the segmented (about 176 pt) and a title no longer fit side by side in
+    // the column's 220 pt inner width, and a second row would push the PROJECT panel's status
+    // line into the KEYS panel. The selected tab is set in the title style (12/500 caps,
+    // text-primary), so it *is* the panel's title; `title` names the panel for the tooltip.
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
-        neu::title(ui, theme, title);
-        right_aligned(ui, "right_column_tabs", |ui| {
-            let before = match state.right_tab {
-                RightTab::Project => 0,
-                RightTab::Chain => 1,
+        let before = match state.right_tab {
+            RightTab::Project => 0,
+            RightTab::Chain => 1,
+            RightTab::Visual => 2,
+        };
+        let mut selected = before;
+        neu::segmented(ui, theme, &mut selected, &RIGHT_TABS).on_hover_text(format!(
+            "{title}. Project: files and export. Chain: the song. Visual: the visualizer."
+        ));
+        if selected != before {
+            state.right_tab = match selected {
+                0 => RightTab::Project,
+                1 => RightTab::Chain,
+                _ => RightTab::Visual,
             };
-            let mut selected = before;
-            neu::segmented(ui, theme, &mut selected, &RIGHT_TABS);
-            if selected != before {
-                state.right_tab = if selected == 0 {
-                    RightTab::Project
-                } else {
-                    RightTab::Chain
-                };
-            }
-        });
+        }
     });
 }
 

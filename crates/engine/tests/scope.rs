@@ -43,7 +43,10 @@ fn overflow_skips_without_panicking_and_recovers_after_a_drain() {
     // Nobody drains: render far more than the ring holds.
     let total = SCOPE_CAPACITY_FRAMES * 3;
     let out = render_in_blocks(&mut engine, total, 480);
-    assert!(peak(&out) > 0.05, "rendering must not be affected by a full tap");
+    assert!(
+        peak(&out) > 0.05,
+        "rendering must not be affected by a full tap"
+    );
     assert_eq!(reader.available_frames(), SCOPE_CAPACITY_FRAMES);
 
     // Draining everything gives the oldest audio (the ring keeps what arrived first) and

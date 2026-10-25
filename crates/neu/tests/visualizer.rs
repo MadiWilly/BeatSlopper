@@ -191,7 +191,10 @@ fn particles_spawn_on_hits_and_fade_out() {
 #[test]
 fn sixty_frames_of_each_visualizer_stay_under_a_second() {
     for kind in Visualizer::ALL {
-        let mut h = harness(vec2(600.0, 360.0), scene(ThemeMode::Dark, kind, Signal::Noise));
+        let mut h = harness(
+            vec2(600.0, 360.0),
+            scene(ThemeMode::Dark, kind, Signal::Noise),
+        );
         h.run_steps(2);
         let start = Instant::now();
         h.run_steps(60);

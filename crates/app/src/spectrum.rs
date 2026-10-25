@@ -47,9 +47,7 @@ impl Spectrum {
         };
         let n = FFT_SIZE;
         let window: Vec<f32> = (0..n)
-            .map(|i| {
-                0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / n as f32).cos())
-            })
+            .map(|i| 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / n as f32).cos()))
             .collect();
         let twiddle_re: Vec<f32> = (0..n / 2)
             .map(|k| (-std::f32::consts::TAU * k as f32 / n as f32).cos())
@@ -100,7 +98,12 @@ impl Spectrum {
             self.re[pad + i] = s * self.window[pad + i];
             self.im[pad + i] = 0.0;
         }
-        fft_in_place(&mut self.re, &mut self.im, &self.twiddle_re, &self.twiddle_im);
+        fft_in_place(
+            &mut self.re,
+            &mut self.im,
+            &self.twiddle_re,
+            &self.twiddle_im,
+        );
         // A full-scale sine under a Hann window peaks at N/4 in magnitude.
         let norm = 4.0 / n as f32;
         for (k, &(lo, hi)) in self.bands.iter().enumerate() {
@@ -144,7 +147,10 @@ impl Spectrum {
             .smooth
             .iter()
             .enumerate()
-            .fold((0, 0.0_f32), |best, (i, &v)| if v > best.1 { (i, v) } else { best });
+            .fold(
+                (0, 0.0_f32),
+                |best, (i, &v)| if v > best.1 { (i, v) } else { best },
+            );
         (v > 0.0).then_some(i)
     }
 
@@ -249,7 +255,11 @@ mod tests {
             .collect();
         let mut im = vec![0.0; n];
         fft_in_place(&mut re, &mut im, &tw_re, &tw_im);
-        let mags: Vec<f32> = re.iter().zip(&im).map(|(r, i)| (r * r + i * i).sqrt()).collect();
+        let mags: Vec<f32> = re
+            .iter()
+            .zip(&im)
+            .map(|(r, i)| (r * r + i * i).sqrt())
+            .collect();
         assert!((mags[5] - 32.0).abs() < 1e-3, "{}", mags[5]);
         assert!((mags[59] - 32.0).abs() < 1e-3);
         for (k, m) in mags.iter().enumerate() {
@@ -293,7 +303,10 @@ mod tests {
         assert!(spectrum.bins().iter().all(|v| v.is_finite()));
         let short = sine(1000.0, 1.0, 48_000.0, 500);
         spectrum.analyse(&short, 0.0);
-        assert!(spectrum.is_active(), "a short window is zero padded, not dropped");
+        assert!(
+            spectrum.is_active(),
+            "a short window is zero padded, not dropped"
+        );
     }
 
     #[test]
@@ -306,14 +319,20 @@ mod tests {
         let loud = spectrum.bins()[band];
         spectrum.analyse(&[0.0; FFT_SIZE], 0.2);
         let after = spectrum.bins()[band];
-        assert!(after > 0.0 && after < loud, "falls but does not vanish: {after}");
+        assert!(
+            after > 0.0 && after < loud,
+            "falls but does not vanish: {after}"
+        );
         assert!((after - loud * (-1.0_f32).exp()).abs() < 1e-3);
         for _ in 0..30 {
             spectrum.analyse(&[0.0; FFT_SIZE], 0.2);
         }
         assert!(!spectrum.is_active(), "silent after a few seconds");
         spectrum.analyse(&tone, 0.0);
-        assert!((spectrum.bins()[band] - loud).abs() < 1e-6, "attack is instant");
+        assert!(
+            (spectrum.bins()[band] - loud).abs() < 1e-6,
+            "attack is instant"
+        );
         spectrum.clear();
         assert!(!spectrum.is_active());
     }

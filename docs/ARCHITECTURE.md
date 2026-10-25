@@ -549,3 +549,81 @@ second row; keep the whole-sequencer visibility tests green.
 - app: `ui/preset_browser.rs` (category segmented, scrollable name list, prev/next, search
   text field styled by the theme; shortcuts suppressed while it is focused), `preset_name`
   persisted, "modified" marker, Ctrl+Up/Down stepping.
+
+## Visualizers (branch `madi/visualizers-bc3bf5`)
+
+### engine: master-output tap (`scope.rs`, additive)
+- `scope::channel() -> (ScopeTap, ScopeReader)`: a pre-allocated `rtrb` ring of
+  `SCOPE_CAPACITY_FRAMES` (8192) interleaved stereo frames. `new_engine` creates it; the
+  `Engine` owns the `ScopeTap`, the handle hands out the reader once through
+  `EngineHandle::take_scope_reader()`. `render` ends with `scope.push_block(body)` (the final
+  output after the limiter, whole frames only, as many as fit; when the UI stalls the rest of
+  the block is skipped and counted in `ScopeTap::skipped()`; nothing blocks or allocates).
+- `ScopeWindow` (UI side): the latest `SCOPE_WINDOW_FRAMES` (2048) frames as contiguous,
+  time-ordered `left()`, `right()` and `mono()` slices (mirrored ring, no copy on read),
+  `push` / `push_block`, `take_peak`, `is_silent`. `ScopeReader::drain_into(&mut window)`
+  moves every waiting frame, oldest first.
+- Drum hits: `Shared.hits: AtomicU32`; `fire_step` ORs `1 << DrumRow::index` into the engine's
+  `hit_bits` for every row that triggers and `render` publishes them with `fetch_or` at the
+  end of the block; `EngineHandle::take_hits() -> u8` swaps them out (latched until read, so a
+  UI frame slower than an audio block still sees every hit), `hits()` peeks.
+- Tests (`tests/scope.rs`): the tap delivers exactly what `render` produced; overflow skips
+  without panicking and recovers after a drain; the kick step sets bit 0, snare + closed hat
+  set their bits together and stay latched until taken.
+
+### neu: `visualizer` module
+- `VisualInput { samples (left / mono window), samples_r: Option (right), spectrum (64 log
+  bins 0..=1), peak: (l, r), hits: u8, playhead: 0..1, bpm, time }`, `VisualInput::SILENT`.
+- `VisualStyle { glow, grid, mirror, thickness, fade, palette: Palette::{Accent, Hover,
+  Blend} }`, `VisualStyle::DEFAULT`.
+- `Visualizer::{Scope, Bars, Radial, Vector, Waves, Particles}` (`ALL`, `label`,
+  `widget_label` = accessible name such as `"Scope visualizer"`, `show`) and the free
+  functions `scope`, `bars`, `radial`, `vector`, `waves`, `particles`, each
+  `fn(ui, &Theme, &VisualInput, &VisualStyle) -> Response`, filling
+  `ui.available_size_before_wrap()` (at least 40x20) with an inset-m backdrop (optional faint
+  shadow-dark grid) and the drawing. Glow is always a wider low-alpha second stroke; no
+  textures, shaders or blur. Animation state (peak holds, kick-ring start times, the wave
+  history, the particle pool with a xorshift PRNG) lives in egui temp memory under the
+  response id, so each call site animates independently. Helpers with unit tests:
+  `trigger_index`, `bar_values`, `correlation`, `wave_envelope`.
+- `VisualPreset { name, visualizer: Option<Visualizer> (None = Off), style }`, `PRESETS`
+  (Soft Scope, Club Bars, Orbit, Vector, Tide, Fireworks, Off), `OFF_PRESET`,
+  `preset(index)`, `preset_index(name)`, `preset_names()`.
+- Kittest (`tests/visualizer.rs`): every visualizer renders in both themes with silence, a
+  sine and noise (with hits) at strip and panel sizes; every preset renders and Off draws
+  nothing; particles spawn on hits and fade out; 60 frames of each visualizer take under 1 s
+  in debug; NaN / infinite inputs do not panic.
+
+### app
+- `spectrum.rs`: `Spectrum::new(sample_rate)`, `analyse(samples, dt)` (2048-point Hann
+  radix-2 FFT, hand written, allocation-free after construction; 64 log bands 30 Hz..16 kHz,
+  dB scale -60..0 -> 0..1 with a 0 dBFS sine = 1; instant attack, 0.2 s exponential
+  release), `bins()`, `raw()`, `peak_bin()`, `is_active()`, `band_of(hz)`,
+  `band_edges_hz(k)`.
+- `AppState`: `visual_preset: usize` (persisted under `VISUAL_PRESET_KEY`, default 0 = Soft
+  Scope; `set_visual_preset`, `visual_preset()`), `visual_full` (`toggle_visual_full`,
+  `set_visual_full`; Escape closes), `scope: Option<ScopeReader>` (taken in `from_parts`),
+  `scope_window`, `spectrum` (at the device rate), `visual_hits`, `top_row_rect` (the
+  SYNTH | FX row, measured by `ui::main_area`). `update_visuals()` runs every tick after the
+  meters: drains the tap, takes the hits, analyses the window while the preset is on.
+  `visuals_active()` keeps the repaint going while audio runs or decays, the spectrum is
+  still falling, the window is not silent or a hit is less than 1.5 s old; always false when
+  Off. `visual_input(time)` builds the `VisualInput` (left / right windows, bands, the
+  decayed master meters as the peak, hits, playhead within the bar).
+- `ui/visualizer.rs`: `show` (the right column's VISUAL tab: the shared tab row, a PRESET
+  stepper `(-) Soft Scope (+)` that wraps, the FULL toggle, the drawing filling the rest),
+  `strip(ui, state, theme, max_width)` (the transport bar's mini visualizer, up to 220x40,
+  shrinking to the room left before the right-hand group and hiding below 100 pt; about 144
+  pt at the default 1280 window), `overlay` (a foreground `Area` over `top_row_rect` with the
+  preset pills, CLOSE and the drawing), `preset_pills`, `draw`.
+- Shared-file changes: `RightTab::Visual`; `controls::RIGHT_TABS` is
+  `Project | Chain | Visual` and `panel_head` is now that tab row alone (the selected item,
+  12/500 text-primary, is the panel's title: a title beside three tabs did not fit 220 pt and
+  a second row pushed the PROJECT status line into the KEYS panel); the transport bar's Test
+  tone pill moved under the MIDI selector and the bar's group gap tightens 24 -> 16 while the
+  strip is on (the row had no free width otherwise); `ui::show` draws the overlay last.
+- Tests (`tests/ui_renders.rs`): the strip renders in both themes without changing the bar's
+  height and the right-hand group stays inside the bar; the VISUAL panel fits the column
+  above the KEYS panel; FULL opens the overlay over the top row and Escape / CLOSE shut it;
+  the overlay pills choose a preset and Off hides every drawing; the preset survives
+  `save` -> `load_visual_preset`; offline-rendered audio reaches the window and the analyser.

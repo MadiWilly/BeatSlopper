@@ -8,7 +8,9 @@
 //! the SONG CHAIN panel ([`AppState::right_tab`]: the page is 1140 tall and has no room for
 //! both). The top row's right slot ([`fx_rack::WIDTH`]) shows the FX rack or the MIXER
 //! ([`AppState::right_panel`], M6; both heads carry the `FX | Mixer` tab). The main area
-//! scrolls vertically when the window is at its minimum height.
+//! scrolls vertically when the window is at its minimum height. The right column's third
+//! tab is the VISUALIZER panel ([`visualizer`]); with [`AppState::visual_full`] set the
+//! visualizer overlay ([`visualizer::overlay`]) covers the SYNTH | FX row until Escape / CLOSE.
 
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, ScrollArea, Ui, vec2};
 use neu::Theme;
@@ -24,6 +26,7 @@ pub mod sequencer;
 pub mod song;
 pub mod synth_panel;
 pub mod transport_bar;
+pub mod visualizer;
 
 /// Width of the right-hand column (PROJECT / SONG CHAIN panel) including its padding: wide
 /// enough for the A..H `segmented` (214 pt) inside the panel padding.
@@ -71,6 +74,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             bottom: 0,
         }))
         .show(ui, |ui| main_area(ui, state, theme));
+
+    if state.visual_full {
+        visualizer::overlay(ui, state, theme);
+    }
 }
 
 /// The main area: SYNTH panel (flexible width) | FX rack or MIXER ([`fx_rack::WIDTH`]) on top, then
@@ -88,7 +95,7 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = gap;
             let synth_width = (ui.available_width() - fx_rack::WIDTH - gap).max(0.0);
-            ui.horizontal_top(|ui| {
+            let top_row = ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 ui.allocate_ui_with_layout(
                     vec2(synth_width, top_height),
@@ -104,6 +111,7 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                     },
                 );
             });
+            state.top_row_rect = Some(top_row.response.rect);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 let seq_width = (ui.available_width() - RIGHT_COLUMN_WIDTH - gap).max(0.0);
@@ -118,6 +126,7 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                     |ui| match state.right_tab {
                         RightTab::Project => project_bar::show(ui, state, theme),
                         RightTab::Chain => song::show(ui, state, theme),
+                        RightTab::Visual => visualizer::show(ui, state, theme),
                     },
                 );
             });
