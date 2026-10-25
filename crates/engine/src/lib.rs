@@ -22,6 +22,8 @@
 //!   offline WAV export.
 //! - [`mixer`]: the six channel strips (level, pan, mute, solo, delay/reverb sends) and the
 //!   pan law; [`engine::Meters`] carries the per-block peaks to the UI.
+//! - [`scope`]: the lock-free master-output tap ([`ScopeTap`] / [`ScopeReader`]) and the
+//!   drum-hit bitmask for the UI visualizers.
 
 #![warn(missing_docs)]
 
@@ -35,6 +37,7 @@ pub mod params;
 pub mod pattern;
 pub mod presets;
 pub mod project;
+pub mod scope;
 pub mod synth;
 pub mod transport;
 pub mod voice;
@@ -54,3 +57,4 @@ pub use pattern::{
     Pattern, PatternLength, PlayMode, STEPS, SynthStep,
 };
 pub use project::{Project, ProjectError};
+pub use scope::{SCOPE_CAPACITY_FRAMES, SCOPE_WINDOW_FRAMES, ScopeReader, ScopeTap, ScopeWindow};

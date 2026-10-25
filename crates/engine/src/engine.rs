@@ -89,6 +89,7 @@ use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::pattern::{
     Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, Note, PATTERN_COUNT, Pattern, PlayMode, STEPS,
 };
+use crate::scope::{self, ScopeReader, ScopeTap};
 use crate::synth::SineOsc;
 use crate::transport::Transport;
 use crate::voice::{MAX_VOICES, SynthParams, VoicePool};
@@ -384,6 +385,9 @@ pub(crate) struct Shared {
     meter_channel: [AtomicU32; Channel::COUNT],
     /// Master block peaks (left, right) as `f32` bit patterns.
     meter_master: [AtomicU32; 2],
+    /// Drum rows that triggered since the UI last took them (bit `DrumRow::index`), see
+    /// [`EngineHandle::take_hits`].
+    hits: AtomicU32,
 }
 
 impl Shared {
@@ -438,6 +442,8 @@ pub struct EngineHandle {
     shared: Arc<Shared>,
     /// The MIDI-thread producer, until [`EngineHandle::take_midi_handle`] hands it out.
     midi: Option<Producer<Message>>,
+    /// The master-output tap's reader, until [`EngineHandle::take_scope_reader`] hands it out.
+    scope: Option<ScopeReader>,
 }
 
 /// A second, independent lock-free queue into the engine for a MIDI input thread, so MIDI
@@ -481,6 +487,25 @@ impl EngineHandle {
     /// Takes the MIDI queue's producer (once). Returns `None` if it was already taken.
     pub fn take_midi_handle(&mut self) -> Option<MidiHandle> {
         self.midi.take().map(|producer| MidiHandle { producer })
+    }
+
+    /// Takes the master-output tap's reader (once; see [`crate::scope`]). Returns `None` if
+    /// it was already taken.
+    pub fn take_scope_reader(&mut self) -> Option<ScopeReader> {
+        self.scope.take()
+    }
+
+    /// Drum rows that triggered since the last call, as a bitmask over
+    /// [`DrumRow::index`] (bit 0 = kick), then clears them. Latched, so no hit is lost
+    /// between UI frames.
+    pub fn take_hits(&self) -> u8 {
+        (self.shared.hits.swap(0, Ordering::AcqRel) & 0xFF) as u8
+    }
+
+    /// The pending hit bits without clearing them (see [`take_hits`](Self::take_hits)).
+    #[must_use]
+    pub fn hits(&self) -> u8 {
+        (self.shared.hits.load(Ordering::Acquire) & 0xFF) as u8
     }
 
     /// Number of messages that can still be queued before [`send`](Self::send) starts failing.
@@ -651,6 +676,11 @@ pub struct Engine {
     meters: Meters,
     /// Playhead and meters published to the UI.
     shared: Arc<Shared>,
+    /// Master-output tap for the UI visualizers (see [`crate::scope`]).
+    scope: ScopeTap,
+    /// Drum rows triggered during the current block (bit `DrumRow::index`), published to
+    /// `shared.hits` at the end of `render`.
+    hit_bits: u32,
     /// Cached `transport.samples_per_step(sample_rate)` (f64 so 16 steps stay exact).
     samples_per_step: f64,
     /// Cached bar length in whole samples (`round(16 * samples_per_step)`).
@@ -689,6 +719,7 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     };
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
     let (midi_producer, midi_consumer) = RingBuffer::new(QUEUE_CAPACITY);
+    let (scope_tap, scope_reader) = scope::channel();
     let shared = Arc::new(Shared::default());
     let mut params = [0.0_f32; ParamId::COUNT];
     for id in ParamId::ALL {
@@ -704,6 +735,7 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             producer,
             shared: Arc::clone(&shared),
             midi: Some(midi_producer),
+            scope: Some(scope_reader),
         },
         Engine {
             sample_rate,
@@ -735,6 +767,8 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             strips,
             meters: Meters::SILENT,
             shared,
+            scope: scope_tap,
+            hit_bits: 0,
             samples_per_step,
             bar_len,
             pos: 0,
@@ -1417,6 +1451,7 @@ impl Engine {
         for row in DrumRow::ALL {
             if let Some(velocity) = drums[row.index()].velocity() {
                 self.drums.trigger(row, velocity);
+                self.hit_bits |= 1 << row.index();
             }
         }
         // Notes are sorted by start, so the matching ones are contiguous; the scan over at
@@ -1615,6 +1650,11 @@ impl Engine {
             }
         }
         tail.fill(0.0);
+        self.scope.push_block(body);
+        if self.hit_bits != 0 {
+            self.shared.hits.fetch_or(self.hit_bits, Ordering::Release);
+            self.hit_bits = 0;
+        }
         self.shared.publish_meters(&self.meters);
         self.publish();
     }
