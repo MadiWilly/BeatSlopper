@@ -1,12 +1,21 @@
-//! Segmented selector (`.seg` in `design/preview-a.html`).
+//! Segmented selector (`.seg` in `design/preview-a.html`, selection chip per the design
+//! cleanup recorded in `design/WINNER.md` "As-built tweaks").
 //!
 //! An inset-m pill track, [`SEGMENTED_HEIGHT`] tall with [`SEGMENTED_TRACK_PADDING`] at either
 //! end, holding one plain 12 pt text item per option with [`SEGMENTED_ITEM_PADDING`] on each
-//! side and [`SEGMENTED_ITEM_GAP`] between items. The selected item reads as 12/500 in the
-//! primary colour (painted as a faux medium, no filled block); the others are 12/400 in the
-//! secondary colour and turn primary on hover. A click selects; Left/Right move the selection
-//! while an item has keyboard focus. The returned response is the whole track and reports
-//! `changed()` only when the selection moved.
+//! side and [`SEGMENTED_ITEM_GAP`] between items. The selected item sits on a raised accent
+//! chip: a [`SEGMENTED_CHIP_HEIGHT`] pill the width of the item, painted with the on-glow
+//! treatment (accent fill, accent glow, dark shadow, like the theme toggle's knob) and the
+//! item text in the on-accent colour, 12/500 (a faux medium). The other items are 12/400 in
+//! the secondary colour and turn primary on hover. The chip slides between items over
+//! [`SEGMENTED_CHIP_ANIM_SECS`]; with `Style::animation_time` at zero (the kit's reduced-motion
+//! switch, egui has no system setting for it) it jumps.
+//!
+//! A click selects; Left/Right move the selection while an item has keyboard focus, and the
+//! focused item wears the kit's 1.5 pt accent focus ring. The returned response is the whole
+//! track and reports `changed()` only when the selection moved. A track with a single item
+//! offers no choice, so it shows no chip (the item reads in the primary colour instead of
+//! lighting up like an ON button).
 
 use egui::epaint::text::{LayoutJob, TextFormat};
 use egui::{
@@ -14,7 +23,7 @@ use egui::{
 };
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_soft_rect};
+use crate::shadow::{Depth, paint_focus_rect, paint_soft_rect, paint_soft_rect_with_fill};
 
 /// Height of the track (`.seg` `height`).
 pub const SEGMENTED_HEIGHT: f32 = 30.0;
@@ -26,9 +35,22 @@ pub const SEGMENTED_ITEM_PADDING: f32 = 8.0;
 pub const SEGMENTED_ITEM_GAP: f32 = 2.0;
 /// Item text size (`.seg span` `font-size`).
 pub const SEGMENTED_TEXT_SIZE: f32 = 12.0;
+/// Height of the selection chip (4 pt inside the track at the top and bottom).
+pub const SEGMENTED_CHIP_HEIGHT: f32 = 22.0;
+/// Seconds the chip takes to slide from one item to another.
+pub const SEGMENTED_CHIP_ANIM_SECS: f32 = 0.12;
 
-/// An inset pill track with one plain-text item per option; the selected item is bold.
-/// `changed()` when the selection moved.
+/// The selection chip's rect for an item occupying `item_rect` (the item's width, centred
+/// vertically, [`SEGMENTED_CHIP_HEIGHT`] tall).
+pub fn chip_rect(item_rect: Rect) -> Rect {
+    Rect::from_center_size(
+        item_rect.center(),
+        vec2(item_rect.width(), SEGMENTED_CHIP_HEIGHT),
+    )
+}
+
+/// An inset pill track with one plain-text item per option; the selected item sits on a
+/// raised accent chip. `changed()` when the selection moved.
 pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str]) -> Response {
     let painter = ui.painter().clone();
     let font = FontId::proportional(SEGMENTED_TEXT_SIZE);
@@ -103,15 +125,60 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str
             *selected = next;
             if next != i {
                 ui.memory_mut(|m| m.request_focus(item_responses[next].id));
+                focused = Some(next);
             }
         }
     }
 
+    let has_chip = items.len() > 1;
     if ui.is_rect_visible(rect) {
         paint_soft_rect(&painter, rect, theme.radius_pill, Depth::InsetM, theme);
+
+        // The chip slides to the selected item (its centre and width are animated; a fresh
+        // control starts in place). `animation_time` 0 means reduced motion: jump.
+        let target = chip_rect(item_rects[*selected]);
+        let anim = if ui.style().animation_time <= 0.0 {
+            0.0
+        } else {
+            SEGMENTED_CHIP_ANIM_SECS
+        };
+        let cx =
+            ui.ctx()
+                .animate_value_with_time(response.id.with("chip_x"), target.center().x, anim);
+        let cw = ui
+            .ctx()
+            .animate_value_with_time(response.id.with("chip_w"), target.width(), anim);
+        let chip =
+            Rect::from_center_size(pos2(cx, target.center().y), vec2(cw, SEGMENTED_CHIP_HEIGHT));
+        let chip_fill = if item_responses[*selected].hovered() {
+            theme.accent_hover
+        } else {
+            theme.accent
+        };
+        if has_chip {
+            paint_soft_rect_with_fill(
+                &painter,
+                chip,
+                theme.radius_pill,
+                Depth::OnGlow,
+                chip_fill,
+                theme,
+            );
+        }
+        if let Some(i) = focused {
+            let ring = if i == *selected {
+                chip
+            } else {
+                chip_rect(item_rects[i])
+            };
+            paint_focus_rect(&painter, ring, theme.radius_pill, theme);
+        }
+
         for (i, (galley, item_rect)) in galleys.into_iter().zip(&item_rects).enumerate() {
             let on = i == *selected;
-            let color = if on || item_responses[i].hovered() {
+            let color = if on && has_chip {
+                theme.on_accent
+            } else if on || item_responses[i].hovered() {
                 theme.text_primary
             } else {
                 theme.text_secondary
@@ -135,4 +202,20 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str
         response.mark_changed();
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chip_is_centred_in_the_track_and_as_wide_as_the_item() {
+        let item = Rect::from_min_size(pos2(10.0, 100.0), vec2(44.0, SEGMENTED_HEIGHT));
+        let chip = chip_rect(item);
+        assert_eq!(chip.width(), 44.0);
+        assert_eq!(chip.height(), SEGMENTED_CHIP_HEIGHT);
+        assert_eq!(chip.center(), item.center());
+        assert_eq!(chip.min.y - item.min.y, 4.0);
+        assert_eq!(item.max.y - chip.max.y, 4.0);
+    }
 }

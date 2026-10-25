@@ -305,9 +305,70 @@ impl Theme {
     }
 }
 
+/// WCAG 2.x contrast ratio between two opaque colours (1.0 to 21.0). AA asks for at least
+/// 4.5 for text and 3.0 for large text and UI state.
+pub fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+    fn channel(c: u8) -> f32 {
+        let s = f32::from(c) / 255.0;
+        if s <= 0.039_28 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn luminance(c: Color32) -> f32 {
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    let (hi, lo) = (la.max(lb), la.min(lb));
+    (hi + 0.05) / (lo + 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_and_on_states_meet_aa_in_both_themes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let mode = theme.mode;
+            let check = |what: &str, fg: Color32, bg: Color32, min: f32| {
+                let ratio = contrast_ratio(fg, bg);
+                assert!(
+                    ratio >= min,
+                    "{mode:?}: {what} is {ratio:.2}:1, needs {min}:1"
+                );
+            };
+            check(
+                "secondary text on surface",
+                theme.text_secondary,
+                theme.surface,
+                4.5,
+            );
+            check(
+                "primary text on surface",
+                theme.text_primary,
+                theme.surface,
+                7.0,
+            );
+            check(
+                "on-accent text on accent",
+                theme.on_accent,
+                theme.accent,
+                4.5,
+            );
+            check(
+                "on-accent text on hovered accent",
+                theme.on_accent,
+                theme.accent_hover,
+                4.5,
+            );
+            // The accent itself (chips, lit cells, thumbs) against the surface: UI state.
+            check("accent on surface", theme.accent, theme.surface, 3.0);
+        }
+        assert!((contrast_ratio(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 0.01);
+        assert!((contrast_ratio(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 0.01);
+    }
 
     #[test]
     fn palettes_differ_and_match_winner() {

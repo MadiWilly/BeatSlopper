@@ -139,6 +139,49 @@ fn dial_and_slider_show_tooltips() {
 }
 
 #[test]
+fn dimmed_knob_stays_live_and_names_the_reason_in_its_tooltip() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let mut harness = Harness::builder()
+            .with_size(vec2(300.0, 300.0))
+            .with_step_dt(STEP)
+            .build_ui_state(
+                move |ui, value: &mut f32| {
+                    let theme = Theme::for_mode(mode);
+                    theme.apply(ui.ctx());
+                    ui.add_space(60.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(60.0);
+                        neu::knob_dimmed(
+                            ui,
+                            &theme,
+                            value,
+                            &KnobSpec {
+                                label: "Pulse",
+                                ..MIX
+                            },
+                            Some("Square wave only"),
+                        );
+                    });
+                },
+                50.0,
+            );
+        harness.run();
+        harness.get_by_role_and_label(Role::Slider, "Pulse").hover();
+        harness.run_steps(7);
+        harness
+            .get_by_role_and_label(Role::Slider, "Pulse")
+            .get_by_role(Role::Tooltip)
+            .get_by_label("Pulse: 50 % · Square wave only");
+        // Still interactive: a click focuses it and the arrow keys step it like any knob.
+        harness.get_by_role_and_label(Role::Slider, "Pulse").click();
+        harness.run();
+        harness.key_press(egui::Key::ArrowUp);
+        harness.run();
+        assert!((*harness.state() - 52.0).abs() < 1e-3, "{mode:?}");
+    }
+}
+
+#[test]
 fn tooltip_text_formats_label_and_value() {
     assert_eq!(neu::tooltip_text("Mix", "50 %"), "Mix: 50 %");
     assert_eq!(neu::tooltip_text("", "50 %"), "50 %");

@@ -288,6 +288,66 @@ fn segmented_click_selects_and_reports_one_change() {
     assert_eq!(*harness.state(), (3, 4));
 }
 
+/// Every rect shape painted in `fill` (recursing into `Shape::Vec`).
+fn filled_rects(shapes: &[egui::Shape], fill: egui::Color32, out: &mut Vec<egui::Rect>) {
+    for shape in shapes {
+        match shape {
+            egui::Shape::Rect(r) if r.fill == fill && r.blur_width == 0.0 => out.push(r.rect),
+            egui::Shape::Vec(v) => filled_rects(v, fill, out),
+            _ => {}
+        }
+    }
+}
+
+/// Renders one segmented control of `items` with `selected` and returns its track rect and
+/// the chip (the accent-filled rect inside the track), if one was painted.
+fn chip_of(theme: &Theme, selected: usize, items: &[&str]) -> (egui::Rect, Option<egui::Rect>) {
+    let ctx = egui::Context::default();
+    theme.apply(&ctx);
+    let mut selected = selected;
+    let mut track = egui::Rect::NOTHING;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0))),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        track = neu::segmented(ui, theme, &mut selected, items).rect;
+    });
+    // No renderer here: the font atlas upload is acknowledged by dropping it explicitly.
+    out.textures_delta.clear();
+    let shapes: Vec<egui::Shape> = out.shapes.into_iter().map(|c| c.shape).collect();
+    let mut rects = Vec::new();
+    filled_rects(&shapes, theme.accent, &mut rects);
+    let chip = rects.iter().find(|r| track.contains_rect(**r)).copied();
+    (track, chip)
+}
+
+#[test]
+fn segmented_paints_an_accent_chip_under_the_selected_item() {
+    const WAVES: [&str; 4] = ["Sine", "Saw", "Square", "Tri"];
+    for theme in [Theme::dark(), Theme::light()] {
+        let (track, first) = chip_of(&theme, 0, &WAVES);
+        let first = first.expect("a chip under the first item");
+        assert_eq!(track.height(), neu::SEGMENTED_HEIGHT);
+        assert!(
+            (first.height() - neu::SEGMENTED_CHIP_HEIGHT).abs() < 0.01,
+            "{first:?}"
+        );
+        assert!((first.center().y - track.center().y).abs() < 0.01);
+        assert!(first.min.x > track.min.x && first.max.x < track.center().x);
+        let (_, last) = chip_of(&theme, 3, &WAVES);
+        let last = last.expect("a chip under the last item");
+        assert!(last.min.x > track.center().x && last.max.x < track.max.x);
+        assert!(
+            last.min.x > first.max.x,
+            "the chip moves with the selection"
+        );
+        // One item is no choice: no chip lights up.
+        let (_, none) = chip_of(&theme, 0, &["None"]);
+        assert_eq!(none, None, "{:?}", theme.mode);
+    }
+}
+
 #[test]
 fn segmented_clamps_a_stale_selection() {
     let mut harness = Harness::builder().build_ui_state(
