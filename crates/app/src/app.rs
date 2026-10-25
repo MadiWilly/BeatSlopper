@@ -141,6 +141,12 @@ pub const MAX_ROLL_EXTRA_ROWS: usize = 112;
 /// eframe storage key for whether the piano roll shows the black-key rows.
 pub const ROLL_BLACK_KEYS_KEY: &str = "roll_black_keys";
 
+/// eframe storage key for how many points wider than fitted the piano roll is.
+pub const ROLL_EXTRA_WIDTH_KEY: &str = "roll_extra_width";
+
+/// Widest the roll can be dragged past its fitted width, in points.
+pub const MAX_ROLL_EXTRA_WIDTH: f32 = 4000.0;
+
 /// How fast a shown meter falls after its peak, in dB per second (M6).
 pub const METER_DECAY_DB_PER_S: f32 = 20.0;
 
@@ -397,6 +403,12 @@ pub struct AppState {
     pub roll_selection: Vec<usize>,
     /// Whether the piano roll shows the black-key rows (persisted; the BLACK KEYS pill).
     pub roll_black_keys: bool,
+    /// How many points wider than its fitted width the piano roll is (persisted; the handle
+    /// right of the roll drags it, `0..=MAX_ROLL_EXTRA_WIDTH`).
+    pub roll_extra_width: f32,
+    /// Whether the piano roll is shown in its own window (the POP OUT pill) instead of the
+    /// SEQUENCER panel. Not persisted.
+    pub roll_popped: bool,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
@@ -530,6 +542,8 @@ impl AppState {
             armed_chord: None,
             roll_selection: Vec::new(),
             roll_black_keys: true,
+            roll_extra_width: 0.0,
+            roll_popped: false,
             song_selected: Some(0),
             mixer: MixerState::default(),
             meters: Meters::SILENT,
@@ -1364,6 +1378,20 @@ impl AppState {
         self.roll_black_keys = !self.roll_black_keys;
     }
 
+    /// Makes the piano roll `width` points wider than its fitted width (clamped to
+    /// `0..=MAX_ROLL_EXTRA_WIDTH`, non-finite values ignored). View state, not an edit.
+    pub fn set_roll_extra_width(&mut self, width: f32) {
+        if width.is_finite() {
+            self.roll_extra_width = width.clamp(0.0, MAX_ROLL_EXTRA_WIDTH);
+        }
+    }
+
+    /// Shows the piano roll in its own window (`true`) or back in the SEQUENCER panel.
+    /// View state, not an edit.
+    pub fn set_roll_popped(&mut self, popped: bool) {
+        self.roll_popped = popped;
+    }
+
     /// The piano roll's playhead in fractional steps of the edit pattern (`bar * 16 + step +
     /// frac`) while the transport plays that pattern; `None` otherwise.
     #[must_use]
@@ -2164,6 +2192,10 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<bool>(s, ROLL_BLACK_KEYS_KEY));
         state.roll_black_keys = roll_black_keys.unwrap_or(true);
+        let roll_extra_width: Option<f32> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<f32>(s, ROLL_EXTRA_WIDTH_KEY));
+        state.set_roll_extra_width(roll_extra_width.unwrap_or(0.0));
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -2406,6 +2438,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
         eframe::set_value(storage, ROLL_EXTRA_ROWS_KEY, &self.state.roll_extra_rows);
         eframe::set_value(storage, ROLL_BLACK_KEYS_KEY, &self.state.roll_black_keys);
+        eframe::set_value(storage, ROLL_EXTRA_WIDTH_KEY, &self.state.roll_extra_width);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -4073,6 +4106,21 @@ mod tests {
         assert!(state.roll_black_keys, "black keys shown by default");
         state.toggle_black_keys();
         assert!(!state.roll_black_keys);
+
+        assert_eq!(state.roll_extra_width, 0.0);
+        state.set_roll_extra_width(120.5);
+        assert_eq!(state.roll_extra_width, 120.5);
+        state.set_roll_extra_width(-5.0);
+        assert_eq!(state.roll_extra_width, 0.0);
+        state.set_roll_extra_width(1.0e9);
+        assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH);
+        state.set_roll_extra_width(f32::NAN);
+        assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH, "NaN ignored");
+        assert!(!state.roll_popped);
+        let undo_steps = state.undo.len();
+        state.set_roll_popped(true);
+        assert!(state.roll_popped);
+        assert_eq!(state.undo.len(), undo_steps, "view state only");
     }
 
     // -----------------------------------------------------------------------------------------

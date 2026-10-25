@@ -1287,6 +1287,11 @@ fn pointer_click<S>(harness: &mut Harness<'_, S>, pos: Pos2) {
 /// The SEQUENCER panel alone, in ROLL view over an empty bass part, with a 60 Hz step so two
 /// clicks in a row are a double-click.
 fn roll_harness(mode: ThemeMode) -> Harness<'static, AppState> {
+    roll_harness_sized(mode, egui::Vec2::new(1000.0, 440.0))
+}
+
+/// [`roll_harness`] at another window size.
+fn roll_harness_sized(mode: ThemeMode, size: egui::Vec2) -> Harness<'static, AppState> {
     let (mut state, _engine) = AppState::headless(mode);
     state.clear_synth();
     state.undo.clear();
@@ -1294,7 +1299,7 @@ fn roll_harness(mode: ThemeMode) -> Harness<'static, AppState> {
     state.set_lane_view(app::app::LaneView::Roll);
     let theme = Theme::for_mode(mode);
     let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(1000.0, 440.0))
+        .with_size(size)
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             move |ui, state: &mut AppState| ui::sequencer::show(ui, state, &theme),
@@ -1697,6 +1702,124 @@ fn black_keys_pill_hides_the_black_rows() {
             .query_by_label(ui::sequencer::BLACK_KEYS_LABEL)
             .is_none()
     );
+}
+
+/// Dragging the handle right of the roll makes it wider (the step columns zoom), no further
+/// than the panel has room for; dragging it back narrows it down to the fitted width.
+#[test]
+fn width_handle_drags_the_roll_wider_up_to_the_panel() {
+    // A wide window: a 1000 pt one leaves the fitted roll only a few points of slack.
+    let mut harness = roll_harness_sized(ThemeMode::Dark, egui::Vec2::new(1300.0, 440.0));
+    let before = harness.get_by_label("Piano roll").rect();
+    let (model, _grid) = roll_geometry(&harness, harness.state());
+    assert_eq!(model.step_width, ui::sequencer::MAX_ROLL_STEP_WIDTH);
+    let handle = harness
+        .get_by_label(ui::sequencer::ROLL_WIDTH_HANDLE_LABEL)
+        .rect();
+    assert!(
+        handle.min.x >= before.max.x,
+        "the handle sits right of the roll"
+    );
+    assert_eq!(handle.width(), ui::sequencer::ROLL_WIDTH_HANDLE);
+
+    pointer_drag(
+        &mut harness,
+        handle.center(),
+        handle.center() + egui::vec2(64.0, 0.0),
+    );
+    harness.step();
+    assert_eq!(harness.state().roll_extra_width, 64.0);
+    let (model, _grid) = roll_geometry(&harness, harness.state());
+    assert_eq!(model.step_width, ui::sequencer::MAX_ROLL_STEP_WIDTH + 4.0);
+    let after = harness.get_by_label("Piano roll").rect();
+    assert_eq!(after.width(), before.width() + 64.0);
+    assert!(!harness.state().dirty);
+
+    // Far right: as wide as the panel allows, the CHORDS column still in view.
+    let handle = harness
+        .get_by_label(ui::sequencer::ROLL_WIDTH_HANDLE_LABEL)
+        .rect();
+    pointer_drag(
+        &mut harness,
+        handle.center(),
+        handle.center() + egui::vec2(2000.0, 0.0),
+    );
+    harness.step();
+    let widest = harness.get_by_label("Piano roll").rect();
+    assert!(widest.width() > after.width());
+    let chords = harness.get_by_label("Major").rect();
+    assert!(
+        chords.max.x <= 1300.0 && chords.min.x > widest.max.x,
+        "chords {chords:?} roll {widest:?}"
+    );
+
+    // Far left: back to the fitted width, never narrower.
+    let handle = harness
+        .get_by_label(ui::sequencer::ROLL_WIDTH_HANDLE_LABEL)
+        .rect();
+    pointer_drag(
+        &mut harness,
+        handle.center(),
+        handle.center() - egui::vec2(3000.0, 0.0),
+    );
+    harness.step();
+    assert_eq!(harness.state().roll_extra_width, 0.0);
+    assert_eq!(
+        harness.get_by_label("Piano roll").rect().width(),
+        before.width()
+    );
+    assert_eq!(harness.state().undo.len(), 0);
+}
+
+/// POP OUT moves the roll into its own window (an embedded window headless): the panel
+/// shows a placeholder, the roll in the window still edits the pattern, and DOCK (or POP
+/// OUT again) brings it back.
+#[test]
+fn pop_out_pill_moves_the_roll_to_its_own_window_and_dock_returns_it() {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    harness.get_by_label(ui::sequencer::POP_OUT_LABEL).click();
+    harness.run_steps(3);
+    assert!(harness.state().roll_popped);
+    harness.get_by_label(ui::sequencer::POPPED_LABEL);
+    harness.get_by_label(ui::sequencer::ROLL_WINDOW_TITLE);
+    assert!(
+        harness
+            .query_by_label(ui::sequencer::ROLL_HANDLE_LABEL)
+            .is_none(),
+        "no resize handles in the window"
+    );
+
+    // The roll in the window still draws notes.
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    assert!(model.is_visible(40), "{}", model.pitches);
+    pointer_click(&mut harness, roll_cell(&model, grid, 1, 40));
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[Note::new(1, 1, 40, 0.8)]
+    );
+
+    harness.get_by_label(ui::sequencer::DOCK_LABEL).click();
+    harness.run_steps(3);
+    assert!(!harness.state().roll_popped);
+    assert!(
+        harness
+            .query_by_label(ui::sequencer::POPPED_LABEL)
+            .is_none()
+    );
+    assert!(harness.query_by_label(ui::sequencer::DOCK_LABEL).is_none());
+    harness.get_by_label("Piano roll");
+    harness.get_by_label(ui::sequencer::ROLL_HANDLE_LABEL);
+
+    // POP OUT again, then the lit pill docks it too (the embedded window covers the head in
+    // the headless harness, so that click goes through accessibility).
+    harness.get_by_label(ui::sequencer::POP_OUT_LABEL).click();
+    harness.run_steps(3);
+    assert!(harness.state().roll_popped);
+    harness
+        .get_by_label(ui::sequencer::POP_OUT_LABEL)
+        .click_accesskit();
+    harness.run_steps(3);
+    assert!(!harness.state().roll_popped);
 }
 
 /// Keys held on the computer keyboard reach the roll's model (its key column lights them).
