@@ -1,31 +1,39 @@
-//! FX rack (M2): drive, delay, reverb and the master stage.
+//! FX rack (M2, extended in M8): drive, delay, reverb, the master stage, lo-fi, chorus and
+//! the sidechain pump.
 //!
 //! Layout follows `design/preview-a.html` `<section class="panel fx">`: a panel head ("FX"
 //! left, the `FX | Mixer` tab right, M6: it swaps this slot for the MIXER panel) over
-//! `.fx-body`, two columns pushed apart:
+//! `.fx-body`. The body is a vertical `ScrollArea`; the M2 rows always fit the top row of the
+//! page unscrolled, the M8 rows scroll into view:
 //!
-//! - left: DRIVE (AMOUNT, MIX knobs), DELAY (head row with the time `segmented`
-//!   1/16 | 1/8 | 1/4 | 1/2, then FEEDBACK and MIX knobs);
-//! - right: REVERB (SIZE, DAMPING, MIX knobs), MASTER (GAIN knob in dB, beside it the LIMIT
-//!   `toggle_button` and the ACTIVE `lamp`, which for now lights whenever the limiter is on;
-//!   the real gain-reduction light arrives with the engine's limiter meter).
+//! 1. two columns pushed apart: left DRIVE (AMOUNT, MIX knobs), DELAY (head row with the time
+//!    `segmented` 1/16 | 1/8 | 1/4 | 1/2, then FEEDBACK and MIX knobs); right REVERB (SIZE,
+//!    DAMPING, MIX knobs), MASTER (GAIN knob in dB, beside it the LIMIT `toggle_button` and
+//!    the ACTIVE `lamp`, which for now lights whenever the limiter is on; the real
+//!    gain-reduction light arrives with the engine's limiter meter);
+//! 2. LO-FI (BITS "12 bit", RATE "x8", WOBBLE %, VINYL %, TONE Hz log, MIX %), full width;
+//! 3. two columns pushed apart: CHORUS (RATE Hz, DEPTH %, MIX %) and SIDECHAIN (PUMP %, PUMP
+//!    REL ms: the synth channel ducks on every kick hit).
 //!
 //! The rack is [`WIDTH`] wide (`.row2{grid-template-columns:1fr 460px}` plus the shadow room
 //! the egui panel needs) and fills the height it is given, like the SYNTH panel beside it.
 
-use egui::Ui;
+use egui::{ScrollArea, Ui};
 use engine::ParamId;
 use neu::Theme;
 
 use crate::app::AppState;
-use crate::ui::controls::{self, GROUP_GAP, KNOB_GAP, Knob, PANEL_HEAD_GAP, fmt_db, fmt_percent};
+use crate::ui::controls::{
+    self, GROUP_GAP, KNOB_GAP, Knob, PANEL_HEAD_GAP, fmt_bits, fmt_db, fmt_hz, fmt_ms, fmt_percent,
+    fmt_rate_hz, fmt_rate_x,
+};
 
 /// Width of the rack including its panel padding.
 pub const WIDTH: f32 = 476.0;
 /// Delay division names in `DelayTime` index order.
 pub const DELAY_DIVISIONS: [&str; 4] = ["1/16", "1/8", "1/4", "1/2"];
 
-/// Gap between sections in a column (`.fx-col{gap:16px}`).
+/// Gap between sections in a column and between the body's rows (`.fx-col{gap:16px}`).
 const SECTION_GAP: f32 = 16.0;
 /// Smallest gap between the two columns (`.fx-body{column-gap:18px}`); they spread further
 /// apart when the rack is wider than its contents.
@@ -46,19 +54,54 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
+/// The scrolling body: the M2 columns first, then LO-FI, then CHORUS | SIDECHAIN.
 fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    ScrollArea::vertical()
+        .id_salt("fx_body")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = SECTION_GAP;
+            two_columns(
+                ui,
+                state,
+                "fx_right_column",
+                |ui, state| {
+                    column(ui, |ui| {
+                        drive_section(ui, state, theme);
+                        delay_section(ui, state, theme);
+                    });
+                },
+                |ui, state| {
+                    column(ui, |ui| {
+                        reverb_section(ui, state, theme);
+                        master_section(ui, state, theme);
+                    });
+                },
+            );
+            lofi_section(ui, state, theme);
+            two_columns(
+                ui,
+                state,
+                "fx_right_column_2",
+                |ui, state| chorus_section(ui, state, theme),
+                |ui, state| sidechain_section(ui, state, theme),
+            );
+        });
+}
+
+/// Two top-aligned columns, `right` pushed to the rack's right edge (`id_salt` keys its
+/// measured width, see [`controls::right_aligned`]).
+fn two_columns(
+    ui: &mut Ui,
+    state: &mut AppState,
+    id_salt: &str,
+    left: impl FnOnce(&mut Ui, &mut AppState),
+    right: impl FnOnce(&mut Ui, &mut AppState),
+) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = COLUMN_GAP;
-        column(ui, |ui| {
-            drive_section(ui, state, theme);
-            delay_section(ui, state, theme);
-        });
-        controls::right_aligned(ui, "fx_right_column", |ui| {
-            column(ui, |ui| {
-                reverb_section(ui, state, theme);
-                master_section(ui, state, theme);
-            });
-        });
+        left(ui, state);
+        controls::right_aligned(ui, id_salt, |ui| right(ui, state));
     });
 }
 
@@ -152,6 +195,55 @@ fn master_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 controls::toggle(ui, state, theme, ParamId::LimiterOn, "Limit");
                 neu::slider::lamp(ui, theme, state.limiter_on(), "Active");
             });
+        },
+    );
+}
+
+fn lofi_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    section(
+        ui,
+        state,
+        |ui, _| {
+            controls::group_label(ui, theme, "Lo-Fi");
+        },
+        |ui, state| {
+            Knob::new(ParamId::LofiBits, fmt_bits).show(ui, state, theme);
+            Knob::new(ParamId::LofiRate, fmt_rate_x).show(ui, state, theme);
+            Knob::new(ParamId::LofiWobble, fmt_percent).show(ui, state, theme);
+            Knob::new(ParamId::LofiNoise, fmt_percent).show(ui, state, theme);
+            Knob::new(ParamId::LofiTone, fmt_hz)
+                .log()
+                .show(ui, state, theme);
+            Knob::new(ParamId::LofiMix, fmt_percent).show(ui, state, theme);
+        },
+    );
+}
+
+fn chorus_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    section(
+        ui,
+        state,
+        |ui, _| {
+            controls::group_label(ui, theme, "Chorus");
+        },
+        |ui, state| {
+            Knob::new(ParamId::ChorusRate, fmt_rate_hz).show(ui, state, theme);
+            Knob::new(ParamId::ChorusDepth, fmt_percent).show(ui, state, theme);
+            Knob::new(ParamId::ChorusMix, fmt_percent).show(ui, state, theme);
+        },
+    );
+}
+
+fn sidechain_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    section(
+        ui,
+        state,
+        |ui, _| {
+            controls::group_label(ui, theme, "Sidechain");
+        },
+        |ui, state| {
+            Knob::new(ParamId::SidechainAmount, fmt_percent).show(ui, state, theme);
+            Knob::new(ParamId::SidechainRelease, fmt_ms).show(ui, state, theme);
         },
     );
 }

@@ -98,6 +98,31 @@ pub fn fmt_level_db(db: f32) -> String {
     }
 }
 
+/// FM ratio: `2.0` -> `"2.0x"`, `0.5` -> `"0.5x"`.
+pub fn fmt_ratio(v: f32) -> String {
+    format!("{v:.1}x")
+}
+
+/// Bit depth: `12.0` -> `"12 bit"`, `15.6` -> `"16 bit"`.
+pub fn fmt_bits(v: f32) -> String {
+    format!("{} bit", v.round() as i32)
+}
+
+/// Sample-rate divisor: `8.0` -> `"x8"`, `1.0` -> `"x1"`.
+pub fn fmt_rate_x(v: f32) -> String {
+    format!("x{}", v.round() as i32)
+}
+
+/// Pitch offset in semitones: `12.0` -> `"+12 st"`, `-5.0` -> `"-5 st"`, `0.0` -> `"0 st"`.
+pub fn fmt_semitones(v: f32) -> String {
+    let st = v.round() as i32;
+    if st == 0 {
+        "0 st".to_owned()
+    } else {
+        format!("{st:+} st")
+    }
+}
+
 /// Pan position `-1..=1` (the mixer PAN knobs): `-0.3` -> `"L 30"`, `0.0` -> `"C"`, `0.3` ->
 /// `"R 30"`.
 pub fn fmt_pan(pan: f32) -> String {
@@ -430,6 +455,23 @@ mod tests {
         assert_eq!(fmt_pan(0.004), "C");
         assert_eq!(fmt_pan(0.3), "R 30");
         assert_eq!(fmt_pan(1.0), "R 100");
+    }
+
+    #[test]
+    fn m8_formatters() {
+        assert_eq!(fmt_ratio(2.0), "2.0x");
+        assert_eq!(fmt_ratio(0.5), "0.5x");
+        assert_eq!(fmt_ratio(1.25), "1.2x");
+        assert_eq!(fmt_bits(12.0), "12 bit");
+        assert_eq!(fmt_bits(15.6), "16 bit");
+        assert_eq!(fmt_bits(4.0), "4 bit");
+        assert_eq!(fmt_rate_x(8.0), "x8");
+        assert_eq!(fmt_rate_x(1.0), "x1");
+        assert_eq!(fmt_rate_x(2.4), "x2");
+        assert_eq!(fmt_semitones(12.0), "+12 st");
+        assert_eq!(fmt_semitones(-5.0), "-5 st");
+        assert_eq!(fmt_semitones(0.0), "0 st");
+        assert_eq!(fmt_semitones(0.3), "0 st");
     }
 
     #[test]

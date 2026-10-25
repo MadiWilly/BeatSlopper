@@ -1514,3 +1514,139 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
     harness.get_by_label("Piano roll");
     let _ = std::fs::remove_file(path);
 }
+
+// -------------------------------------------------------------------------------------------
+// M8: synthesis extensions in the SYNTH panel and the FX rack.
+
+/// The SYNTH panel rendered tall enough that all three body rows are inside the scroll area's
+/// viewport, so every new control is clickable.
+fn synth_panel_harness(mode: ThemeMode) -> Harness<'static, AppState> {
+    let (state, _engine) = AppState::headless(mode);
+    let theme = Theme::for_mode(mode);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(780.0, 900.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::synth_panel::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(3);
+    harness
+}
+
+#[test]
+fn synth_panel_shows_the_m8_groups_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let harness = synth_panel_harness(mode);
+        for name in [
+            "Pulse", "Spread", "FM Amt", "FM Ratio", "Sub", "Noise", "Damp", "Bright", "F.Att",
+            "F.Dec", "F.Sus", "F.Rel", "Key Trk", "Amount", "Decay", "Vel>Amp", "Vel>Cut",
+        ] {
+            assert!(
+                harness.get_all_by_label(name).count() >= 1,
+                "{mode:?}: no control named {name:?}"
+            );
+        }
+        // Both oscillators have a PULSE knob; the unison, mode, colour and type selectors are
+        // segmented items.
+        assert_eq!(harness.get_all_by_label("Pulse").count(), 2);
+        for item in ["7", "Pluck", "Pink", "BP"] {
+            radio(&harness, item);
+        }
+        assert_eq!(
+            harness.state().params,
+            default_params(),
+            "rendering must not change params"
+        );
+    }
+}
+
+/// The lowest `RadioButton` named `label`: the MODE group's "Pluck" item, not the "Pluck"
+/// preset in the panel head.
+fn lowest_radio<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kittest::Node<'h> {
+    harness
+        .get_all_by_label(label)
+        .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::RadioButton)
+        .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+        .unwrap_or_else(|| panic!("no segmented item {label:?}"))
+}
+
+#[test]
+fn clicking_pluck_sets_the_osc_mode_and_unison_items_map_to_voice_counts() {
+    let mut harness = synth_panel_harness(ThemeMode::Dark);
+    assert_eq!(harness.state().param(engine::ParamId::OscMode), 0.0);
+    let preset_before = harness.state().preset_index;
+    lowest_radio(&harness, "Pluck").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().param(engine::ParamId::OscMode), 1.0);
+    assert_eq!(
+        harness.state().preset_index,
+        preset_before,
+        "not the preset"
+    );
+    assert!(harness.state().dirty, "a mode change is a project edit");
+
+    radio(&harness, "HP").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().param(engine::ParamId::FilterType), 2.0);
+
+    // Unison item "5" is five voices (the parameter is 1..=7, not zero-based).
+    assert_eq!(harness.state().param(engine::ParamId::Osc1Unison), 1.0);
+    radio(&harness, "5").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().param(engine::ParamId::Osc1Unison), 5.0);
+
+    radio(&harness, "Pink").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().param(engine::ParamId::NoiseColor), 1.0);
+}
+
+#[test]
+fn fx_rack_shows_the_lofi_chorus_and_sidechain_groups_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (state, _engine) = AppState::headless(mode);
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(ui::fx_rack::WIDTH + 40.0, 700.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::fx_rack::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(3);
+        for name in [
+            "Bits", "Wobble", "Vinyl", "Tone", "Depth", "Pump", "Pump Rel",
+        ] {
+            assert!(
+                harness.get_all_by_label(name).count() >= 1,
+                "{mode:?}: no control named {name:?}"
+            );
+        }
+        // LO-FI's RATE and CHORUS's RATE; the DRIVE, DELAY, REVERB, LO-FI and CHORUS MIX knobs.
+        assert_eq!(harness.get_all_by_label("Rate").count(), 2);
+        assert_eq!(harness.get_all_by_label("Mix").count(), 5);
+        assert_eq!(
+            harness.state().params,
+            default_params(),
+            "rendering must not change params"
+        );
+    }
+}
+
+/// With the M8 groups the SYNTH panel and the FX rack scroll inside the top row instead of
+/// growing it: at the design size the sequencer row stays where it was.
+#[test]
+fn m8_groups_do_not_push_the_sequencer_down() {
+    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
+    harness.run_steps(3);
+    let bass = harness.get_by_label("Bass step 16").rect();
+    let octave = harness.get_by_label("Octave").rect();
+    let sequencer_bottom = bass.max.y + ui::sequencer::ROW_GAP + 10.0 + 20.0;
+    let keys_panel_top = octave.min.y - 30.0;
+    assert!(sequencer_bottom <= keys_panel_top);
+    // The first body row of each panel is visible unscrolled; the M8 rows start below it.
+    let glide = harness.get_by_label("Glide").rect();
+    let fm = harness.get_by_label("FM Amt").rect();
+    let drive = harness.get_by_label("Drive").rect();
+    let bits = harness.get_by_label("Bits").rect();
+    assert!(fm.min.y > glide.min.y, "the M8 row is below the M2 row");
+    assert!(bits.min.y > drive.min.y, "LO-FI is below DRIVE");
+}
