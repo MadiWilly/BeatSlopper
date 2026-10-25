@@ -1442,6 +1442,12 @@ impl Engine {
     /// track costs nothing), clears its notes in every pattern and resets its parameters to
     /// the defaults; its mixer strip is kept. On simply enables the slot (its parameters are
     /// whatever they were last set to; a fresh slot has the defaults).
+    ///
+    /// The parameter reset on *off* is relied upon: the app's remove-track mirrors it (a slot
+    /// freed and re-added starts from the defaults on both sides) and
+    /// [`Project::apply_to`](crate::project::Project::apply_to) orders its work "listed
+    /// slots' params, then the bank, then the off switches" because off also wipes params and
+    /// notes, so changing either side changes what a loaded project sounds like.
     pub fn set_track_active(&mut self, track: TrackId, on: bool) {
         let t = track_index(track);
         if on {

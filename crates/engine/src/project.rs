@@ -258,6 +258,12 @@ impl Project {
     /// engine's edit track ends up inactive it moves to the first active slot (slot 0 when
     /// there is none). Call before the audio stream starts (or accept a one-off bank copy on
     /// the audio thread).
+    ///
+    /// The order is load-bearing: [`Engine::set_track_active`]`(slot, false)` resets the
+    /// slot's parameters and clears its notes in every pattern, so the listed slots' params go
+    /// in first, then the bank, and only then are the unlisted slots switched off (never the
+    /// other way round, or a listed slot would lose its params / notes the file holds on an
+    /// inactive slot would survive).
     pub fn apply_to(&self, engine: &mut Engine) {
         engine.set_bpm(self.bpm);
         engine.set_swing(self.swing);

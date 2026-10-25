@@ -1,0 +1,3988 @@
+{
+  "version": 8,
+  "bpm": 120.0,
+  "swing": 0.0,
+  "bank": {
+    "patterns": [
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": true,
+              "accent": true
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": true,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": true,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": true,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": true,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": true,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "tracks": [
+          {
+            "track": 0,
+            "notes": [
+              {
+                "start": 0,
+                "length": 3,
+                "pitch": 60,
+                "velocity": 0.85
+              },
+              {
+                "start": 4,
+                "length": 3,
+                "pitch": 64,
+                "velocity": 0.85
+              },
+              {
+                "start": 8,
+                "length": 3,
+                "pitch": 67,
+                "velocity": 0.85
+              },
+              {
+                "start": 12,
+                "length": 3,
+                "pitch": 71,
+                "velocity": 0.85
+              }
+            ]
+          },
+          {
+            "track": 1,
+            "notes": [
+              {
+                "start": 0,
+                "length": 4,
+                "pitch": 48,
+                "velocity": 0.9
+              },
+              {
+                "start": 6,
+                "length": 4,
+                "pitch": 50,
+                "velocity": 0.9
+              },
+              {
+                "start": 10,
+                "length": 4,
+                "pitch": 55,
+                "velocity": 0.9
+              }
+            ]
+          }
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "length": 16,
+        "drums": [
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ],
+          [
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            },
+            {
+              "on": false,
+              "accent": false
+            }
+          ]
+        ],
+        "drum_volume": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "drum_tune": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "chain": [
+      {
+        "pattern": 0,
+        "repeats": 1
+      }
+    ],
+    "mode": "pattern",
+    "current": 0
+  },
+  "params": {
+    "delay_feedback": 0.35,
+    "delay_mix": 0.25,
+    "delay_time": 1.0,
+    "limiter_on": 1.0,
+    "master_gain": 1.0,
+    "reverb_damping": 0.4,
+    "reverb_mix": 0.2,
+    "reverb_size": 0.6
+  },
+  "mixer": {
+    "strips": [
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0
+      }
+    ],
+    "inserts": [
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.3,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.3,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 1.0,
+        "reverb_send": 1.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      },
+      {
+        "level_db": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "delay_send": 0.0,
+        "reverb_send": 0.0,
+        "eq3": {
+          "low_gain_db": 0.0,
+          "mid_gain_db": 0.0,
+          "mid_freq_hz": 1000.0,
+          "high_gain_db": 0.0
+        },
+        "slots": [
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "kind": "off",
+            "params": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "route": 0
+      }
+    ],
+    "routes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ]
+  },
+  "eq": {
+    "bands": [
+      {
+        "on": false,
+        "kind": "low_cut",
+        "freq": 30.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": true,
+        "kind": "low_shelf",
+        "freq": 100.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": true,
+        "kind": "peak",
+        "freq": 250.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": true,
+        "kind": "peak",
+        "freq": 1000.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": true,
+        "kind": "peak",
+        "freq": 4000.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": true,
+        "kind": "high_shelf",
+        "freq": 10000.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      },
+      {
+        "on": false,
+        "kind": "high_cut",
+        "freq": 18000.0,
+        "gain_db": 0.0,
+        "q": 0.707
+      }
+    ],
+    "on": true,
+    "gain_db": 0.0
+  },
+  "reverb": {
+    "size": 0.6,
+    "damping": 0.4,
+    "pre_delay_ms": 0.0,
+    "width": 1.0,
+    "low_cut_hz": 20.0,
+    "high_cut_hz": 20000.0,
+    "mix": 0.2
+  },
+  "tracks": [
+    {
+      "slot": 0,
+      "name": "Keys",
+      "colour": 2,
+      "active": true,
+      "preset": "Keys",
+      "params": {
+        "amp_attack": 0.003,
+        "amp_decay": 0.6,
+        "amp_release": 0.4,
+        "amp_sustain": 0.35,
+        "chorus_depth": 0.5,
+        "chorus_mix": 0.6,
+        "chorus_rate": 1.2,
+        "drive_amount": 0.15,
+        "drive_mix": 0.3,
+        "filter_attack": 0.005,
+        "filter_cutoff": 4000.0,
+        "filter_decay": 0.25,
+        "filter_env_amount": 0.4,
+        "filter_key_track": 0.3,
+        "filter_release": 0.3,
+        "filter_resonance": 0.1,
+        "filter_sustain": 0.2,
+        "filter_type": 0.0,
+        "fm_amount": 0.0,
+        "fm_ratio": 1.0,
+        "glide": 0.0,
+        "lfo_depth": 0.08,
+        "lfo_rate": 5.0,
+        "lfo_target": 0.0,
+        "lofi_bits": 6.0,
+        "lofi_mix": 0.8,
+        "lofi_noise": 0.0,
+        "lofi_rate": 3.0,
+        "lofi_tone": 20000.0,
+        "lofi_wobble": 0.0,
+        "noise_color": 0.0,
+        "noise_level": 0.0,
+        "osc1_detune": 0.0,
+        "osc1_mix": 0.8,
+        "osc1_pulse": 0.5,
+        "osc1_spread": 10.0,
+        "osc1_unison": 1.0,
+        "osc1_wave": 3.0,
+        "osc2_detune": 4.0,
+        "osc2_mix": 0.5,
+        "osc2_pulse": 0.5,
+        "osc2_wave": 0.0,
+        "osc_mode": 0.0,
+        "pitch_env_amount": 0.0,
+        "pitch_env_decay": 0.1,
+        "pluck_bright": 0.7,
+        "pluck_damping": 0.5,
+        "sidechain_amount": 0.0,
+        "sidechain_release": 0.25,
+        "sub_level": 0.0,
+        "vel_to_amp": 1.0,
+        "vel_to_cutoff": 0.3
+      }
+    },
+    {
+      "slot": 1,
+      "name": "Lead",
+      "colour": 5,
+      "active": true,
+      "preset": "Lead",
+      "params": {
+        "amp_attack": 0.02,
+        "amp_decay": 0.3,
+        "amp_release": 0.3,
+        "amp_sustain": 0.8,
+        "chorus_depth": 0.3,
+        "chorus_mix": 0.0,
+        "chorus_rate": 0.8,
+        "drive_amount": 0.9,
+        "drive_mix": 0.7,
+        "filter_attack": 0.005,
+        "filter_cutoff": 3200.0,
+        "filter_decay": 0.25,
+        "filter_env_amount": 0.3,
+        "filter_key_track": 0.3,
+        "filter_release": 0.3,
+        "filter_resonance": 0.3,
+        "filter_sustain": 0.2,
+        "filter_type": 0.0,
+        "fm_amount": 0.0,
+        "fm_ratio": 1.0,
+        "glide": 0.08,
+        "lfo_depth": 0.15,
+        "lfo_rate": 5.5,
+        "lfo_target": 0.0,
+        "lofi_bits": 16.0,
+        "lofi_mix": 0.0,
+        "lofi_noise": 0.0,
+        "lofi_rate": 1.0,
+        "lofi_tone": 20000.0,
+        "lofi_wobble": 0.0,
+        "noise_color": 0.0,
+        "noise_level": 0.0,
+        "osc1_detune": 8.0,
+        "osc1_mix": 0.7,
+        "osc1_pulse": 0.5,
+        "osc1_spread": 10.0,
+        "osc1_unison": 1.0,
+        "osc1_wave": 1.0,
+        "osc2_detune": -8.0,
+        "osc2_mix": 0.7,
+        "osc2_pulse": 0.5,
+        "osc2_wave": 1.0,
+        "osc_mode": 0.0,
+        "pitch_env_amount": 0.0,
+        "pitch_env_decay": 0.1,
+        "pluck_bright": 0.7,
+        "pluck_damping": 0.5,
+        "sidechain_amount": 0.7,
+        "sidechain_release": 0.3,
+        "sub_level": 0.0,
+        "vel_to_amp": 1.0,
+        "vel_to_cutoff": 0.3
+      }
+    }
+  ],
+  "octave": 4,
+  "velocity": 0.8
+}

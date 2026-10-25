@@ -102,23 +102,21 @@ fn eight_tracks_render_is_allocation_free() {
     engine.render(&mut out, 512);
 
     let before = allocations();
+    // Every send is asserted (the message text is only formatted on failure, so a passing
+    // assert does not allocate): a dropped message would make the render below vacuously
+    // allocation-free under a message it never saw.
     for block in 0..200_u32 {
-        match block % 8 {
-            0 => {
-                handle.send(Message::SwapTracks((block / 8) as u8 % 8, 3));
-            }
-            1 => {
-                handle.send(Message::CopyTrack {
-                    from: 1,
-                    to: (block / 8) as u8 % 8,
-                });
-            }
+        let sent = match block % 8 {
+            0 => handle.send(Message::SwapTracks((block / 8) as u8 % 8, 3)),
+            1 => handle.send(Message::CopyTrack {
+                from: 1,
+                to: (block / 8) as u8 % 8,
+            }),
             2 => {
                 handle.send(Message::SetTrackActive {
                     track: 7,
                     on: block % 16 == 2,
-                });
-                handle.send(Message::SetSlotKind {
+                }) && handle.send(Message::SetSlotKind {
                     insert: (block / 8) as u8 % 16 + 1,
                     slot: 1,
                     kind: if block % 16 == 2 {
@@ -126,22 +124,22 @@ fn eight_tracks_render_is_allocation_free() {
                     } else {
                         SlotKind::Chorus
                     },
-                });
+                })
             }
             3 => {
-                handle.send(Message::SetEditTrack((block / 8) as u8 % 8));
-                handle.send(Message::NoteOn {
-                    note: 60,
-                    velocity: 0.8,
-                });
+                handle.send(Message::SetEditTrack((block / 8) as u8 % 8))
+                    && handle.send(Message::NoteOn {
+                        note: 60,
+                        velocity: 0.8,
+                    })
             }
             4 => {
-                handle.send(Message::NoteOff { note: 60 });
-                handle.send(Message::SetTrackParam {
-                    track: 2,
-                    id: ParamId::FilterCutoff,
-                    value: 900.0,
-                });
+                handle.send(Message::NoteOff { note: 60 })
+                    && handle.send(Message::SetTrackParam {
+                        track: 2,
+                        id: ParamId::FilterCutoff,
+                        value: 900.0,
+                    })
             }
             5 => {
                 handle.send(Message::SetNote {
@@ -149,55 +147,54 @@ fn eight_tracks_render_is_allocation_free() {
                     track: 5,
                     index: 0,
                     note: Note::new(1, 2, 70, 0.7),
-                });
-                handle.send(Message::ClearNotes {
+                }) && handle.send(Message::ClearNotes {
                     pattern: 1,
                     track: 5,
-                });
+                })
             }
             6 => {
                 handle.send(Message::SetMixer {
                     channel: Channel::Track(4),
                     param: ChannelParam::Pan,
                     value: -0.5,
-                });
-                handle.send(Message::SetParam(ParamId::ReverbSize, 0.7));
-                handle.send(Message::SetInsert {
-                    insert: 16,
-                    param: InsertParam::Level,
-                    value: -1.0,
-                });
-                handle.send(Message::SetRoute {
-                    channel: Channel::Track(1),
-                    insert: 15,
-                });
+                }) && handle.send(Message::SetParam(ParamId::ReverbSize, 0.7))
+                    && handle.send(Message::SetInsert {
+                        insert: 16,
+                        param: InsertParam::Level,
+                        value: -1.0,
+                    })
+                    && handle.send(Message::SetRoute {
+                        channel: Channel::Track(1),
+                        insert: 15,
+                    })
             }
             _ => {
-                handle.send(Message::AllNotesOff);
-                handle.send(Message::ClearAll);
-                handle.send(Message::SetSynthStep {
-                    step: 3,
-                    note: Some(50),
-                    accent: true,
-                });
-                handle.send(Message::SetSlotParam {
-                    insert: 6,
-                    slot: 0,
-                    index: 0,
-                    value: -24.0,
-                });
-                handle.send(Message::SetInsert {
-                    insert: 14,
-                    param: InsertParam::Route,
-                    value: 15.0,
-                });
-                handle.send(Message::SetInsert {
-                    insert: 15,
-                    param: InsertParam::Eq3Mid,
-                    value: 3.0,
-                });
+                handle.send(Message::AllNotesOff)
+                    && handle.send(Message::ClearAll)
+                    && handle.send(Message::SetSynthStep {
+                        step: 3,
+                        note: Some(50),
+                        accent: true,
+                    })
+                    && handle.send(Message::SetSlotParam {
+                        insert: 6,
+                        slot: 0,
+                        index: 0,
+                        value: -24.0,
+                    })
+                    && handle.send(Message::SetInsert {
+                        insert: 14,
+                        param: InsertParam::Route,
+                        value: 15.0,
+                    })
+                    && handle.send(Message::SetInsert {
+                        insert: 15,
+                        param: InsertParam::Eq3Mid,
+                        value: 3.0,
+                    })
             }
-        }
+        };
+        assert!(sent, "queue full at block {block}");
         engine.render(&mut out, 512);
         let _ = engine.meters();
         let _ = engine.position();

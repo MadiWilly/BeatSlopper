@@ -178,17 +178,23 @@ fn flat_eq_is_transparent_and_finite() {
 #[test]
 fn engine_eq_messages_route_and_shape_the_master() {
     let (mut handle, mut engine) = engine::new_engine(SR);
-    handle.send(Message::SetEq {
-        band: 6,
-        param: EqParam::Freq,
-        value: 150.0,
-    });
-    handle.send(Message::SetEq {
-        band: 6,
-        param: EqParam::On,
-        value: 1.0,
-    });
-    handle.send(Message::SetEqGain(-3.0));
+    assert!(
+        handle.send(Message::SetEq {
+            band: 6,
+            param: EqParam::Freq,
+            value: 150.0,
+        }),
+        "queue full"
+    );
+    assert!(
+        handle.send(Message::SetEq {
+            band: 6,
+            param: EqParam::On,
+            value: 1.0,
+        }),
+        "queue full"
+    );
+    assert!(handle.send(Message::SetEqGain(-3.0)), "queue full");
     engine.process_messages();
     assert!(engine.eq().bands[6].on);
     assert_eq!(engine.eq().bands[6].freq, 150.0);
@@ -202,7 +208,7 @@ fn engine_eq_messages_route_and_shape_the_master() {
     let cut = render(&mut engine, ms_to_frames(500.0));
     engine.all_notes_off();
     render(&mut engine, ms_to_frames(1500.0));
-    handle.send(Message::SetEqOn(false));
+    assert!(handle.send(Message::SetEqOn(false)), "queue full");
     engine.process_messages();
     engine.note_on(81, 1.0);
     let flat = render(&mut engine, ms_to_frames(500.0));
@@ -385,15 +391,24 @@ fn impulse_envelope_decays_and_rt60_grows_with_size() {
 #[test]
 fn engine_reverb_views_agree() {
     let (mut handle, mut engine) = engine::new_engine(SR);
-    handle.send(Message::SetReverb {
-        param: ReverbParam::Size,
-        value: 0.9,
-    });
-    handle.send(Message::SetReverb {
-        param: ReverbParam::PreDelay,
-        value: 50.0,
-    });
-    handle.send(Message::SetParam(ParamId::ReverbMix, 0.7));
+    assert!(
+        handle.send(Message::SetReverb {
+            param: ReverbParam::Size,
+            value: 0.9,
+        }),
+        "queue full"
+    );
+    assert!(
+        handle.send(Message::SetReverb {
+            param: ReverbParam::PreDelay,
+            value: 50.0,
+        }),
+        "queue full"
+    );
+    assert!(
+        handle.send(Message::SetParam(ParamId::ReverbMix, 0.7)),
+        "queue full"
+    );
     engine.process_messages();
     assert_eq!(engine.reverb().size, 0.9);
     assert_eq!(engine.param(ParamId::ReverbSize), 0.9);

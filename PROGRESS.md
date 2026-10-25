@@ -126,9 +126,9 @@ App side (run after the M9 browser lands, before tagging m9):
 - [x] tracks.rs: drop the import-suppression dead code; side padding on the 4/8/12 scale; row well inset-m
 - [x] app tests: MIDI overdub with edit_track != 0; paste carries per-track notes; clipboard after remove/move; export of a 2-track project matches the live render
 Engine side (after the M11 engine merge, in tests/tracks.rs + engine_alloc.rs):
-- [ ] v6-style fixture with non-default insert params pinned bit-identical; sum-of-tracks test variant with lo-fi/chorus on track 2 only
-- [ ] assert!(handle.send(..)) in the queue-driven tests (a full queue must fail the test, not pass vacuously)
-- [ ] document or drop the params reset in set_track_active(off) (Project::apply_to depends on its ordering)
+- [x] v6-style fixture with non-default insert params pinned bit-identical (`tests/fixtures/v8_layered_demo.json`, `v8_layered_project_renders_sample_identical`); sum-of-tracks test variant with lo-fi/chorus on track 2 only (`wet_insert_on_track_two_keeps_the_tracks_additive_and_isolated`)
+- [x] assert!(handle.send(..)) in the queue-driven tests (tracks.rs, engine_alloc.rs, plugins.rs; a full queue now fails the test)
+- [x] document or drop the params reset in set_track_active(off): kept (the app's remove_track and the existing `set_track_active_off_clears_its_notes_in_every_pattern` test rely on it); the ordering dependency is now in both doc comments and ARCHITECTURE.md "M10 as built (engine)"
 
 ## Visualizers (side branch `madi/visualizers-bc3bf5`, 2026-10-25)
 - [x] engine: lock-free master-output tap (`scope.rs`: `ScopeTap` / `ScopeReader` /

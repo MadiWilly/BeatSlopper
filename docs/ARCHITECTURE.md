@@ -1008,6 +1008,10 @@ RMS of a 1 s render captured pre-refactor from `tests/fixtures/v6_demo.json`).
   read the edit track. `note_on` on an inactive edit track is ignored; `note_off` releases
   the note on the edit track and on any track still holding it from the keyboard.
   `set_bank` / `set_pattern` rebuild the lanes for the edit track.
+- `set_track_active(t, false)` also resets the slot's parameters to the defaults (kept on
+  purpose: the app's remove-track mirrors it, and `Project::apply_to` orders its work
+  "listed slots' params, then the bank, then the off switches" because off wipes params and
+  notes; reordering either side changes what a loaded project sounds like).
 - `Preset::apply_to_track(&self, engine, track)` (per-track ids only); `Preset::apply`
   still resets every id and lands the per-track ids on the edit track.
 
@@ -1036,13 +1040,19 @@ RMS of a 1 s render captured pre-refactor from `tests/fixtures/v6_demo.json`).
   true, "preset": "Bass", "params": { "amp_attack": 0.01, ... per-track ids only } }`.
 
 ### Tests
-- `tests/tracks.rs` (10, plus 1 ignored): the v6 regression, sum-of-tracks linearity, mute
+- `tests/tracks.rs` (12, plus 1 ignored): the v6 regression, the v8 layered regression
+  (`tests/fixtures/v8_layered_demo.json`: Keys through lo-fi bits 6 / rate 3 / mix 0.8 and
+  a chorus, Lead with drive 0.9 / mix 0.7 and sidechain 0.7 under a kick; FNV-1a hash and
+  per-100 ms RMS pinned, so a refactor of the insert ordering is caught), sum-of-tracks
+  linearity, insert isolation (track 2 wet through lo-fi + chorus, track 1 dry: still
+  additive within 1e-5, and muting the wet track leaves the dry one bit-identical), mute
   isolation, note isolation, `SetEditTrack` routing, `SetTrackActive off`, `CopyTrack`,
   `SwapTracks`, the 8-track v7 round trip, a finite long render under every lifecycle
   message, and `#[ignore] eight_tracks_render_faster_than_real_time` (1 s of 8-track audio
-  in about 0.06 s in release; gate `< 0.5 s`).
+  in about 0.06 s in release; gate `< 0.5 s`). Every queue-driven test asserts
+  `handle.send(..)` (a full queue fails the test instead of passing vacuously).
 - `tests/engine_alloc.rs`: counting global allocator; `render` plus every track message with
-  8 active tracks is allocation-free.
+  8 active tracks is allocation-free (every send asserted).
 - `tests/fx_m8.rs` insert tests now drive a `SynthInsert`; `tests/fixtures/v6_demo.json` is
   the pre-M10 `Project::default()`.
 

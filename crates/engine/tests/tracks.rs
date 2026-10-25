@@ -1,6 +1,8 @@
 //! M10 instrument tracks: the v6 regression (one track renders bit for bit like the pre-M10
-//! synth), track independence, the edit track, lifecycle messages, the v7 project format,
-//! the allocation-free render with eight tracks and the release-mode perf gate.
+//! synth), the v8 layered regression (two tracks with non-default insert settings pinned
+//! bit for bit), track independence (voices and inserts), the edit track, lifecycle
+//! messages, the v7 project format, the allocation-free render with eight tracks and the
+//! release-mode perf gate.
 
 mod common;
 
@@ -78,6 +80,75 @@ fn v6_project_renders_sample_identical_after_the_track_refactor() {
     );
 }
 
+// (1b) The v8 layered regression: two tracks with non-default insert and synth settings
+//      (Keys through lo-fi bits 6 / rate 3 / mix 0.8 and a chorus; Lead with drive 0.9 /
+//      mix 0.7 and sidechain 0.7 pumped by a kick) render sample-identical, so a refactor of
+//      the insert ordering (`drive -> lo-fi -> chorus -> x ducker`) or of the parameter
+//      smoothing is caught.
+
+/// Reference render of `tests/fixtures/v8_layered_demo.json` (built with the M11 engine from
+/// `Project::from_engine`): `play()`, 1 s at 48 kHz in blocks of 512.
+const V8_REFERENCE_HASH: u64 = 0xf7dc_466d_03a9_6ff6;
+/// RMS of each 100 ms window of the left channel of that render.
+const V8_REFERENCE_RMS: [f32; 10] = [
+    0.459_317,
+    0.548_292_4,
+    0.594_854_2,
+    0.569_408_95,
+    0.551_517_07,
+    0.322_251_47,
+    0.159_717_02,
+    0.434_829_47,
+    0.614_625,
+    0.614_486_6,
+];
+
+const V8_LAYERED_JSON: &str = include_str!("fixtures/v8_layered_demo.json");
+
+#[test]
+fn v8_layered_project_renders_sample_identical() {
+    let project = Project::from_json(V8_LAYERED_JSON).expect("the v8 fixture loads");
+    assert_eq!(project.tracks.len(), 2);
+    let keys = project.track(0).unwrap();
+    let lead = project.track(1).unwrap();
+    assert_eq!((keys.name.as_str(), keys.preset.as_str()), ("Keys", "Keys"));
+    assert_eq!((lead.name.as_str(), lead.preset.as_str()), ("Lead", "Lead"));
+    // The fixture really carries the non-default insert settings it is meant to pin.
+    assert_eq!(keys.param(ParamId::LofiBits), 6.0);
+    assert_eq!(keys.param(ParamId::LofiRate), 3.0);
+    assert_eq!(keys.param(ParamId::LofiMix), 0.8);
+    assert_eq!(keys.param(ParamId::ChorusMix), 0.6);
+    assert_eq!(lead.param(ParamId::DriveAmount), 0.9);
+    assert_eq!(lead.param(ParamId::DriveMix), 0.7);
+    assert_eq!(lead.param(ParamId::SidechainAmount), 0.7);
+    assert!(project.bank.pattern(0).drums[DrumRow::Kick.index()][0].on);
+    let (_handle, mut engine) = new_engine(SAMPLE_RATE);
+    project.apply_to(&mut engine);
+    assert_eq!(engine.active_track_count(), 2);
+    assert_eq!(engine.track(0).insert.param(ParamId::LofiBits), 6.0);
+    assert_eq!(engine.track(1).insert.ducker().amount(), 0.7);
+    engine.play();
+    let out = render_in_blocks(&mut engine, SAMPLE_RATE as usize, 512);
+    assert!(all_finite(&out));
+    let l = left(&out);
+    for (i, w) in common::per_window(&l, 4_800, <[f32]>::to_vec)
+        .iter()
+        .enumerate()
+    {
+        let got = rms(w);
+        assert!(
+            (got - V8_REFERENCE_RMS[i]).abs() < 1e-6,
+            "window {i}: rms {got}, reference {}",
+            V8_REFERENCE_RMS[i]
+        );
+    }
+    assert_eq!(
+        fnv1a(&out),
+        V8_REFERENCE_HASH,
+        "the v8 layered demo must render bit for bit as when it was pinned"
+    );
+}
+
 // --- helpers --------------------------------------------------------------------------------
 
 /// A dry engine (no delay/reverb returns, limiter off, master gain 1) whose drum rows are
@@ -101,6 +172,15 @@ fn dry_preset(engine: &mut Engine, track: u8, preset: &presets::Preset) {
     engine.set_track_param(track, ParamId::ChorusMix, 0.0);
     engine.set_track_param(track, ParamId::SidechainAmount, 0.0);
     engine.set_track_param(track, ParamId::AmpRelease, 0.05);
+}
+
+/// Switches `track`'s lo-fi (bits 6, rate 3, mix 0.8) and chorus (mix 0.5) on, after
+/// [`dry_preset`] made it dry: the insert now shapes the sound.
+fn wet_insert(engine: &mut Engine, track: u8) {
+    engine.set_track_param(track, ParamId::LofiBits, 6.0);
+    engine.set_track_param(track, ParamId::LofiRate, 3.0);
+    engine.set_track_param(track, ParamId::LofiMix, 0.8);
+    engine.set_track_param(track, ParamId::ChorusMix, 0.5);
 }
 
 /// Puts a four-note chord of `pitch` on step 0 (length 8) of pattern A for `track`.
@@ -150,6 +230,77 @@ fn two_tracks_render_as_the_sum_of_each_alone() {
         worst = worst.max((both[i] - (pad[i] + keys[i])).abs());
     }
     assert!(worst < 1e-5, "max deviation from the sum: {worst}");
+}
+
+// (2b) Insert isolation: track 2 through a crushed lo-fi and a chorus while track 1 stays
+//      dry. The sum of each alone still equals both together (one track's insert never sees
+//      the other's signal), and muting the wet track leaves the dry one bit-identical.
+
+#[test]
+fn wet_insert_on_track_two_keeps_the_tracks_additive_and_isolated() {
+    let both = {
+        let mut e = tracks_engine();
+        dry_preset(&mut e, 0, &presets::PAD);
+        dry_preset(&mut e, 1, &presets::KEYS);
+        wet_insert(&mut e, 1);
+        chord(&mut e, 0, 48);
+        chord(&mut e, 1, 67);
+        settle_play_render(&mut e)
+    };
+    let pad = {
+        let mut e = tracks_engine();
+        dry_preset(&mut e, 0, &presets::PAD);
+        chord(&mut e, 0, 48);
+        settle_play_render(&mut e)
+    };
+    let keys_wet = {
+        let mut e = tracks_engine();
+        dry_preset(&mut e, 1, &presets::KEYS);
+        wet_insert(&mut e, 1);
+        chord(&mut e, 1, 67);
+        settle_play_render(&mut e)
+    };
+    let keys_dry = {
+        let mut e = tracks_engine();
+        dry_preset(&mut e, 1, &presets::KEYS);
+        chord(&mut e, 1, 67);
+        settle_play_render(&mut e)
+    };
+    assert!(all_finite(&both));
+    assert!(
+        rms(&pad) > 0.01 && rms(&keys_wet) > 0.01,
+        "both parts sound"
+    );
+    let insert_effect = keys_wet
+        .iter()
+        .zip(&keys_dry)
+        .map(|(w, d)| (w - d).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        insert_effect > 1e-3,
+        "the lo-fi / chorus insert must change track 2's sound: {insert_effect}"
+    );
+    let mut worst = 0.0_f32;
+    for i in 0..both.len() {
+        worst = worst.max((both[i] - (pad[i] + keys_wet[i])).abs());
+    }
+    assert!(worst < 1e-5, "max deviation from the sum: {worst}");
+
+    // Muting the wet track's channel leaves track 1 bit-identical; its insert stays set.
+    let mut e = tracks_engine();
+    dry_preset(&mut e, 0, &presets::PAD);
+    dry_preset(&mut e, 1, &presets::KEYS);
+    wet_insert(&mut e, 1);
+    chord(&mut e, 0, 48);
+    chord(&mut e, 1, 67);
+    e.set_mixer(Channel::Track(1), ChannelParam::Mute, 1.0);
+    let muted = settle_play_render(&mut e);
+    assert_eq!(
+        muted, pad,
+        "track 1 must not change when the wet track 2 is muted"
+    );
+    assert_eq!(e.track(1).insert.param(ParamId::LofiMix), 0.8);
+    assert_eq!(e.track(1).insert.param(ParamId::ChorusMix), 0.5);
 }
 
 // (3) Muting track 2's channel leaves track 1 bit-identical; notes on track 2 never trigger
@@ -500,15 +651,26 @@ fn render_with_eight_tracks_stays_finite_under_every_track_message() {
     e.play();
     for block in 0..100 {
         if block % 10 == 0 {
-            handle.send(Message::SwapTracks(block as u8 % 8, (block as u8 + 1) % 8));
-            handle.send(Message::CopyTrack {
-                from: 0,
-                to: block as u8 % 8,
-            });
-            handle.send(Message::SetTrackActive {
-                track: 7,
-                on: block % 20 == 0,
-            });
+            // Every send is asserted: a dropped message would make the block below pass
+            // without the lifecycle message it is meant to survive.
+            assert!(
+                handle.send(Message::SwapTracks(block as u8 % 8, (block as u8 + 1) % 8)),
+                "queue full"
+            );
+            assert!(
+                handle.send(Message::CopyTrack {
+                    from: 0,
+                    to: block as u8 % 8,
+                }),
+                "queue full"
+            );
+            assert!(
+                handle.send(Message::SetTrackActive {
+                    track: 7,
+                    on: block % 20 == 0,
+                }),
+                "queue full"
+            );
         }
         let out = render(&mut e, 512);
         assert!(all_finite(&out), "block {block}");
