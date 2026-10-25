@@ -105,3 +105,28 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
 - Piano roll: the hovered cell shows a faint highlight (shadow-highlight at 50 %) and black-key rows a 6 % shadow-dark tint; accented notes carry an on-accent dot; meters mark -6 dBFS with an on-accent line.
 - Black-key note names use text-primary (text-secondary on key-black is 3.0:1 in light).
 - The velocity control is a soft knob (the mock has no velocity control).
+
+## As-built tweaks (design cleanup, 2026-10-25)
+
+- Segmented selection chip: the mock marks the selected segment with weight 500 alone, which
+  does not read in egui's single-weight face. The selected item now sits on a raised accent
+  chip: a 22 pt pill the width of the item (4 pt inside the 30 pt inset track), on-glow
+  treatment (accent fill, accent glow, dark shadow, like the theme toggle's knob), item text
+  in on-accent 12/500. Unselected items stay 12/400 secondary, primary on hover; the chip
+  turns accent-hover under the pointer. The chip slides between items in 0.12 s
+  (`Style::animation_time` 0 makes it jump: the kit's reduced-motion switch, egui exposes no
+  system one). Track width, item padding (8) and gap (2) are unchanged, so nothing grew.
+- Keyboard focus ring everywhere: the 1.5 pt accent ring 1 pt outside the control, already
+  on sliders and step cells, now also on the knob cap, the dial's outer ring and the focused
+  segmented item.
+- Dimmed knobs: a knob whose parameter has no effect in the current setting (PULSE with a
+  non-square wave) is painted at 50 % opacity with its pointer in text-secondary and stays
+  live; the tooltip adds the reason ("Pulse: 50 % · Square wave only").
+- Synth panel: the A D S R (and filter ADSR) slider columns are 12 apart instead of the mock's
+  8, so 13 pt values such as "600 ms" in neighbouring 36 pt columns never touch. The body's
+  rows never straddle the panel's fold: a row that would show less than a head row plus a
+  knob block (132 pt) above the scroll edge starts at the edge instead, so no group head is
+  ever orphaned from its knobs; the gap it leaves reads as a section break.
+- Contrast is checked in code (`neu::contrast_ratio`): secondary text on surface and on the
+  playhead tint, on-accent on accent and accent-hover, all at least 4.5:1 in both themes.
+- The transport's sub-label names the current milestone (M8).

@@ -107,3 +107,18 @@ design is done by DSP reasoning and measurable tests since the build machine can
 - Pluck damping/brightness cutoffs are defined relative to the fundamental so the knobs mean
   the same across the keyboard; decay time is time-based via the loop gain (8 s to 0.25 s).
 - Unison copy 0 is untouched so unison 1 is bit-identical to the pre-M8 oscillator.
+
+## 2026-10-25: Design cleanup (selection states)
+- The user could not tell which segment was selected (Synth | Pluck, the wave and filter
+  selectors): the mock's "weight 500" cue is invisible with egui's one font weight. The
+  selected item now sits on a raised accent chip with the on-glow treatment and on-accent
+  text, animated between items (0.12 s, `animation_time` 0 disables it). This is a deliberate
+  departure from `design/preview-a.html` recorded in `design/WINNER.md` "As-built tweaks";
+  the control's geometry (track, item padding, gap) is unchanged so no panel grew.
+- egui has no keyboard-focus-visible notion, so focus rings (knobs, dials, segmented items)
+  show on `has_focus()` like the sliders already did, i.e. after a mouse click too.
+- Parameters without effect in the current setting are dimmed, not disabled: the PULSE knob
+  stays editable with a non-square wave so a value can be set before switching waves.
+- The synth body's rows stop straddling the scroll fold (a group head alone above the edge
+  read as an orphaned label). Rows that would be cut start at the fold instead; the resulting
+  gap is up to one row of blank panel, accepted over a clipped head row.
