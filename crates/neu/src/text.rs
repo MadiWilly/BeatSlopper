@@ -2,7 +2,8 @@
 //!
 //! egui ships one proportional face (a light weight), so the 300-500 weight range of the mock
 //! is approximated: light stays as is and the "500" levels are painted twice with a sub-point
-//! horizontal offset (a faux medium). Tracking (+0.12em) uses `TextFormat::extra_letter_spacing`.
+//! horizontal offset (a faux medium). Tracking (+0.12em on caps labels, +0.16em on the brand
+//! wordmark) uses `TextFormat::extra_letter_spacing`.
 
 use std::sync::Arc;
 
@@ -22,6 +23,9 @@ pub enum TextKind {
     Display,
     /// 12 / 500 / uppercase / +0.12em. Pill button labels.
     Button,
+    /// 15 / 300 / uppercase / +0.16em. The brand wordmark (`.brand .name` in the mock). egui has
+    /// no light face, so this uses the regular face as is (never the faux medium).
+    Brand,
 }
 
 impl TextKind {
@@ -31,13 +35,17 @@ impl TextKind {
             TextKind::Label => 11.0,
             TextKind::Title | TextKind::Button => 12.0,
             TextKind::Value => 13.0,
+            TextKind::Brand => 15.0,
             TextKind::Display => 22.0,
         }
     }
 
-    /// Whether the text is set in capitals with +0.12em tracking.
+    /// Whether the text is set in capitals with tracking (see [`Self::letter_spacing`]).
     pub fn is_caps(self) -> bool {
-        matches!(self, TextKind::Label | TextKind::Title | TextKind::Button)
+        matches!(
+            self,
+            TextKind::Label | TextKind::Title | TextKind::Button | TextKind::Brand
+        )
     }
 
     /// Whether the text reads as weight 500 (painted as a faux medium).
@@ -45,12 +53,13 @@ impl TextKind {
         matches!(self, TextKind::Title | TextKind::Button)
     }
 
-    /// Extra letter spacing in points (0.12em for caps levels).
+    /// Extra letter spacing in points: 0.16em for the brand wordmark (2.4 pt), 0.12em for the
+    /// other caps levels, none otherwise.
     pub fn letter_spacing(self) -> f32 {
-        if self.is_caps() {
-            0.12 * self.size()
-        } else {
-            0.0
+        match self {
+            TextKind::Brand => 0.16 * self.size(),
+            _ if self.is_caps() => 0.12 * self.size(),
+            _ => 0.0,
         }
     }
 
@@ -134,6 +143,12 @@ pub fn value(ui: &mut egui::Ui, theme: &crate::Theme, text: &str) -> egui::Respo
 /// Adds a display-level (22 pt light, primary colour) text to the ui as a plain widget.
 pub fn display(ui: &mut egui::Ui, theme: &crate::Theme, text: &str) -> egui::Response {
     add_text(ui, text, TextKind::Display, theme.text_primary)
+}
+
+/// Adds the brand wordmark (15 pt caps, +0.16em tracking, regular weight, primary colour) to
+/// the ui as a plain widget. The accessible label is `text` as given (e.g. "BeatSlopper").
+pub fn brand(ui: &mut egui::Ui, theme: &crate::Theme, text: &str) -> egui::Response {
+    add_text(ui, text, TextKind::Brand, theme.text_primary)
 }
 
 fn add_text(ui: &mut egui::Ui, text: &str, kind: TextKind, color: Color32) -> egui::Response {

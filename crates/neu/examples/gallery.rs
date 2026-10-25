@@ -1,4 +1,4 @@
-//! Visual gallery of the `neu` M0, M1, M2 and M3 widgets in both themes.
+//! Visual gallery of the `neu` M0, M1, M2, M3 and M4 widgets in both themes.
 //!
 //! `cargo run -p neu --example gallery [-- --exit-after-secs N] [--light|--dark] [--scroll PX]`
 //!
@@ -7,7 +7,9 @@
 //! segmented selectors, vertical sliders, the limiter lamp), the SEQUENCER panel (the mock's
 //! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills)
 //! and a KEYS panel (two octaves of piano keys with a few held notes and the octave/swing
-//! steppers), so the look can be checked against `design/preview-a.html`.
+//! steppers), so the look can be checked against `design/preview-a.html`. The transport line
+//! carries the brand wordmark (M4), and every knob, dial and slider shows a styled value
+//! tooltip after a short hover.
 
 use std::time::{Duration, Instant};
 
@@ -339,9 +341,10 @@ impl eframe::App for Gallery {
 
                     neu::panel(ui, &theme, |ui| {
                         ui.horizontal(|ui| {
-                            neu::title(ui, &theme, "Transport");
+                            // The mock's `.brand`: the wordmark with +0.16em tracking.
+                            neu::brand(ui, &theme, "BeatSlopper");
                             ui.add_space(24.0);
-                            neu::label(ui, &theme, "Soft Console gallery");
+                            neu::label(ui, &theme, "M4 · Soft Console gallery");
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {

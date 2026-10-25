@@ -66,12 +66,12 @@ app polish (undo/redo, shortcuts, tooltips, unsaved marker, discard confirm, DPI
 neu (brand text kind, tooltip styling). Gate, tag m4.
 
 ## M4: Polish + MIDI input
-- [ ] engine: second lock-free queue for MIDI (MidiHandle), drained in render
-- [ ] app: midir input thread, port selector + lamp, persisted port, note on/off to engine + UI
+- [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
+- [x] app: midir input thread, port selector + lamp, persisted port, note on/off to engine + UI
 - [ ] app: undo/redo (Ctrl+Z/Y) for pattern and params
 - [ ] app: shortcuts (Space, R, Ctrl+S/Shift+S/O/E/N), unsaved marker, discard confirm
 - [ ] app: window opens at requested size at 100/125/150 % scaling
-- [ ] neu: tooltips on knobs/dials/sliders, brand wordmark tracking
+- [x] neu: tooltips on knobs/dials/sliders, brand wordmark tracking
 - [ ] Tests per PLAN.md M4; gate green, tag m4
 
 ## M5: Patterns + song mode

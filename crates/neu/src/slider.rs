@@ -232,7 +232,7 @@ pub fn vslider(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_
             node.add_action(Action::Decrement);
         }
     });
-    response
+    response.on_hover_text(crate::knob::tooltip_text(spec.label, &spec.format(v)))
 }
 
 /// A 10 pt indicator lamp with a caps label (inset when off, accent glow when on).

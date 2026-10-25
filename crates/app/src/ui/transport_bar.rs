@@ -5,7 +5,9 @@
 //! (name 15/300 caps, sub-label 11 secondary), the three 48 pt icon buttons, the BPM
 //! `stepper` (60..=200, bound to `SetBpm`), the SWING small knob (0..=75 %, bound to
 //! `SetSwing`), the large concentric dial (`neu::dial` Lg bound to `MasterGain`, shown in %),
-//! then flush right: the theme toggle (sun, switch, moon) and a small Test tone toggle.
+//! then flush right: a small Test tone toggle, the MIDI group (M4: a "MIDI" lamp lit while a
+//! port is open, the connected port's name, and a port selector with a "None" entry) and the
+//! theme toggle (sun, switch, moon).
 //!
 //! Play and Record show their ON state as an accent fill with the on-glow (the mock's
 //! `.icon-btn.on`); `neu::icon_button` has no on-state, so [`transport_button`] paints the
@@ -13,7 +15,9 @@
 //!
 //! The row is as tall as the dial. egui's horizontal layout pushes items taller than the row
 //! *down* rather than centring everything on them, so the dial's height from the previous
-//! frame sets the row height and the shorter groups centre on it.
+//! frame sets the row height and the shorter groups centre on it. The right-hand group is
+//! built left-to-right and pushed to the right edge using the width it had last frame (egui's
+//! right-to-left layouts misplace nested vertical groups such as the MIDI block).
 
 use egui::{Align, Layout, Rect, Response, RichText, Role, Sense, Stroke, Ui, WidgetInfo, vec2};
 use engine::ParamId;
@@ -21,7 +25,7 @@ use neu::button::ICON_STROKE;
 use neu::shadow::Depth;
 use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING};
+use crate::app::{AppState, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
 use crate::ui::controls::{Knob, fmt_percent};
 
 /// Minimum height of the transport bar's content row (the dial normally sets it).
@@ -30,6 +34,14 @@ const ROW_HEIGHT: f32 = 48.0;
 pub const TRANSPORT_BUTTON: f32 = 48.0;
 /// Gap between the transport buttons (`.tp-group{gap:10px}`).
 const BUTTON_GAP: f32 = 10.0;
+/// Up to this many ports the selector is a `neu::segmented`; above it an egui `ComboBox`.
+pub const MIDI_SEGMENTED_MAX_PORTS: usize = 3;
+/// The selector's "disconnected" entry.
+pub const MIDI_NONE: &str = "None";
+/// Longest port name shown in the segmented selector's items.
+const MIDI_ITEM_CHARS: usize = 12;
+/// Longest port name shown in the connected-port label.
+const MIDI_LABEL_CHARS: usize = 18;
 
 /// Renders the transport bar into `ui` and applies any control changes to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
@@ -53,11 +65,24 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             let dial = master_dial(ui, state, theme);
             ui.data_mut(|d| d.insert_temp(height_id, dial.rect.height()));
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Right-align the remaining groups using the width they measured last frame.
+            let width_id = ui.scope_id().with("transport_right_width");
+            let known_width: Option<f32> = ui.data(|d| d.get_temp(width_id));
+            if let Some(width) = known_width {
+                let pad = ui.available_width() - width;
+                if pad > 0.0 {
+                    ui.add_space(pad);
+                }
+            }
+            // `with_layout` takes the whole remaining rect, so the group spans the full row
+            // height and its items centre on the same line as the dial and the buttons.
+            let group = ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = theme.space_6;
-                theme_group(ui, state, theme);
                 test_tone_group(ui, state, theme);
+                midi_group(ui, state, theme);
+                theme_group(ui, state, theme);
             });
+            ui.data_mut(|d| d.insert_temp(width_id, group.response.rect.width()));
         });
     });
 }
@@ -187,4 +212,87 @@ fn master_dial(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> egui::Respon
 fn theme_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     // The switch paints its own sun/moon icons; flush right in the bar.
     neu::theme_toggle(ui, theme, &mut state.mode);
+}
+
+// ---------------------------------------------------------------------------------------------
+// MIDI.
+
+/// The selector's entries: "None", then every listed port (plus the connected port if the
+/// list no longer has it, so the selection always has something to point at).
+pub fn midi_items(state: &AppState) -> Vec<String> {
+    let mut items = vec![MIDI_NONE.to_owned()];
+    items.extend(state.midi_ports.iter().cloned());
+    if let Some(name) = state.midi_port_name()
+        && !state.midi_ports.iter().any(|p| p == name)
+    {
+        items.push(name.to_owned());
+    }
+    items
+}
+
+/// Lamp + port name over the selector, vertically centred on the row. A zero-height column
+/// would start at the row's centre line, so the column is allocated with the height it
+/// measured last frame and egui centres it.
+fn midi_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    state.refresh_midi_ports();
+    let height_id = ui.scope_id().with("transport_midi_height");
+    let known_height: f32 = ui.data(|d| d.get_temp(height_id)).unwrap_or(0.0);
+    let column = ui.allocate_ui_with_layout(
+        vec2(0.0, known_height),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = theme.space_2;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = theme.space_3;
+                neu::lamp(ui, theme, state.midi_connected(), "MIDI");
+                let text = state.midi_port_name().map_or_else(
+                    || "NO DEVICE".to_owned(),
+                    |n| truncate_name(n, MIDI_LABEL_CHARS),
+                );
+                label(ui, theme, &text);
+            });
+            midi_selector(ui, state, theme);
+        },
+    );
+    ui.data_mut(|d| d.insert_temp(height_id, column.response.rect.height()));
+}
+
+/// "None" | port names: a `neu::segmented` for a few ports, an egui `ComboBox` for many.
+/// Picking a port connects to it; picking "None" disconnects.
+fn midi_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let items = midi_items(state);
+    let before = state
+        .midi_port_name()
+        .and_then(|name| items.iter().position(|item| item == name))
+        .unwrap_or(0);
+    let mut selected = before;
+    if items.len() <= MIDI_SEGMENTED_MAX_PORTS + 1 {
+        let short: Vec<String> = items
+            .iter()
+            .map(|item| truncate_name(item, MIDI_ITEM_CHARS))
+            .collect();
+        let refs: Vec<&str> = short.iter().map(String::as_str).collect();
+        neu::segmented(ui, theme, &mut selected, &refs);
+    } else {
+        egui::ComboBox::from_id_salt("midi_port")
+            .width(150.0)
+            .selected_text(
+                RichText::new(truncate_name(&items[before], MIDI_LABEL_CHARS))
+                    .size(12.0)
+                    .color(theme.text_primary),
+            )
+            .show_ui(ui, |ui| {
+                for (i, item) in items.iter().enumerate() {
+                    ui.selectable_value(&mut selected, i, item.as_str());
+                }
+            });
+    }
+    if selected != before {
+        if selected == 0 {
+            state.disconnect_midi();
+        } else if let Some(name) = items.get(selected) {
+            let name = name.clone();
+            state.connect_midi(&name);
+        }
+    }
 }

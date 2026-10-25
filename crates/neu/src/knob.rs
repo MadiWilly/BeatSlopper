@@ -239,11 +239,22 @@ impl KnobSpec<'_> {
     }
 }
 
+/// The hover tooltip for a value control: `"label: value"`, or just `value` when `label` is
+/// empty (the unlabelled sequencer row knobs).
+pub fn tooltip_text(label: &str, value: &str) -> String {
+    if label.is_empty() {
+        value.to_owned()
+    } else {
+        format!("{label}: {value}")
+    }
+}
+
 /// A rotary knob bound to `value`. `changed()` when the value moved; double-click resets.
 ///
 /// Block: the caps label above, the arc ring with its raised cap and accent pointer, the
-/// formatted value below. A `Sm` knob with an empty label shows neither label nor value and
-/// reports the value as a hover tooltip instead (the sequencer row knobs).
+/// formatted value below. Hovering shows a [`tooltip_text`] tooltip (styled by
+/// [`Theme::apply`]). A `Sm` knob with an empty label shows neither label nor value in the
+/// block and relies on the tooltip alone (the sequencer row knobs).
 pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) -> Response {
     let size = spec.size;
     let labelled = !spec.label.is_empty();
@@ -326,14 +337,11 @@ pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) ->
     }
 
     declare_slider(ui, &response, spec, v);
-    if labelled {
-        response
-    } else {
-        response.on_hover_text(spec.format(v))
-    }
+    response.on_hover_text(tooltip_text(spec.label, &spec.format(v)))
 }
 
-/// The concentric-ring dial (master volume, filter cutoff). Same interaction as [`knob`].
+/// The concentric-ring dial (master volume, filter cutoff). Same interaction and
+/// [`tooltip_text`] hover tooltip as [`knob`].
 ///
 /// `Lg` lays the text block (label over a 15 pt value, right-aligned, at least 58 wide) to the
 /// left of the 96 pt ring with a 14 pt gap; `Sm` stacks the centred text above the 72 pt ring
@@ -447,7 +455,7 @@ pub fn dial(
     }
 
     declare_slider(ui, &response, spec, v);
-    response
+    response.on_hover_text(tooltip_text(spec.label, &spec.format(v)))
 }
 
 /// Paints a circular arc of `stroke` from `from_deg` to `to_deg` (degrees clockwise from

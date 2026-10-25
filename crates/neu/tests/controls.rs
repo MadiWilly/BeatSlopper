@@ -66,6 +66,9 @@ fn knob_harness(spec: KnobSpec<'static>, start: f32) -> Harness<'static, f32> {
     let mut harness = Harness::builder()
         .with_size(vec2(300.0, 300.0))
         .with_step_dt(0.01)
+        // A hover starts the tooltip countdown, which repaints until the pointer is still
+        // (about 12 frames at this dt); let `run()` settle through it.
+        .with_max_steps(32)
         .build_ui_state(
             move |ui, value: &mut f32| {
                 let theme = Theme::dark();
@@ -214,6 +217,7 @@ fn dial_drags_like_a_knob_in_both_sizes() {
         let mut harness = Harness::builder()
             .with_size(vec2(400.0, 300.0))
             .with_step_dt(0.01)
+            .with_max_steps(32)
             .build_ui_state(
                 move |ui, value: &mut f32| {
                     let theme = Theme::light();
@@ -302,6 +306,9 @@ fn vslider_press_and_drag_follow_the_pointer() {
     let mut harness = Harness::builder()
         .with_size(vec2(200.0, 300.0))
         .with_step_dt(0.01)
+        // A hover starts the tooltip countdown, which repaints until the pointer is still
+        // (about 12 frames at this dt); let `run()` settle through it.
+        .with_max_steps(32)
         .build_ui_state(
             |ui, value: &mut f32| {
                 let theme = Theme::dark();

@@ -13,6 +13,8 @@
 //!   dial, the segmented selector, the thin vertical slider and the indicator lamp).
 //! * [`step_cell`]: the M3 sequencer pieces (step cells, the playhead dot row, beat numbers
 //!   and the row geometry helpers).
+//! * M4 polish: the brand wordmark ([`brand`], [`TextKind::Brand`]) and a `"label: value"`
+//!   tooltip ([`tooltip_text`]) on every knob, dial and slider, styled by [`Theme::apply`].
 
 pub mod button;
 pub mod knob;
@@ -29,7 +31,7 @@ pub mod theme;
 pub use button::{
     Icon, button, icon_button, paint_icon, stepper_button, theme_toggle, toggle_button,
 };
-pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc};
+pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc, tooltip_text};
 pub use panel::panel;
 pub use piano_keys::{
     PianoKey, PianoModel, PianoOutput, key_at, key_layout, keyboard_size, keyboard_width,
@@ -45,8 +47,8 @@ pub use slider::{
     vslider_fraction_at, vslider_thumb_pos,
 };
 pub use stepper::{stepper, stepper_with};
-pub use text::{TextKind, display, label, title, value};
-pub use theme::{ShadowPair, Theme, ThemeMode};
+pub use text::{TextKind, brand, display, label, title, value};
+pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode};
 
 pub use step_cell::{
     ACCENT_MARKER, BEAT_NUMBER_HEIGHT, PLAYHEAD_DOT_CURRENT, PLAYHEAD_DOT_IDLE,

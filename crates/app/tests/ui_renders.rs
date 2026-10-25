@@ -1,6 +1,7 @@
-//! egui_kittest: the M0-M3 screens render in both themes without a window or an audio device,
+//! egui_kittest: the M0-M4 screens render in both themes without a window or an audio device,
 //! the computer keyboard plays the on-screen piano, the SYNTH / FX panels leave every
-//! parameter untouched until a control is used, and clicking a sequencer cell toggles it.
+//! parameter untouched until a control is used, clicking a sequencer cell toggles it, and the
+//! MIDI lamp / selector render without opening a port.
 
 use app::ui;
 use app::{AppState, BeatSlopperApp, default_params};
@@ -420,6 +421,74 @@ fn transport_buttons_drive_play_stop_and_arm() {
     harness.get_by_label("Record").click();
     harness.step();
     assert!(!harness.state().state().armed);
+}
+
+// -------------------------------------------------------------------------------------------
+// M4: MIDI.
+
+/// The transport bar shows the "MIDI" lamp (off) and the port selector with its "None" entry
+/// in both themes; rendering connects nothing and touches no parameter.
+#[test]
+fn midi_lamp_and_selector_render_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (state, _engine) = AppState::headless(mode);
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 200.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::transport_bar::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(4);
+        let lamp = harness.get_by_label("MIDI");
+        assert!(lamp.rect().width() > 0.0);
+        // The selector lists "None" first (a segmented group or a combo box, depending on
+        // how many ports this machine has).
+        let items = ui::transport_bar::midi_items(harness.state());
+        assert_eq!(items[0], ui::transport_bar::MIDI_NONE);
+        assert_eq!(items.len(), harness.state().midi_ports.len() + 1);
+        let state = harness.into_state();
+        assert_eq!(state.mode, mode);
+        assert!(!state.midi_connected(), "rendering must not open a port");
+        assert_eq!(state.midi_port, None);
+        assert!(
+            state.midi_ports_refreshed.is_some(),
+            "the selector lists ports"
+        );
+        assert_eq!(state.params, default_params());
+    }
+}
+
+/// A MIDI note mirrored to the UI lights the key through the full per-frame path (`tick`)
+/// without a local note-on.
+#[test]
+fn midi_notes_light_keys_through_tick() {
+    let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    app.state_mut().midi_rx = Some(rx);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1080.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    tx.try_send(app::input::NoteEvent::On {
+        note: 64,
+        velocity: 0.9,
+    })
+    .unwrap();
+    harness.step();
+    let state = harness.state().state();
+    assert!(state.held_notes[64]);
+    assert_eq!(state.midi_note_on_count, 1);
+    assert_eq!(state.note_on_count, 0);
+    tx.try_send(app::input::NoteEvent::Off { note: 64 })
+        .unwrap();
+    harness.step();
+    assert!(!harness.state().state().held_notes[64]);
 }
 
 /// The app's per-frame logic (`tick`: keyboard, playhead) over just the SEQUENCER panel, so

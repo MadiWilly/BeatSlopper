@@ -25,17 +25,25 @@
 //! Note entry: a selected bass step takes the next note-on; with the transport playing and
 //! record armed, note-ons are quantised to the nearest step ([`quantise_step`]) and written to
 //! the bass lane. Save / load / export live in [`crate::project`].
+//!
+//! MIDI (M4): the `// ---- MIDI ----` section. The MIDI thread ([`crate::midi`]) sends notes to
+//! the engine itself over the engine's second queue ([`MidiHandle`]) and mirrors them to the
+//! UI through `midi_rx`; [`AppState::poll_midi`] drains that every tick and applies them with
+//! [`NoteSource::Midi`], which lights keys and feeds note entry / overdub exactly like the
+//! computer keyboard but does *not* send `NoteOn` / `NoteOff` again.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
-use engine::{DrumRow, EngineHandle, Message, ParamId, Pattern, Position, STEPS};
+use engine::{DrumRow, EngineHandle, Message, MidiHandle, ParamId, Pattern, Position, STEPS};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_io::AudioOutput;
 use crate::input::{InputState, NoteEvent};
+use crate::midi::{MidiConnection, MidiInput, UI_QUEUE_CAPACITY};
 use crate::presets;
 use crate::project::ExportJob;
 
@@ -50,6 +58,12 @@ pub const PROJECT_PATH_KEY: &str = "project_path";
 
 /// eframe storage key for the export repeats choice.
 pub const EXPORT_REPEATS_KEY: &str = "export_repeats";
+
+/// eframe storage key for the chosen MIDI input port name.
+pub const MIDI_PORT_KEY: &str = "midi_port";
+
+/// How often the MIDI port list is re-read while the selector is showing.
+pub const MIDI_PORTS_REFRESH: Duration = Duration::from_secs(2);
 
 /// Tempo of a fresh project.
 pub const DEFAULT_BPM: f32 = 120.0;
@@ -194,6 +208,40 @@ pub struct AppState {
     pub note_on_count: u64,
     /// Note-off messages sent so far (diagnostics).
     pub note_off_count: u64,
+
+    // ---- MIDI ----
+    /// `false` disables MIDI entirely (`--smoke-test`): no port listing, no connecting.
+    pub midi_enabled: bool,
+    /// Input port names as last listed (see [`AppState::refresh_midi_ports`]).
+    pub midi_ports: Vec<String>,
+    /// When `midi_ports` was last refreshed.
+    pub midi_ports_refreshed: Option<Instant>,
+    /// The port the user chose (persisted under [`MIDI_PORT_KEY`]); reconnected when present.
+    pub midi_port: Option<String>,
+    /// The open connection, if any.
+    pub midi_conn: Option<MidiConnection>,
+    /// Note events mirrored from the MIDI thread, drained by [`AppState::poll_midi`].
+    pub midi_rx: Option<Receiver<NoteEvent>>,
+    /// The engine's MIDI queue producer while no connection owns it.
+    pub midi_handle: Option<MidiHandle>,
+    /// Called from the MIDI thread after each message so the UI repaints (the egui context).
+    pub midi_wake: Option<egui::Context>,
+    /// A port name that failed to open; not retried until the user picks a port again.
+    pub midi_failed_port: Option<String>,
+    /// MIDI note-ons applied through [`AppState::poll_midi`] (diagnostics).
+    pub midi_note_on_count: u64,
+    /// MIDI note-offs applied through [`AppState::poll_midi`] (diagnostics).
+    pub midi_note_off_count: u64,
+}
+
+/// Where a note event came from, which decides whether the UI path tells the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteSource {
+    /// Computer keyboard or on-screen piano: the UI sends `NoteOn` / `NoteOff` to the engine.
+    Local,
+    /// MIDI input: the MIDI thread already sent the message over its own queue, so the UI only
+    /// updates the key lights, note entry and overdub.
+    Midi,
 }
 
 impl AppState {
@@ -206,7 +254,9 @@ impl AppState {
 
     /// Fresh state (defaults everywhere, the demo pattern) around an engine handle and an
     /// optional stream.
-    fn from_parts(mode: ThemeMode, engine: EngineHandle, audio: Option<AudioOutput>) -> Self {
+    fn from_parts(mode: ThemeMode, mut engine: EngineHandle, audio: Option<AudioOutput>) -> Self {
+        // The MIDI queue producer is taken once, right here, so a later connection can own it.
+        let midi_handle = engine.take_midi_handle();
         Self {
             theme_override: None,
             mode,
@@ -235,6 +285,17 @@ impl AppState {
             held_notes: [false; 128],
             note_on_count: 0,
             note_off_count: 0,
+            midi_enabled: true,
+            midi_ports: Vec::new(),
+            midi_ports_refreshed: None,
+            midi_port: None,
+            midi_conn: None,
+            midi_rx: None,
+            midi_handle,
+            midi_wake: None,
+            midi_failed_port: None,
+            midi_note_on_count: 0,
+            midi_note_off_count: 0,
         }
     }
 
@@ -573,6 +634,17 @@ impl AppState {
     /// armed, the note is quantised to the nearest step and recorded (accent at
     /// [`ACCENT_VELOCITY`] or above). The note always sounds live.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
+        self.note_on_from(note, velocity, NoteSource::Local);
+    }
+
+    /// Stops `note` (MIDI): tells the engine and unlights the key.
+    pub fn note_off(&mut self, note: u8) {
+        self.note_off_from(note, NoteSource::Local);
+    }
+
+    /// [`AppState::note_on`] with an explicit source: a [`NoteSource::Midi`] note does
+    /// everything except the engine message (the MIDI thread already sent it).
+    pub fn note_on_from(&mut self, note: u8, velocity: f32, source: NoteSource) {
         let note = note.min(127);
         let velocity = velocity.clamp(0.0, 1.0);
         if let Some(step) = self.selected_step {
@@ -583,16 +655,26 @@ impl AppState {
             self.set_synth_step(step, Some(note), velocity >= ACCENT_VELOCITY);
         }
         self.held_notes[usize::from(note)] = true;
-        self.note_on_count += 1;
-        self.engine.send(Message::NoteOn { note, velocity });
+        match source {
+            NoteSource::Local => {
+                self.note_on_count += 1;
+                self.engine.send(Message::NoteOn { note, velocity });
+            }
+            NoteSource::Midi => self.midi_note_on_count += 1,
+        }
     }
 
-    /// Stops `note` (MIDI): tells the engine and unlights the key.
-    pub fn note_off(&mut self, note: u8) {
+    /// [`AppState::note_off`] with an explicit source (see [`AppState::note_on_from`]).
+    pub fn note_off_from(&mut self, note: u8, source: NoteSource) {
         let note = note.min(127);
         self.held_notes[usize::from(note)] = false;
-        self.note_off_count += 1;
-        self.engine.send(Message::NoteOff { note });
+        match source {
+            NoteSource::Local => {
+                self.note_off_count += 1;
+                self.engine.send(Message::NoteOff { note });
+            }
+            NoteSource::Midi => self.midi_note_off_count += 1,
+        }
     }
 
     /// Releases every key (computer keyboard and on-screen) and silences the engine.
@@ -605,10 +687,15 @@ impl AppState {
     /// Applies note events from the keyboard (or the on-screen piano).
     pub fn apply_note_events(&mut self, events: &[NoteEvent]) {
         for event in events {
-            match *event {
-                NoteEvent::On { note, velocity } => self.note_on(note, velocity),
-                NoteEvent::Off { note } => self.note_off(note),
-            }
+            self.apply_note_event(*event, NoteSource::Local);
+        }
+    }
+
+    /// Applies one note event from `source` (the shared path for keys, mouse and MIDI).
+    pub fn apply_note_event(&mut self, event: NoteEvent, source: NoteSource) {
+        match event {
+            NoteEvent::On { note, velocity } => self.note_on_from(note, velocity, source),
+            NoteEvent::Off { note } => self.note_off_from(note, source),
         }
     }
 
@@ -664,6 +751,143 @@ impl AppState {
     pub fn theme(&self) -> Theme {
         Theme::for_mode(self.mode)
     }
+
+    // ---- MIDI ----
+
+    /// `true` while a MIDI input port is open.
+    #[must_use]
+    pub fn midi_connected(&self) -> bool {
+        self.midi_conn.is_some()
+    }
+
+    /// Name of the open MIDI port, if any.
+    #[must_use]
+    pub fn midi_port_name(&self) -> Option<&str> {
+        self.midi_conn.as_ref().map(MidiConnection::port_name)
+    }
+
+    /// Re-reads the port list if it is older than [`MIDI_PORTS_REFRESH`] (or never read), then
+    /// reconciles: a connection whose port vanished is closed (the choice is kept so it
+    /// reconnects when the device comes back), and the chosen port is opened when it is
+    /// present and not connected. Cheap to call every frame; does nothing when MIDI is off.
+    pub fn refresh_midi_ports(&mut self) {
+        if !self.midi_enabled {
+            return;
+        }
+        let stale = self
+            .midi_ports_refreshed
+            .is_none_or(|at| at.elapsed() >= MIDI_PORTS_REFRESH);
+        if !stale {
+            return;
+        }
+        self.midi_ports = MidiInput::list_ports();
+        self.midi_ports_refreshed = Some(Instant::now());
+
+        if let Some(name) = self.midi_port_name()
+            && !self.midi_ports.iter().any(|p| p == name)
+        {
+            let name = name.to_owned();
+            self.close_midi();
+            self.set_status(format!("MIDI unplugged: {}", truncate_name(&name, 18)));
+        }
+        if self.midi_conn.is_none()
+            && let Some(wanted) = self.midi_port.clone()
+            && self.midi_failed_port.as_deref() != Some(wanted.as_str())
+            && self.midi_ports.contains(&wanted)
+        {
+            self.connect_midi(&wanted);
+        }
+    }
+
+    /// Opens `name` as the MIDI input (closing any current connection first) and remembers it
+    /// as the chosen port. Failures show in the status line; the choice is kept so the port
+    /// is retried on the next launch (but not every refresh).
+    pub fn connect_midi(&mut self, name: &str) {
+        self.midi_port = Some(name.to_owned());
+        if !self.midi_enabled {
+            return;
+        }
+        if self.midi_port_name() == Some(name) {
+            return;
+        }
+        self.close_midi();
+        let Some(handle) = self.midi_handle.take() else {
+            self.set_status("MIDI unavailable (engine queue taken)");
+            return;
+        };
+        let (tx, rx): (SyncSender<NoteEvent>, Receiver<NoteEvent>) =
+            std::sync::mpsc::sync_channel(UI_QUEUE_CAPACITY);
+        let wake: Option<Box<dyn Fn() + Send>> = self
+            .midi_wake
+            .clone()
+            .map(|ctx| Box::new(move || ctx.request_repaint()) as Box<dyn Fn() + Send>);
+        match MidiInput::connect(name, handle, tx, wake) {
+            Ok(conn) => {
+                self.midi_conn = Some(conn);
+                self.midi_rx = Some(rx);
+                self.midi_failed_port = None;
+                self.set_status(format!("MIDI: {}", truncate_name(name, 18)));
+            }
+            Err(err) => {
+                self.midi_handle = err.midi;
+                self.midi_failed_port = Some(name.to_owned());
+                self.set_status(err.message);
+            }
+        }
+    }
+
+    /// Closes the connection (if any), silences everything (`AllNotesOff` through the UI
+    /// queue, every key light off) and forgets the chosen port ("None" in the selector).
+    pub fn disconnect_midi(&mut self) {
+        self.midi_port = None;
+        self.midi_failed_port = None;
+        self.close_midi();
+    }
+
+    /// Closes the connection without touching the remembered choice. Any notes it held are
+    /// silenced and unlit.
+    fn close_midi(&mut self) {
+        self.midi_rx = None;
+        if let Some(conn) = self.midi_conn.take() {
+            self.midi_handle = Some(conn.close());
+            self.all_notes_off();
+        }
+    }
+
+    /// Applies every note event the MIDI thread mirrored since the last tick, through the same
+    /// path as the computer keyboard but as [`NoteSource::Midi`] (no second engine message).
+    /// Returns how many events were applied.
+    pub fn poll_midi(&mut self) -> usize {
+        let mut count = 0;
+        while let Some(rx) = self.midi_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(event) => {
+                    self.apply_note_event(event, NoteSource::Midi);
+                    count += 1;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    // The connection's callback data is gone; stop polling a dead channel.
+                    self.midi_rx = None;
+                    break;
+                }
+            }
+        }
+        count
+    }
+}
+
+/// Shortens `name` to at most `max` characters, ending in an ellipsis when it was cut.
+#[must_use]
+pub fn truncate_name(name: &str, max: usize) -> String {
+    let count = name.chars().count();
+    if count <= max {
+        return name.to_owned();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = name.chars().take(keep).collect();
+    out.push('…');
+    out
 }
 
 /// Messages one [`AppState::send_pattern`] produces: 16 steps for each of the 5 drum rows and
@@ -702,6 +926,10 @@ impl BeatSlopperApp {
         let export_repeats: Option<u32> = cc
             .storage
             .and_then(|s| eframe::get_value::<u32>(s, EXPORT_REPEATS_KEY));
+        let midi_port: Option<String> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Option<String>>(s, MIDI_PORT_KEY))
+            .flatten();
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
@@ -713,6 +941,14 @@ impl BeatSlopperApp {
         if let Some(repeats) = export_repeats.filter(|r| EXPORT_REPEATS.contains(r)) {
             state.export_repeats = repeats;
         }
+
+        // ---- MIDI ----
+        // The smoke test never touches a MIDI device. Otherwise list the ports now and reopen
+        // the remembered one when it is present (silently skipped when absent).
+        state.midi_enabled = !smoke_test;
+        state.midi_wake = Some(cc.egui_ctx.clone());
+        state.midi_port = midi_port;
+        state.refresh_midi_ports();
 
         let mut app = Self {
             theme: Theme::for_mode(mode),
@@ -730,6 +966,7 @@ impl BeatSlopperApp {
     pub fn headless(mode: ThemeMode, smoke_test: bool) -> (Self, engine::Engine) {
         let (mut state, engine) = AppState::headless(mode);
         state.theme_override = Some(mode);
+        state.midi_enabled = !smoke_test;
         (
             Self {
                 theme: Theme::for_mode(mode),
@@ -791,12 +1028,17 @@ impl BeatSlopperApp {
         self.state.poll_export();
         self.state.expire_status();
         self.state.handle_keyboard(ctx);
+        // ---- MIDI ----
+        let midi_events = self.state.poll_midi();
 
-        if self.state.playing || self.state.playhead.playing {
+        if self.state.playing || self.state.playhead.playing || midi_events > 0 {
             // The playhead moves between frames; keep drawing while the loop runs.
             ctx.request_repaint();
         } else if self.state.is_exporting() || self.state.status.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.state.midi_enabled {
+            // Pick up hot-plugged MIDI devices without waiting for mouse movement.
+            ctx.request_repaint_after(MIDI_PORTS_REFRESH);
         }
 
         if self.smoke_test {
@@ -837,6 +1079,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index);
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
+        eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -1412,6 +1655,226 @@ mod tests {
         assert_eq!(engine.pattern(), &state.pattern);
         assert_eq!(engine.pattern().drum_volume[DrumRow::Kick.index()], -3.0);
         assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 12.0);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // ---- MIDI ----
+
+    use std::sync::mpsc::sync_channel;
+
+    /// A headless state with a fake MIDI thread: `tx` plays the midir callback's UI half.
+    fn midi_state() -> (AppState, engine::Engine, SyncSender<NoteEvent>) {
+        let (mut state, engine) = AppState::headless(ThemeMode::Dark);
+        let (tx, rx) = sync_channel(UI_QUEUE_CAPACITY);
+        state.midi_rx = Some(rx);
+        (state, engine, tx)
+    }
+
+    #[test]
+    fn headless_state_owns_the_midi_queue_handle() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(state.midi_handle.is_some());
+        assert!(
+            state.engine.take_midi_handle().is_none(),
+            "taken exactly once"
+        );
+        assert!(state.midi_enabled);
+        assert!(!state.midi_connected());
+        assert_eq!(state.midi_port_name(), None);
+        assert_eq!(state.poll_midi(), 0, "no receiver: nothing to drain");
+    }
+
+    #[test]
+    fn midi_events_light_keys_without_a_second_engine_message() {
+        let (mut state, mut engine, tx) = midi_state();
+        let free_before = state.engine.free_slots();
+        tx.try_send(NoteEvent::On {
+            note: 60,
+            velocity: 0.8,
+        })
+        .unwrap();
+        assert_eq!(state.poll_midi(), 1);
+        assert!(state.held_notes[60], "the on-screen key lights");
+        assert_eq!(state.midi_note_on_count, 1);
+        assert_eq!(state.note_on_count, 0, "no local note-on was counted");
+        assert_eq!(
+            state.engine.free_slots(),
+            free_before,
+            "the UI queue must not carry a duplicate NoteOn"
+        );
+        engine.process_messages();
+        assert_eq!(engine.voices().held_voices(), 0);
+
+        // The MIDI thread's half: the same note through the MIDI queue sounds exactly once.
+        let midi = state.midi_handle.as_mut().unwrap();
+        assert!(midi.send(Message::NoteOn {
+            note: 60,
+            velocity: 0.8
+        }));
+        engine.process_messages();
+        assert_eq!(engine.voices().held_voices(), 1);
+
+        tx.try_send(NoteEvent::Off { note: 60 }).unwrap();
+        assert_eq!(state.poll_midi(), 1);
+        assert!(!state.held_notes[60]);
+        assert_eq!(state.midi_note_off_count, 1);
+        assert_eq!(state.note_off_count, 0);
+        assert_eq!(state.engine.free_slots(), free_before);
+        engine.process_messages();
+        assert_eq!(
+            engine.voices().held_voices(),
+            1,
+            "the UI path never released it"
+        );
+        state
+            .midi_handle
+            .as_mut()
+            .unwrap()
+            .send(Message::NoteOff { note: 60 });
+        engine.process_messages();
+        assert_eq!(engine.voices().held_voices(), 0);
+    }
+
+    #[test]
+    fn midi_note_fills_the_selected_bass_step() {
+        let (mut state, mut engine, tx) = midi_state();
+        state.send_pattern();
+        engine.process_messages();
+        state.click_synth_step(3, false);
+        let free_before = state.engine.free_slots();
+        tx.try_send(NoteEvent::On {
+            note: 67,
+            velocity: 0.8,
+        })
+        .unwrap();
+        assert_eq!(state.poll_midi(), 1);
+        assert_eq!(state.pattern.synth[3].note, Some(67));
+        assert_eq!(state.selected_step, Some(3));
+        assert!(state.held_notes[67]);
+        // Exactly one message went to the engine: the step edit, not a NoteOn.
+        assert_eq!(free_before - state.engine.free_slots(), 1);
+        engine.process_messages();
+        assert_eq!(engine.pattern().synth[3].note, Some(67));
+        assert_eq!(engine.voices().held_voices(), 0);
+    }
+
+    #[test]
+    fn midi_note_overdubs_while_armed_and_playing() {
+        let (mut state, _engine, tx) = midi_state();
+        state.clear_synth();
+        state.play();
+        state.toggle_arm();
+        state.playhead = at(2, 0.6);
+        tx.try_send(NoteEvent::On {
+            note: 62,
+            velocity: 1.0,
+        })
+        .unwrap();
+        tx.try_send(NoteEvent::Off { note: 62 }).unwrap();
+        assert_eq!(state.poll_midi(), 2);
+        assert_eq!(
+            state.pattern.synth[3],
+            SynthStep {
+                note: Some(62),
+                accent: true
+            }
+        );
+        assert!(!state.held_notes[62]);
+        assert_eq!(state.note_on_count, 0);
+        assert_eq!(state.midi_note_on_count, 1);
+    }
+
+    #[test]
+    fn poll_midi_drains_everything_and_drops_a_dead_channel() {
+        let (mut state, _engine, tx) = midi_state();
+        for note in 60..70u8 {
+            tx.try_send(NoteEvent::On {
+                note,
+                velocity: 0.5,
+            })
+            .unwrap();
+        }
+        assert_eq!(state.poll_midi(), 10);
+        assert_eq!(state.poll_midi(), 0);
+        assert!((60..70).all(|n| state.held_notes[n]));
+        drop(tx);
+        assert_eq!(state.poll_midi(), 0);
+        assert!(
+            state.midi_rx.is_none(),
+            "a disconnected sender ends polling"
+        );
+    }
+
+    #[test]
+    fn disconnect_without_a_connection_forgets_the_choice_quietly() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.midi_port = Some("Some Keys".to_owned());
+        state.note_on(60, 0.8);
+        let free_before = state.engine.free_slots();
+        state.disconnect_midi();
+        assert_eq!(state.midi_port, None);
+        assert!(state.midi_rx.is_none());
+        assert!(state.midi_handle.is_some());
+        // Nothing was open, so nothing to silence: no AllNotesOff, keys untouched.
+        assert_eq!(state.engine.free_slots(), free_before);
+        assert!(state.held_notes[60]);
+        engine.process_messages();
+        assert_eq!(engine.voices().held_voices(), 1);
+    }
+
+    #[test]
+    fn connecting_to_a_missing_port_keeps_the_handle_and_the_choice() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.connect_midi("no such port 0xDEADBEEF");
+        assert!(!state.midi_connected());
+        assert!(state.midi_handle.is_some(), "the queue handle came back");
+        assert_eq!(state.midi_port.as_deref(), Some("no such port 0xDEADBEEF"));
+        assert_eq!(
+            state.midi_failed_port.as_deref(),
+            Some("no such port 0xDEADBEEF")
+        );
+        assert!(state.status_text().is_some_and(|s| s.contains("MIDI")));
+
+        // The refresh does not retry a failed port, and lists without panicking.
+        state.refresh_midi_ports();
+        assert!(state.midi_ports_refreshed.is_some());
+        assert!(!state.midi_connected());
+        // A second refresh within the window is skipped (same timestamp).
+        let at = state.midi_ports_refreshed;
+        state.refresh_midi_ports();
+        assert_eq!(state.midi_ports_refreshed, at);
+    }
+
+    #[test]
+    fn disabled_midi_never_lists_or_connects() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.midi_enabled = false;
+        state.refresh_midi_ports();
+        assert!(state.midi_ports.is_empty());
+        assert!(state.midi_ports_refreshed.is_none());
+        state.connect_midi("anything");
+        assert!(!state.midi_connected());
+        assert_eq!(state.midi_port.as_deref(), Some("anything"));
+        assert!(state.midi_handle.is_some());
+        assert_eq!(state.status_text(), None);
+    }
+
+    #[test]
+    fn truncate_name_keeps_short_names_and_ellipsises_long_ones() {
+        assert_eq!(truncate_name("MPK mini 3", 18), "MPK mini 3");
+        assert_eq!(
+            truncate_name("Arturia KeyStep 32 MIDI 1", 18),
+            "Arturia KeyStep 3…"
+        );
+        assert_eq!(
+            truncate_name("Arturia KeyStep 32 MIDI 1", 18)
+                .chars()
+                .count(),
+            18
+        );
+        assert_eq!(truncate_name("", 5), "");
+        assert_eq!(truncate_name("abc", 1), "…");
+        assert_eq!(truncate_name("日本語のポート名です", 5), "日本語の…");
     }
 
     #[test]

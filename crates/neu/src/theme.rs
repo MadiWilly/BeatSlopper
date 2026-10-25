@@ -80,6 +80,12 @@ pub struct Theme {
     pub panel_padding: f32,
 }
 
+/// Corner radius of egui tooltips, popups and windows styled by [`Theme::apply`].
+pub const POPUP_RADIUS: u8 = 12;
+/// Seconds the pointer must rest on a control before its tooltip appears
+/// (`Style::interaction.tooltip_delay`, set by [`Theme::apply`]).
+pub const TOOLTIP_DELAY: f32 = 0.3;
+
 const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb(
         ((hex >> 16) & 0xFF) as u8,
@@ -196,7 +202,8 @@ impl Theme {
 
     /// Applies the palette to egui's global visuals (window fill, text colours, selection).
     /// The widget kit paints its own shadows; this only sets the defaults for plain egui text
-    /// and layout.
+    /// and layout, plus the tooltip/popup look (surface fill, [`Self::popup_shadow`], no
+    /// stroke, [`POPUP_RADIUS`] corners) and the [`TOOLTIP_DELAY`].
     pub fn apply(&self, ctx: &egui::Context) {
         let egui_theme = self.egui_theme();
         let mut visuals = match self.mode {
@@ -231,7 +238,12 @@ impl Theme {
         }
         visuals.window_stroke = egui::Stroke::NONE;
         visuals.window_shadow = egui::epaint::Shadow::NONE;
-        visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        // Tooltips and popups (`Frame::popup`): surface fill, a raised-s-like drop shadow, no
+        // stroke, 12 pt corners. egui reads `menu_corner_radius` for popups and tooltips and
+        // `window_corner_radius` for windows; both get the same radius.
+        visuals.popup_shadow = self.popup_shadow();
+        visuals.window_corner_radius = egui::CornerRadius::same(POPUP_RADIUS);
+        visuals.menu_corner_radius = egui::CornerRadius::same(POPUP_RADIUS);
 
         // Make egui's own notion of light/dark follow ours, then install the palette and the
         // type scale (label 11, body/value 13, button 12, heading 15) for that theme.
@@ -241,7 +253,20 @@ impl Theme {
             style.text_styles = Self::text_styles();
             style.spacing.item_spacing = egui::vec2(10.0, 10.0);
             style.spacing.button_padding = egui::vec2(16.0, 6.0);
+            style.interaction.tooltip_delay = TOOLTIP_DELAY;
         });
+    }
+
+    /// The single egui drop shadow used for tooltips and popups: the dark half of `raised_s`
+    /// (offset 3, blur 8) in the theme's `shadow_dark` colour. egui's `Shadow` has no highlight
+    /// half, so the kit's two-shadow look is approximated by the dark one alone.
+    pub fn popup_shadow(&self) -> egui::epaint::Shadow {
+        egui::epaint::Shadow {
+            offset: [self.raised_s.offset as i8, self.raised_s.offset as i8],
+            blur: self.raised_s.blur as u8,
+            spread: 0,
+            color: self.shadow_dark,
+        }
     }
 
     /// The egui theme that corresponds to this mode.
