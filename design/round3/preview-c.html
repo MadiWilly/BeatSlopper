@@ -1,0 +1,872 @@
+<!doctype html>
+<!--
+  BeatSlopper  ·  Round 3  ·  Direction C  ·  "CLEARWAVE"
+  ============================================================
+  Spacious, modern, light-first. Flat surfaces, 1 px borders, one soft ambient shadow on
+  floating things only (menus, pop-outs, slide-overs, overlays). Transcribe these values into
+  the neu theme file; every number below is a logical point (pt) = CSS px at 100 %.
+
+  LIGHT THEME (default)                              contrast on surface #FFFFFF
+    bg              #F3F5F7     window background
+    surface         #FFFFFF     cards, top bar, rail, panels
+    surface-2       #F7F8FA     inset areas (grid background, list hover)
+    surface-3       #EBEEF2     control fill (buttons, step off, slider tracks)
+    border          #DDE2E8     1 px card / control borders
+    border-strong   #C5CCD5     scrollbar thumb, pressed borders, meter ticks
+    text            #171C22     primary                               15.6 : 1
+    text-2          #55606C     secondary (labels, units)              6.6 : 1
+    text-3          #8792A0     tertiary (hints, disabled)             3.3 : 1  (non-essential only)
+    accent          #0A7C6E     teal: ON states, playhead, selection   5.1 : 1  (white text on it 5.1 : 1)
+    accent-hover    #086A5E
+    accent-soft     #D7F0EC     selected row / cell wash (text on it: #171C22, 13.4 : 1)
+    on-accent       #FFFFFF
+    danger          #D93F45     record arm, clear / remove             4.6 : 1
+    warn            #D4891C     gain-reduction meter, limiter lamp
+    ok              #2E9E63     level meter green
+    meter-hot       #E5484D     meter top band (> -3 dB)
+    shadow          0 8px 24px rgba(20,28,40,.14), 0 1px 2px rgba(20,28,40,.08)   floating things ONLY
+
+  DARK THEME                                         contrast on surface #1B1F24
+    bg              #121518
+    surface         #1B1F24
+    surface-2       #20252B
+    surface-3       #2A3037
+    border          #30363E
+    border-strong   #434B55
+    text            #EDF0F3                                           14.9 : 1
+    text-2          #A4ADB8                                            7.4 : 1
+    text-3          #6F7985                                            3.6 : 1  (non-essential only)
+    accent          #2FC4B0                                            7.5 : 1  (on-accent #0B1D1A text on it 9.9 : 1)
+    accent-hover    #4CD3C1
+    accent-soft     #173F3A
+    on-accent       #0B1D1A
+    danger          #F0565C      warn #EFA33A      ok #3DBA78      meter-hot #F06A6A
+    shadow          0 12px 32px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4)
+
+  TRACK COLOURS (8, both themes; dark theme lifts L by ~6 %)
+    t0 coral #E5544B   t1 amber #E0921C   t2 lime #7CB342   t3 sky #2F8FE0
+    t4 violet #7C5CE6  t5 pink #D9499A    t6 cyan #1FA8C9   t7 slate #6B7C93
+    Drum rows use text-2 for their chips; the selected track's colour tints its note lane,
+    its piano-roll notes and its mixer insert; the other tracks' notes are ghosts at 28 % alpha.
+
+  TYPE  (system-ui stack; weights 400 / 500 / 600 only)
+    display     20 / 500   BPM number, big readouts, tabular numerals
+    title       15 / 600   view title, panel titles
+    body        14 / 400   names, menu items, list rows, buttons
+    label       12 / 500   section labels (sentence case), knob labels, column headers; colour text-2
+    caption     12 / 400   hints, tags, shortcut hints; colour text-3
+    value       13 / 500   every numeric readout: tabular-nums, letter-spacing -0.02em, "condensed" feel
+    mono-key    11 / 600   keyboard caps, insert numbers, pattern letters
+
+  SPACING     4 / 8 / 12 / 16 / 24 / 32          view padding 16, card padding 16, card gap 16,
+                                                 control gap 8, group gap 16, knob gap 12
+  RADII       card 10 · control 6 · step cell 6 · note bar 4 · pill 999 · menu 10 · tooltip 6 · chip 50 %
+
+  CONTROL SIZES (hit target >= 32 x 32 everywhere; icons 18 box / 1.6 stroke)
+    top bar         48 h              rail  56 w, item 40 x 40 (hit 56 x 44), label on hover
+    tracks panel    248 w (resizable 200..320), row 48 h              keyboard strip 116 h (collapsed 32)
+    button          32 h, pad 0 12, min-w 32;  sm 28 h pad 0 8       icon button 32 x 32
+    toggle (M/S)    24 x 24 letter, hit 32                         switch 36 x 20, knob 16
+    segmented       32 h, item pad 0 10, 1 px border, ON = surface + text (light) / surface-3 (dark) with accent text
+    knob            36 arc (r 15, stroke 3, 270 deg from 7:30), label 12 above? no: label below, value below label
+                    sm 28 arc (r 11, stroke 2.5)   bipolar knobs draw from 12 o'clock   drag 120 pt = full range, dbl-click resets, wheel = fine
+    fader           24 w x 160 h track (r 6), meter 6 w inside the track on the right, thumb 24 x 10 (r 3)
+    hslider         track 6 h (r 3), thumb 14 circle
+    step cell       32 x 32 (r 6) gap 4, beat-group gap 12; ON = accent fill; ACCENT = accent + 6 pt white dot; playhead column = accent-soft wash
+    note bar        14 h (r 4), velocity = fill alpha (.45 .. 1) + 3 pt left bar
+    ghost note      28 % alpha of the owning track colour, no border
+    meter           6 w, segments 2 pt; green to -12, warn to -3, hot above
+    list row        44 h, hover surface-2, selected accent-soft + 3 pt accent left bar
+    menu            min-w 200, item 32 h, radius 10, shadow, 1 px border   tooltip 28 h, radius 6, surface #171C22 / #EDF0F3 inverted
+    scrollbar       10 wide, thumb border-strong (r 5), hover text-3; always visible when content overflows
+    text field      32 h, 1 px border, focus = accent border + 3 pt accent-soft ring
+
+  COMPONENT STATES (every control)
+    rest      surface-3 fill, border, text-2 icon / text
+    hover     surface-3 lightened 3 % (light) / lifted 4 % (dark), text
+    pressed   surface-3 darkened 4 %, no transform
+    on        accent fill + on-accent  (primary / toggle)   |   segmented ON = surface + accent text + strong border
+    focus     2 px accent ring, offset 2 (keyboard only)
+    disabled  40 % opacity, no hover
+    danger    text danger at rest, danger fill + white on hover (clear / remove / discard)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BeatSlopper · Clearwave</title>
+<style>
+:root{
+  --bg:#F3F5F7;--surface:#FFFFFF;--surface-2:#F7F8FA;--surface-3:#EBEEF2;--border:#DDE2E8;--border-strong:#C5CCD5;
+  --text:#171C22;--text-2:#55606C;--text-3:#8792A0;--accent:#0A7C6E;--accent-hover:#086A5E;--accent-soft:#D7F0EC;--on-accent:#FFFFFF;
+  --danger:#D93F45;--warn:#D4891C;--ok:#2E9E63;--hot:#E5484D;--tip-bg:#171C22;--tip-fg:#F3F5F7;
+  --shadow:0 8px 24px rgba(20,28,40,.14),0 1px 2px rgba(20,28,40,.08);
+  --t0:#E5544B;--t1:#E0921C;--t2:#7CB342;--t3:#2F8FE0;--t4:#7C5CE6;--t5:#D9499A;--t6:#1FA8C9;--t7:#6B7C93;
+  --key-w:#FFFFFF;--key-b:#2A3037;--ghost-a:.28;
+}
+:root[data-theme="dark"]{
+  --bg:#121518;--surface:#1B1F24;--surface-2:#20252B;--surface-3:#2A3037;--border:#30363E;--border-strong:#434B55;
+  --text:#EDF0F3;--text-2:#A4ADB8;--text-3:#6F7985;--accent:#2FC4B0;--accent-hover:#4CD3C1;--accent-soft:#173F3A;--on-accent:#0B1D1A;
+  --danger:#F0565C;--warn:#EFA33A;--ok:#3DBA78;--hot:#F06A6A;--tip-bg:#EDF0F3;--tip-fg:#171C22;
+  --shadow:0 12px 32px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);
+  --t0:#F0665D;--t1:#F0A233;--t2:#8DC657;--t3:#4AA2EC;--t4:#8F72F2;--t5:#E55DAA;--t6:#36B9D8;--t7:#8193A9;
+  --key-w:#E6EAEE;--key-b:#0F1215;--ghost-a:.32;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg);color:var(--text);color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
+body{font:14px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;padding:32px 40px 80px}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+svg{display:block}svg.icn{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}svg.icn.fill{fill:currentColor;stroke:none}.toplink{display:none}
+small{font-size:12px}
+h1{font-size:24px;font-weight:600;letter-spacing:-.01em}
+h2{font-size:15px;font-weight:600;margin:48px 0 12px;display:flex;align-items:center;gap:12px}
+h2 .n{width:28px;height:28px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;font-size:13px}
+h2 small{color:var(--text-3);font-weight:400}
+p.rationale{max-width:900px;color:var(--text-2);margin:12px 0 0}
+.pagehead{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;max-width:1280px}
+.caption{font-size:12px;color:var(--text-3)}
+.num{font-variant-numeric:tabular-nums;font-weight:500;letter-spacing:-.02em;font-size:13px;color:var(--text);white-space:nowrap}
+.lbl{font-size:12px;font-weight:500;color:var(--text-2);white-space:nowrap}
+.cap{font-size:12px;color:var(--text-3)}
+.title{font-size:15px;font-weight:600}
+
+/* ---------- scrollbars ---------- */
+.scroll,.view,.tlist,.plist,.roll-body,.strips{scrollbar-color:var(--border-strong) transparent;scrollbar-width:thin}
+.scroll::-webkit-scrollbar,.view::-webkit-scrollbar,.tlist::-webkit-scrollbar,.plist::-webkit-scrollbar,.roll-body::-webkit-scrollbar,.strips::-webkit-scrollbar{width:10px;height:10px}
+.scroll::-webkit-scrollbar-thumb,.view::-webkit-scrollbar-thumb,.tlist::-webkit-scrollbar-thumb,.plist::-webkit-scrollbar-thumb,.roll-body::-webkit-scrollbar-thumb,.strips::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:5px;border:2px solid transparent;background-clip:padding-box}
+.scroll::-webkit-scrollbar-thumb:hover,.view::-webkit-scrollbar-thumb:hover,.strips::-webkit-scrollbar-thumb:hover{background:var(--text-3);background-clip:padding-box}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-corner{background:transparent}
+
+/* ---------- buttons ---------- */
+.btn{height:32px;padding:0 12px;min-width:32px;border-radius:6px;background:var(--surface-3);border:1px solid var(--border);color:var(--text);display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;font-weight:500;font-size:13px}
+.btn:hover{border-color:var(--border-strong);filter:brightness(1.02)}
+.btn:active{filter:brightness(.96)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+.btn.ghost:hover{background:var(--surface-3);color:var(--text)}
+.btn.danger{color:var(--danger)}
+.btn.danger:hover{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn.sm{height:28px;padding:0 8px;font-size:12px;min-width:28px}
+.btn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn:disabled,.ibtn:disabled{opacity:.4;pointer-events:none}
+.ibtn{width:32px;height:32px;border-radius:6px;display:inline-grid;place-items:center;color:var(--text-2);background:var(--surface-3);border:1px solid var(--border)}
+.ibtn.flat{background:transparent;border-color:transparent}
+.ibtn:hover{color:var(--text);border-color:var(--border-strong)}
+.ibtn.flat:hover{background:var(--surface-3)}
+.ibtn.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.ibtn.rec.on{background:var(--danger);border-color:var(--danger);color:#fff}
+.ibtn.sm{width:28px;height:28px}
+.ibtn svg,.btn svg,.ritem svg,.kbd-head svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ibtn.on svg.fill,.ibtn svg.fill{fill:currentColor;stroke:none}
+.grp{display:inline-flex;gap:4px}
+.tg{width:24px;height:24px;border-radius:5px;font-size:11px;font-weight:600;color:var(--text-2);border:1px solid var(--border);background:var(--surface-3);display:inline-grid;place-items:center;position:relative}
+.tg::before{content:"";position:absolute;inset:-4px}
+.tg:hover{color:var(--text);border-color:var(--border-strong)}
+.tg.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.tg.on.s{background:var(--warn);border-color:var(--warn);color:#fff}
+.seg{display:inline-flex;height:32px;padding:2px;border-radius:7px;background:var(--surface-3);border:1px solid var(--border);gap:2px}
+.seg button{height:26px;padding:0 10px;border-radius:5px;color:var(--text-2);font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--surface);color:var(--accent);box-shadow:0 0 0 1px var(--border-strong) inset}
+.seg.sm{height:28px}.seg.sm button{height:22px;padding:0 8px;font-size:12px}.topbar .seg.sm button{padding:0 8px}.topbar .smeter{width:56px}
+.switch{width:36px;height:20px;border-radius:999px;background:var(--border-strong);position:relative;display:inline-block;cursor:pointer;vertical-align:middle}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+.switch.on{background:var(--accent)}.switch.on::after{left:18px}
+.switch.on::after{background:var(--on-accent)}
+.field{height:32px;border-radius:6px;border:1px solid var(--border);background:var(--surface);padding:0 10px;display:inline-flex;align-items:center;gap:8px;color:var(--text);min-width:120px}
+.field.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.field .ph{color:var(--text-3)}
+.field svg{width:16px;height:16px;fill:none;stroke:var(--text-3);stroke-width:1.6;stroke-linecap:round}
+.dd{height:32px;padding:0 8px 0 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text)}
+.dd.sm{height:28px;font-size:12px}
+.dd svg{width:14px;height:14px;fill:none;stroke:var(--text-2);stroke-width:1.8;stroke-linecap:round}
+.chev{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+.menu{min-width:200px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:6px}
+.menu .mi{height:32px;padding:0 10px;border-radius:6px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text);cursor:pointer}
+.menu .mi:hover,.menu .mi.hover{background:var(--surface-2)}
+.menu .mi .kb{margin-left:auto;color:var(--text-3);font-size:12px}
+.menu .mi.danger{color:var(--danger)}
+.menu .sep{height:1px;background:var(--border);margin:6px 4px}
+.menu .mh{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);padding:8px 10px 4px}
+.tip{display:inline-block;height:28px;padding:0 10px;border-radius:6px;background:var(--tip-bg);color:var(--tip-fg);font-size:12px;line-height:28px;white-space:nowrap}
+.tip .kb{opacity:.6;margin-left:8px}
+.kb{font-size:11px;font-weight:600;letter-spacing:.02em;color:var(--text-3)}
+.chip{width:10px;height:10px;border-radius:50%;background:var(--c,var(--text-2));display:inline-block;flex:none}
+.insbox{min-width:24px;height:22px;border-radius:5px;border:1px solid var(--border);background:var(--surface);font-size:11px;font-weight:600;display:inline-grid;place-items:center;padding:0 5px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.insbox.linked{border-color:var(--c,var(--accent));color:var(--c,var(--accent))}
+.lamp{width:8px;height:8px;border-radius:50%;background:var(--border-strong);display:inline-block}
+.lamp.on{background:var(--ok)}
+.lamp.warn{background:var(--warn)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block}
+.hslider{width:56px;height:6px;border-radius:3px;background:var(--surface-3);border:1px solid var(--border);position:relative}
+.hslider i{position:absolute;left:0;top:-1px;bottom:-1px;width:calc(var(--p)*100%);background:var(--accent);border-radius:3px}
+.hslider i::after{content:"";position:absolute;right:-7px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--surface);border:2px solid var(--accent);transform:translateY(-50%)}
+.hslider.lg{width:120px}
+
+/* knobs (rendered by JS) */
+.knob{display:inline-flex;flex-direction:column;align-items:center;gap:2px;width:52px;text-align:center}
+.knob svg{width:36px;height:36px}
+.knob.sm{width:40px}.knob.sm svg{width:28px;height:28px}
+.knob .kl{font-size:12px;font-weight:500;color:var(--text-2);white-space:nowrap}
+.knob .kv{font-size:12px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em;color:var(--text);white-space:nowrap}
+.knob.sm .kl,.knob.sm .kv{font-size:11px}
+.knob .arc-t{stroke:var(--border-strong)}
+.knob .arc-v{stroke:var(--accent)}
+.knob .ptr{stroke:var(--text)}
+.knob.c .arc-v{stroke:var(--c)}
+.knob:hover .arc-t{stroke:var(--text-3)}
+.knob.disabled{opacity:.4}
+.knobs{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
+
+/* meters & faders */
+.vmeter{display:inline-flex;gap:2px;height:100%}
+.vmeter i{width:6px;border-radius:3px;background:var(--surface-3);border:1px solid var(--border);position:relative;overflow:hidden}
+.vmeter i::after{content:"";position:absolute;left:0;right:0;bottom:0;height:calc(var(--l)*100%);background:linear-gradient(to top,var(--ok) 0 70%,var(--warn) 70% 88%,var(--hot) 88%)}
+.vmeter i::before{content:"";position:absolute;left:0;right:0;top:calc((1 - var(--pk,0))*100%);height:2px;background:var(--text-2);z-index:1}
+.smeter{display:inline-flex;flex-direction:column;gap:3px;width:72px}
+.smeter i{height:5px;border-radius:3px;background:var(--surface-3);border:1px solid var(--border);position:relative;overflow:hidden}
+.smeter i::after{content:"";position:absolute;top:0;bottom:0;left:0;width:calc(var(--l)*100%);background:linear-gradient(to right,var(--ok) 0 70%,var(--warn) 70% 88%,var(--hot) 88%)}
+.fader{width:24px;height:160px;border-radius:6px;background:var(--surface-3);border:1px solid var(--border);position:relative}
+.fader .fm{position:absolute;right:3px;top:3px;bottom:3px;width:6px;border-radius:3px;background:var(--surface);overflow:hidden}
+.fader .fm::after{content:"";position:absolute;left:0;right:0;bottom:0;height:calc(var(--m)*100%);background:linear-gradient(to top,var(--ok) 0 70%,var(--warn) 70% 88%,var(--hot) 88%)}
+.fader .ft{position:absolute;left:-1px;right:-1px;height:10px;border-radius:3px;background:var(--surface);border:1px solid var(--border-strong);bottom:calc(var(--p)*100% - 5px);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.fader .ft::after{content:"";position:absolute;left:6px;right:6px;top:4px;height:1px;background:var(--text-3)}
+.fader .zero{position:absolute;left:-5px;width:4px;height:1px;background:var(--text-3);bottom:calc(.78*100%)}
+.fader:hover .ft{border-color:var(--accent)}
+.gr{width:6px;height:160px;border-radius:3px;background:var(--surface-3);border:1px solid var(--border);position:relative;overflow:hidden}
+.gr::after{content:"";position:absolute;left:0;right:0;top:0;height:calc(var(--g)*100%);background:var(--warn)}
+
+/* step cells */
+.cell{width:32px;height:32px;border-radius:6px;background:var(--surface-3);border:1px solid var(--border);display:inline-grid;place-items:center;position:relative;color:var(--on-accent);font-size:11px;font-weight:600}
+.cell:hover{border-color:var(--border-strong)}
+.cell.on{background:var(--accent);border-color:var(--accent)}
+.cell.on.acc::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--on-accent)}
+.cell.c.on{background:var(--c);border-color:var(--c);color:#fff}
+.cell.c.on.acc::after{background:#fff}
+.cell.ph{background:var(--accent-soft);border-color:var(--accent-soft)}
+.cell.ph.on{background:var(--accent)}
+.cell.sel{box-shadow:0 0 0 2px var(--accent)}
+.cell.n{font-size:11px;color:var(--text-2);letter-spacing:-.02em}
+.cell.n.on{color:#fff}
+.note{height:14px;border-radius:4px;background:var(--c,var(--accent));position:relative;color:#fff;display:inline-block;min-width:16px;opacity:var(--vel,1)}
+.note::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:4px 0 0 4px;background:rgba(255,255,255,.55)}
+.note.ghost{opacity:var(--ghost-a)}
+.note.ghost::before{display:none}
+.note.sel{box-shadow:0 0 0 2px var(--text),0 0 0 3px var(--surface)}
+
+/* cards */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px}
+.card.inset{background:var(--surface-2);padding:12px}
+.ch{display:flex;align-items:center;gap:10px;margin-bottom:12px;min-height:32px}
+.ch .title{margin-right:auto}
+.ch .lbl.t{margin-right:auto;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+.row{display:flex;align-items:center;gap:8px}
+.row.wrap{flex-wrap:wrap}
+.spacer{flex:1}
+.vs{width:1px;height:20px;background:var(--border);margin:0 4px}
+
+/* ---------- frames ---------- */
+.frame{position:relative;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow);color:var(--text)}
+.framewrap{display:inline-block;vertical-align:top}
+.topbar{height:48px;flex:none;background:var(--surface);border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 12px;gap:8px}
+.tb-l,.tb-c,.tb-r{display:flex;align-items:center;gap:8px}
+.tb-r{justify-content:flex-end}
+.proj{white-space:nowrap;display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px;border-radius:6px;font-weight:600}
+.proj:hover{background:var(--surface-3)}
+.proj .dot{margin-left:-2px}
+.bpm{display:flex;align-items:center;gap:6px}
+.bpm .big{font-size:20px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em;min-width:40px;text-align:center}
+.pos{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--text-2);padding:0 6px;white-space:nowrap}
+.pos b{color:var(--text);font-weight:600}
+.midi{position:relative}.midi .lamp{position:absolute;right:4px;bottom:4px;width:8px;height:8px;border:1.5px solid var(--surface)}
+.topbar .hslider{width:48px}.topbar .smeter{width:48px}
+.fbody{flex:1;display:flex;min-height:0;position:relative}
+.rail{width:56px;flex:none;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:8px 0;gap:4px}
+.rail .sp{flex:1}
+.ritem{width:40px;height:40px;border-radius:8px;color:var(--text-2);display:grid;place-items:center;position:relative}
+.ritem::before{content:"";position:absolute;inset:-2px -8px}
+.ritem:hover{background:var(--surface-3);color:var(--text)}
+.ritem.on{background:var(--accent-soft);color:var(--accent)}
+.ritem.on::after{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+.ritem[data-tip]:hover .rt,.ritem.showtip .rt{opacity:1}
+.ritem .rt{position:absolute;left:48px;top:50%;transform:translateY(-50%);opacity:0;pointer-events:none;z-index:5;transition:opacity .1s}
+.rail .rdiv{width:24px;height:1px;background:var(--border);margin:6px 0}
+.tracks{width:248px;flex:none;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+.tracks.overlay{position:absolute;left:56px;top:0;bottom:0;z-index:4;box-shadow:var(--shadow);border-right:1px solid var(--border)}
+.tracks .th{height:48px;padding:0 8px 0 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+.tracks .th .title{margin-right:auto;font-size:14px}
+.tlist{flex:1;overflow:auto;padding:6px}
+.trow{display:grid;grid-template-columns:10px 1fr auto auto;align-items:center;gap:10px;height:48px;padding:0 8px 0 10px;border-radius:8px;position:relative;cursor:pointer}
+.trow:hover{background:var(--surface-2)}
+.trow.sel{background:var(--accent-soft)}
+.trow.sel::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--c)}
+.trow .tn{display:flex;flex-direction:column;gap:1px;min-width:0}
+.trow .tn b{font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trow .tn small{color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+.trow .tn .lv{height:3px;border-radius:2px;background:var(--surface-3);margin-top:3px;position:relative;overflow:hidden}
+.trow .tn .lv::after{content:"";position:absolute;left:0;top:0;bottom:0;width:calc(var(--p)*100%);background:var(--c)}
+.trow.muted .tn b{color:var(--text-3)}
+.trow .ms{display:flex;gap:4px}
+.trow .edit{background:var(--surface);border:1px solid var(--accent);border-radius:4px;padding:1px 4px;font-weight:500;font-size:13px;box-shadow:0 0 0 2px var(--accent-soft)}
+.tracks .tf{padding:8px 12px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3);display:flex;gap:8px;align-items:center}
+.view{flex:1;min-width:0;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+.vh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:32px}
+.vh .title{margin-right:8px}
+.pats{display:inline-flex;gap:3px}
+.pat{width:32px;height:32px;border-radius:6px;border:1px solid var(--border);background:var(--surface-3);font-size:12px;font-weight:600;color:var(--text-2);display:grid;place-items:center;position:relative}
+.pat.has::after{content:"";position:absolute;bottom:4px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--text-3)}
+.pat.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.pat.on::after{background:var(--on-accent)}
+.pat.queued{box-shadow:0 0 0 2px var(--accent) inset;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.5}}
+.ttag{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px 0 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);font-weight:500;font-size:13px}
+.ttag .chip{width:10px;height:10px}
+
+/* pattern grid */
+.grid{display:grid;grid-template-columns:96px 56px 48px 48px 1fr;align-items:center;row-gap:6px;column-gap:8px}
+.grid .gh{font-size:12px;font-weight:500;color:var(--text-2);height:20px;display:flex;align-items:flex-end}
+.grid .rn{display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px}
+.grid .rn .chip{width:8px;height:8px}
+.steps{display:flex;gap:4px}
+.steps .g{display:flex;gap:4px;margin-right:8px}
+.steps .g:last-child{margin-right:0}
+.beatnums{display:flex;gap:4px}
+.beatnums span{width:140px;font-size:12px;font-weight:500;color:var(--text-2);font-variant-numeric:tabular-nums;padding-left:2px}
+.beatnums span.ph{color:var(--accent)}
+.lane .cell{width:32px}
+
+/* piano roll */
+.roll{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden;flex:1;min-height:0}
+.roll-head{height:28px;display:flex;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.roll-head .kc{width:56px;flex:none;border-right:1px solid var(--border)}
+.roll-head .bars{flex:1;display:flex;position:relative;overflow:hidden}
+.roll-head .bars span{width:calc(100%/4);font-size:12px;font-weight:500;color:var(--text-2);padding:6px 8px;border-left:1px solid var(--border);font-variant-numeric:tabular-nums}
+.roll-body{flex:1;overflow:auto;position:relative;display:flex}
+.roll-keys{width:56px;flex:none;border-right:1px solid var(--border);position:sticky;left:0;background:var(--surface);z-index:2}
+.roll-keys div{height:16px;font-size:10px;font-weight:500;color:var(--text-2);display:flex;align-items:center;justify-content:flex-end;padding-right:6px;border-bottom:1px solid var(--border);background:var(--key-w);color:var(--text-2)}
+.roll-keys div.b{background:var(--key-b);color:#fff;opacity:.9}
+.roll-keys div.c{font-weight:600;color:var(--text)}
+.roll-keys div.b.c{color:#fff}
+.roll-grid{position:relative;flex:1;min-width:640px;background-image:linear-gradient(to bottom,var(--border) 1px,transparent 1px),linear-gradient(to right,var(--border) 1px,transparent 1px),linear-gradient(to right,var(--border-strong) 1px,transparent 1px);background-size:100% 16px,calc(100%/16) 100%,calc(100%/4) 100%}
+.roll-grid .brow{position:absolute;left:0;right:0;height:16px;background:var(--surface-2)}
+.roll-grid .note{position:absolute;height:14px;top:1px}
+.roll-grid .playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);z-index:3}
+.roll-grid .playhead::before{content:"";position:absolute;top:0;left:-5px;border:6px solid transparent;border-top-color:var(--accent)}
+
+/* mixer */
+.strips{display:flex;gap:8px;overflow:auto;padding-bottom:10px;flex:1;min-height:0;align-items:stretch}
+.strip{width:84px;flex:none;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;gap:8px;position:relative}
+.strip.on{box-shadow:0 0 0 1px var(--c) inset;border-color:var(--c)}
+.strip .sn{font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strip .sn .no{color:var(--text-3);font-weight:500;font-variant-numeric:tabular-nums}
+.strip .slots{display:flex;flex-direction:column;gap:3px;width:100%}
+.slot{height:20px;border-radius:999px;border:1px solid var(--border);background:var(--surface-3);font-size:10px;font-weight:600;letter-spacing:.02em;color:var(--text-3);display:grid;place-items:center}
+.slot.on{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.strip .eq3{display:flex;gap:2px}
+.strip .sends{display:flex;gap:2px}
+.strip .route{height:22px;width:100%;font-size:10px;padding:0 6px;justify-content:space-between}
+.strip .fz{display:flex;gap:4px;align-items:flex-end;height:160px}
+.strip .ms{display:flex;gap:4px}
+.strip .db{font-size:11px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.strip.src{width:72px;gap:6px;padding:6px 6px 8px}
+.strip.src .fader{height:64px}.strip.src .fz{height:64px}.strip .fader,.strip .gr,.strip .fz,.strip .vmeter{height:116px}.strip{gap:6px}.strip .slot{height:18px}.mxsec{gap:6px}
+.strip.master{width:120px;position:sticky;right:0;z-index:2;box-shadow:-8px 0 16px -8px rgba(20,28,40,.18)}
+.mxsec{display:flex;flex-direction:column;gap:8px;min-height:0}
+.mxsec .lbl.t{letter-spacing:.04em;text-transform:uppercase;font-size:11px}
+
+/* synth */
+.sgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.sgrid .card{padding:12px 14px 10px}
+.sgrid .ch{margin-bottom:8px;min-height:28px}
+.span2{grid-column:span 2}
+.span4{grid-column:span 4}
+.adsr{display:flex;gap:10px;align-items:flex-end;height:88px}
+.adsr .vs2{width:22px;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%}
+.adsr .vs2 .tr{flex:1;width:6px;border-radius:3px;background:var(--surface-3);border:1px solid var(--border);position:relative}
+.adsr .vs2 .tr::after{content:"";position:absolute;left:-1px;right:-1px;bottom:0;height:calc(var(--p)*100%);background:var(--accent);border-radius:3px}
+.adsr .vs2 .tr::before{content:"";position:absolute;left:50%;width:14px;height:14px;border-radius:50%;background:var(--surface);border:2px solid var(--accent);transform:translate(-50%,50%);bottom:calc(var(--p)*100%);z-index:1}
+.adsr .vs2 .kl{font-size:11px;font-weight:500;color:var(--text-2)}
+.adsr .vs2 .kv{font-size:11px;font-weight:500;font-variant-numeric:tabular-nums}
+.slideover{position:absolute;right:0;top:0;bottom:0;width:340px;background:var(--surface);border-left:1px solid var(--border);box-shadow:var(--shadow);z-index:5;display:flex;flex-direction:column;min-height:0}
+.slideover .sh{height:48px;padding:0 8px 0 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+.slideover .sh .title{margin-right:auto;font-size:14px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding:12px 16px 4px}
+.pchip{height:26px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:var(--surface-3);font-size:12px;font-weight:500;color:var(--text-2);display:inline-flex;align-items:center;gap:6px}
+.pchip:hover{color:var(--text);border-color:var(--border-strong)}
+.pchip.on{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.plist{flex:1;overflow:auto;padding:6px 8px 6px 8px}
+.prow{height:44px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:8px;position:relative;cursor:pointer}
+.prow:hover{background:var(--surface-2)}
+.prow.sel{background:var(--accent-soft)}
+.prow.sel::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--accent)}
+.prow b{font-weight:500;font-size:13px;flex:1}
+.prow .tagz{display:flex;gap:4px}
+.ptag{height:18px;padding:0 6px;border-radius:999px;background:var(--surface-3);border:1px solid var(--border);font-size:10px;font-weight:600;color:var(--text-2);display:inline-grid;place-items:center;letter-spacing:.02em;text-transform:uppercase}
+.ptag.v{color:var(--t1);border-color:var(--t1)}
+.ptag.d{color:var(--t4);border-color:var(--t4)}
+.modf{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--warn);letter-spacing:.04em;text-transform:uppercase}
+.modf::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--warn)}
+
+/* song */
+.chain{display:flex;flex-direction:column;gap:4px}
+.crow{height:44px;display:grid;grid-template-columns:24px 40px 1fr auto auto;align-items:center;gap:12px;padding:0 8px 0 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface)}
+.crow:hover{background:var(--surface-2)}
+.crow.playing{border-color:var(--accent);background:var(--accent-soft)}
+.crow .idx{font-size:12px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.crow .pl{width:32px;height:32px;border-radius:6px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;font-weight:600;font-size:13px}
+.crow .bars{font-size:12px;color:var(--text-2)}
+.crow .reps{display:inline-flex;align-items:center;gap:6px}
+.crow .reps .num{min-width:28px;text-align:center}
+.crow .mv{display:inline-flex;gap:2px;opacity:.7}
+.crow:hover .mv{opacity:1}
+.timeline{display:flex;gap:2px;height:36px;align-items:stretch}
+.timeline div{border-radius:4px;background:var(--surface-3);border:1px solid var(--border);display:grid;place-items:center;font-size:11px;font-weight:600;color:var(--text-2);min-width:0}
+.timeline div.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.recent{display:flex;flex-direction:column;gap:2px}
+.recent .ri{height:36px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.recent .ri:hover{background:var(--surface-2)}
+.recent .ri small{margin-left:auto;color:var(--text-3)}
+.viz{height:160px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);position:relative;overflow:hidden}
+.viz svg{width:100%;height:100%}
+.viz .fs{position:absolute;right:8px;top:8px}
+
+/* keyboard strip */
+.kbd{flex:none;background:var(--surface);border-top:1px solid var(--border);display:flex;flex-direction:column}
+.kbd-head{height:32px;display:flex;align-items:center;gap:10px;padding:0 12px 0 16px}
+.kbd-head .lbl{margin-right:4px}
+.kbd-head .oct{display:inline-flex;align-items:center;gap:4px}
+.kbd-head .oct .num{min-width:20px;text-align:center}
+.kbd.collapsed .keys{display:none}
+.keys{position:relative;height:84px;margin:0 16px 8px;display:flex;gap:3px}
+.keys .w{flex:1;background:var(--key-w);border:1px solid var(--border-strong);border-radius:0 0 6px 6px;position:relative;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;padding-bottom:6px;gap:2px;font-size:11px;color:var(--text-2)}
+.keys .w .kc{width:20px;height:18px;border-radius:4px;border:1px solid var(--border-strong);background:var(--surface-3);color:var(--text);font-weight:600;font-size:11px;display:grid;place-items:center}
+.keys .w.down{background:var(--accent-soft);border-color:var(--accent)}
+.keys .b{position:absolute;top:0;width:28px;height:50px;background:var(--key-b);border-radius:0 0 4px 4px;z-index:2;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;transform:translateX(-50%)}
+.keys .b .kc{width:18px;height:16px;border-radius:3px;background:rgba(255,255,255,.18);color:#fff;font-size:10px;font-weight:600;display:grid;place-items:center}
+.keys .b.down{background:var(--accent)}
+
+/* empty state */
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-2);text-align:center;min-height:280px}
+.empty .big{font-size:15px;font-weight:600;color:var(--text)}
+.empty .cap{max-width:320px}
+
+/* component sheet */
+.sheet{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;max-width:1280px}
+.sheet .card{display:flex;flex-direction:column;gap:12px}
+.sheet .card .lbl.t{letter-spacing:.04em;text-transform:uppercase;font-size:11px;color:var(--text-3)}
+.sheet .row{flex-wrap:wrap}
+.sheet .ritem{position:relative}
+.sheet .trow,.sheet .prow{width:100%}
+.sheet .fbody{position:relative}
+.state{font-size:11px;color:var(--text-3);margin-left:auto}
+.toplink{position:fixed;right:24px;bottom:24px;z-index:9}
+.pagebar{display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.pagebar a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:500;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface)}
+.pagebar a:hover{border-color:var(--accent)}
+.narrow .nr{display:none}.narrow .topbar{padding:0 6px;gap:6px}.narrow .topbar .vs{display:none}.narrow .bpm .big{min-width:32px}.narrow .proj{padding:0 6px}
+</style>
+</head>
+<body>
+<div class="pagehead">
+  <div>
+    <h1>BeatSlopper · Direction C · Clearwave</h1>
+    <p class="rationale"><b>What it optimises for:</b> reading and reaching. One view owns the whole width, so a 16-step grid, a 3-octave roll and a 16-insert mixer each get the room they never had; everything else is one click away on a left rail, with the TRACKS list sliding in beside it and the keyboard docked at the bottom, collapsible. Surfaces are flat white cards with 1 px borders (no paired shadows, so text contrast is the paper's, not the shadow's), type is 14 / 12 with condensed tabular numerals for values, every hit target is 32 pt, every scrollable area shows a 10 pt scrollbar, and one teal accent does the talking next to the eight track colours. It is light first because a beat-maker at 150 % on a 4K panel is mostly read in daylight; the dark theme is a true inversion with the same contrast ratios, not a dim copy. <b>What it gives up:</b> the "instrument" feeling of the neumorphic console (nothing glows, nothing looks pressed); seeing synth and sequencer at once (the synth is a view, with the preset browser as a slide-over); and some density: Ableton-grade whitespace means the SYNTH view scrolls at 800 pt tall.</p>
+    <div class="pagebar">
+      <a href="#s3">3 Pattern</a><a href="#s4">4 Piano roll</a><a href="#s5">5 Mixer</a><a href="#s6">6 Synth + browser</a><a href="#s7">7 Song</a><a href="#s8">8 Narrow 850 × 600</a><a href="#s9">9 Components</a>
+      <span class="caption">Token sheet: view the page source (comment at the top). Frames are 1280 × 800 logical; scroll inside them.</span>
+    </div>
+  </div>
+  <button class="btn" id="themeBtn" title="Toggle theme"><i data-i="moon"></i><span>Dark theme</span></button>
+</div>
+
+<h2 id="s3"><span class="n">3</span>Main window · PATTERN view, TRACKS panel open <small>1280 × 800 · playing, bar 1 of 2, playhead on beat 2</small></h2>
+<div class="framewrap"><div class="frame" data-view="pattern" data-tracks="open" data-kbd="open" style="width:1280px;height:800px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Pattern</span>
+    <div class="pats"><button class="pat on">A</button><button class="pat has">B</button><button class="pat has">C</button><button class="pat has">D</button><button class="pat">E</button><button class="pat">F</button><button class="pat">G</button><button class="pat">H</button></div>
+    <div class="seg sm" title="Pattern length"><button>1 bar</button><button class="on">2 bars</button><button>4 bars</button></div>
+    <span class="vs"></span>
+    <span class="lbl">Bar</span><div class="seg sm"><button class="on">1</button><button>2</button></div>
+    <button class="btn sm on">Follow</button>
+    <span class="spacer"></span>
+    <button class="btn sm"><i data-i="copy"></i>Copy</button><button class="btn sm"><i data-i="paste"></i>Paste</button><button class="btn sm danger">Clear</button>
+  </div>
+  <div class="card">
+    <div class="ch"><span class="lbl t">Drums</span><span class="cap">click = toggle · shift-click = accent · drag a knob, double-click resets</span></div>
+    <div class="grid" id="g1"></div>
+  </div>
+  <div class="card">
+    <div class="ch"><span class="ttag"><i class="chip" style="--c:var(--t3)"></i>Keys</span><span class="lbl">Note lane</span><span class="cap">select a step, then play a key · Delete clears · Esc deselects</span><span class="spacer"></span><button class="btn sm ghost">Open in Roll <i data-i="arrow"></i></button></div>
+    <div class="grid lane" id="lane1"></div>
+  </div>
+</main>
+</div></div>
+
+<h2 id="s4"><span class="n">4</span>PIANO ROLL view <small>Keys selected · 3 octaves visible · ghosts from 808, Lead, Pad · both scrollbars visible</small></h2>
+<div class="framewrap"><div class="frame" data-view="roll" data-tracks="open" data-kbd="open" style="width:1280px;height:800px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Piano roll</span>
+    <span class="ttag"><i class="chip" style="--c:var(--t3)"></i>Keys</span>
+    <div class="pats"><button class="pat on">A</button><button class="pat has">B</button><button class="pat has">C</button><button class="pat has">D</button><button class="pat">E</button><button class="pat">F</button><button class="pat">G</button><button class="pat">H</button></div>
+    <span class="lbl">Snap</span><button class="dd sm">1/16 <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button>
+    <button class="btn sm on">Follow</button>
+    <span class="spacer"></span>
+    <span class="lbl">Ghosts</span><span class="switch on"></span>
+    <span class="vs"></span>
+    <span class="lbl">Zoom</span><div class="grp"><button class="ibtn sm"><i data-i="minus"></i></button><button class="ibtn sm"><i data-i="plus"></i></button></div>
+  </div>
+  <div class="roll" id="roll1"></div>
+  <div class="row"><span class="cap">draw = click · move = drag · resize = drag the end · velocity = drag up/down on the left bar · shift-click = accent · wheel = scroll, Ctrl+wheel = zoom</span></div>
+</main>
+</div></div>
+
+<h2 id="s5"><span class="n">5</span>MIXER view <small>FL-style: sources with an insert number → 16 inserts with 3 slots, EQ3, sends, route → MASTER pinned right · keyboard collapsed · horizontal scrollbar</small></h2>
+<div class="framewrap"><div class="frame" data-view="mixer" data-tracks="closed" data-kbd="collapsed" style="width:1280px;height:800px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Mixer</span>
+    <span class="cap">sources → inserts → master · click a source's box and an insert to link them</span>
+    <span class="spacer"></span>
+    <span class="kb">Ctrl+L link insert</span>
+    <span class="vs"></span>
+    <button class="btn sm"><i data-i="eq"></i>Master EQ</button><button class="btn sm"><i data-i="rev"></i>Reverb</button>
+  </div>
+  <div class="mxsec"><span class="lbl t">Sources</span><div class="strips" id="src1"></div></div>
+  <div class="mxsec" style="flex:1"><span class="lbl t">Inserts</span><div class="strips" id="ins1"></div></div>
+</main>
+</div></div>
+
+<h2 id="s6"><span class="n">6</span>SYNTH view with the PRESET BROWSER slide-over <small>edits the selected track (Keys) · track inserts and global FX below · the view scrolls (scrollbar at the right of the view, under the slide-over)</small></h2>
+<div class="framewrap"><div class="frame" data-view="synth" data-tracks="closed" data-kbd="open" style="width:1280px;height:800px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Synth</span>
+    <span class="ttag"><i class="chip" style="--c:var(--t3)"></i>Keys</span>
+    <div class="grp"><button class="ibtn" title="Previous preset (Ctrl+PageUp)"><i data-i="left"></i></button><button class="dd" style="min-width:180px;justify-content:space-between">Dusty Rhodes <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button><button class="ibtn" title="Next preset (Ctrl+PageDown)"><i data-i="right"></i></button></div>
+    <span class="modf">Modified</span>
+    <button class="btn on"><i data-i="browse"></i>Browse</button>
+    <span class="spacer"></span>
+    <span class="kb">Ctrl+PgUp / PgDn presets</span>
+  </div>
+  <div class="sgrid">
+    <div class="card"><div class="ch"><span class="lbl t">Osc 1</span><div class="seg sm"><button class="on">Sine</button><button>Saw</button><button>Sqr</button><button>Tri</button></div></div>
+      <div class="knobs"><i class="knob" data-l="Detune" data-v="0 c" data-p=".5" data-bi="1"></i><i class="knob" data-l="Mix" data-v="80 %" data-p=".8"></i><i class="knob disabled" data-l="Pulse" data-v="50 %" data-p=".5"></i><i class="knob" data-l="Unison" data-v="1" data-p="0"></i><i class="knob disabled" data-l="Spread" data-v="0 c" data-p="0"></i></div></div>
+    <div class="card"><div class="ch"><span class="lbl t">Osc 2</span><div class="seg sm"><button class="on">Sine</button><button>Saw</button><button>Sqr</button><button>Tri</button></div></div>
+      <div class="knobs"><i class="knob" data-l="Detune" data-v="+4 c" data-p=".54" data-bi="1"></i><i class="knob" data-l="Mix" data-v="50 %" data-p=".5"></i><i class="knob disabled" data-l="Pulse" data-v="50 %" data-p=".5"></i><i class="knob" data-l="Unison" data-v="3" data-p=".3"></i><i class="knob" data-l="Spread" data-v="25 c" data-p=".25"></i></div></div>
+    <div class="card"><div class="ch"><span class="lbl t">Sub · Noise · FM</span></div>
+      <div class="knobs"><i class="knob" data-l="Sub" data-v="30 %" data-p=".3"></i><i class="knob" data-l="Noise" data-v="4 %" data-p=".04"></i><i class="knob" data-l="FM amt" data-v="45 %" data-p=".45"></i><i class="knob" data-l="FM ratio" data-v="1.0" data-p=".2"></i></div></div>
+    <div class="card"><div class="ch"><span class="lbl t">Mode</span><div class="seg sm"><button class="on">Synth</button><button>Pluck</button></div></div>
+      <div class="knobs"><i class="knob disabled" data-l="Damping" data-v="50 %" data-p=".5"></i><i class="knob disabled" data-l="Bright" data-v="60 %" data-p=".6"></i><i class="knob" data-l="Glide" data-v="0 ms" data-p="0"></i></div><div class="cap" style="margin-top:8px">Pluck = Karplus-Strong string; damping and bright are live in Pluck mode</div></div>
+
+    <div class="card span2"><div class="ch"><span class="lbl t">Filter</span><div class="seg sm"><button class="on">LP</button><button>BP</button><button>HP</button></div></div>
+      <div class="row" style="gap:20px;align-items:flex-start">
+        <div class="knobs"><i class="knob" data-l="Cutoff" data-v="4.0 kHz" data-p=".62"></i><i class="knob" data-l="Res" data-v="10 %" data-p=".1"></i><i class="knob" data-l="Env" data-v="+40 %" data-p=".7" data-bi="1"></i><i class="knob" data-l="Key trk" data-v="50 %" data-p=".5"></i></div>
+        <div class="adsr"><div class="vs2"><span class="kv">8 ms</span><div class="tr" style="--p:.08"></div><span class="kl">A</span></div><div class="vs2"><span class="kv">240</span><div class="tr" style="--p:.4"></div><span class="kl">D</span></div><div class="vs2"><span class="kv">20 %</span><div class="tr" style="--p:.2"></div><span class="kl">S</span></div><div class="vs2"><span class="kv">300</span><div class="tr" style="--p:.35"></div><span class="kl">R</span></div></div>
+      </div></div>
+    <div class="card span2"><div class="ch"><span class="lbl t">Amp</span><span class="cap">ADSR · velocity</span></div>
+      <div class="row" style="gap:20px;align-items:flex-start">
+        <div class="adsr"><div class="vs2"><span class="kv">3 ms</span><div class="tr" style="--p:.05"></div><span class="kl">A</span></div><div class="vs2"><span class="kv">600</span><div class="tr" style="--p:.5"></div><span class="kl">D</span></div><div class="vs2"><span class="kv">35 %</span><div class="tr" style="--p:.35"></div><span class="kl">S</span></div><div class="vs2"><span class="kv">400</span><div class="tr" style="--p:.4"></div><span class="kl">R</span></div></div>
+        <div class="knobs"><i class="knob" data-l="Vel → amp" data-v="60 %" data-p=".6"></i><i class="knob" data-l="Vel → cut" data-v="30 %" data-p=".3"></i></div>
+      </div></div>
+
+    <div class="card"><div class="ch"><span class="lbl t">LFO</span><div class="seg sm"><button class="on">Pitch</button><button>Cutoff</button></div></div>
+      <div class="knobs"><i class="knob" data-l="Rate" data-v="5.0 Hz" data-p=".45"></i><i class="knob" data-l="Depth" data-v="8 %" data-p=".08"></i></div></div>
+    <div class="card"><div class="ch"><span class="lbl t">Pitch env</span></div>
+      <div class="knobs"><i class="knob" data-l="Amount" data-v="+12 st" data-p=".75" data-bi="1"></i><i class="knob" data-l="Decay" data-v="80 ms" data-p=".2"></i></div></div>
+    <div class="card span2"><div class="ch"><span class="lbl t">Track inserts</span><span class="ttag" style="height:26px"><i class="chip" style="--c:var(--t3)"></i>Keys</span><span class="cap">insert 3 · see Mixer for slots</span></div>
+      <div class="row wrap" style="gap:20px">
+        <div><div class="lbl" style="margin-bottom:6px">Drive</div><div class="knobs"><i class="knob sm" data-l="Amount" data-v="15 %" data-p=".15"></i><i class="knob sm" data-l="Mix" data-v="50 %" data-p=".5"></i></div></div>
+        <div><div class="lbl" style="margin-bottom:6px">Chorus</div><div class="knobs"><i class="knob sm" data-l="Rate" data-v="0.8 Hz" data-p=".2"></i><i class="knob sm" data-l="Depth" data-v="35 %" data-p=".35"></i><i class="knob sm" data-l="Mix" data-v="40 %" data-p=".4"></i></div></div>
+        <div><div class="lbl" style="margin-bottom:6px">Sidechain</div><div class="knobs"><i class="knob sm" data-l="Amount" data-v="40 %" data-p=".4"></i><i class="knob sm" data-l="Release" data-v="120 ms" data-p=".3"></i></div></div>
+      </div></div>
+
+    <div class="card span4"><div class="ch"><span class="lbl t">Lo-fi</span><span class="ttag" style="height:26px"><i class="chip" style="--c:var(--t3)"></i>Keys</span><span class="switch on"></span><span class="spacer"></span><span class="cap">vinyl: wobble + noise · tape: bits + rate</span></div>
+      <div class="knobs" style="gap:20px"><i class="knob" data-l="Bits" data-v="12" data-p=".7"></i><i class="knob" data-l="Rate" data-v="11 kHz" data-p=".5"></i><i class="knob" data-l="Wobble" data-v="20 %" data-p=".2"></i><i class="knob" data-l="Noise" data-v="10 %" data-p=".1"></i><i class="knob" data-l="Tone" data-v="40 %" data-p=".4"></i><i class="knob" data-l="Mix" data-v="60 %" data-p=".6"></i></div></div>
+
+    <div class="card span4"><div class="ch"><span class="lbl t">Global FX</span><span class="cap">master bus · shared by every track</span><span class="spacer"></span><span class="kb">Ctrl+E export</span></div>
+      <div class="row wrap" style="gap:28px;align-items:flex-start">
+        <div><div class="row" style="margin-bottom:8px"><span class="lbl">Delay</span><div class="seg sm"><button>1/16</button><button class="on">1/8</button><button>1/4</button><button>1/2</button></div></div><div class="knobs"><i class="knob" data-l="Feedback" data-v="35 %" data-p=".35"></i><i class="knob" data-l="Mix" data-v="25 %" data-p=".25"></i></div></div>
+        <div><div class="row" style="margin-bottom:8px"><span class="lbl">Reverb</span><button class="dd sm">Plate <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button><button class="btn sm">More <i data-i="popout"></i></button></div><div class="knobs"><i class="knob" data-l="Size" data-v="60 %" data-p=".6"></i><i class="knob" data-l="Damping" data-v="40 %" data-p=".4"></i><i class="knob" data-l="Mix" data-v="20 %" data-p=".2"></i></div></div>
+        <div><div class="row" style="margin-bottom:8px"><span class="lbl">Master EQ</span><button class="dd sm">Clarity <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button><button class="btn sm">Open <i data-i="popout"></i></button></div><svg width="160" height="40" viewBox="0 0 160 40" style="border:1px solid var(--border);border-radius:6px;background:var(--surface-2)"><path d="M0 24 C 30 24, 40 30, 60 22 S 110 10, 130 16 S 150 26, 160 24" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M0 20H160" stroke="var(--border)" stroke-dasharray="2 3"/></svg></div>
+        <div><div class="row" style="margin-bottom:8px"><span class="lbl">Limiter</span><span class="switch on"></span><span class="lamp warn" title="Limiting"></span><span class="cap">−1.2 dB</span></div><div class="knobs"><i class="knob" data-l="Gain" data-v="0.0 dB" data-p=".67" data-bi="1"></i><i class="knob" data-l="Ceiling" data-v="−0.3 dB" data-p=".9"></i></div></div>
+      </div></div>
+  </div>
+</main>
+<aside class="slideover">
+  <div class="sh"><span class="title">Presets</span><span class="cap">99</span><button class="ibtn flat" title="Close (Esc)"><i data-i="x"></i></button></div>
+  <div style="padding:12px 16px 0"><div class="field focus" style="width:100%"><i data-i="search"></i><span class="ph">Search names and tags…</span></div></div>
+  <div class="chips"><span class="pchip on">All</span><span class="pchip">Lofi Keys</span><span class="pchip">Lofi Guitars</span><span class="pchip">Lofi Pads</span><span class="pchip">EDM Leads</span><span class="pchip">EDM Bass</span><span class="pchip">EDM Plucks</span><span class="pchip">EDM Pads</span><span class="pchip">Risers &amp; FX</span></div>
+  <div class="plist" id="plist1"></div>
+  <div class="sh" style="border-top:1px solid var(--border);border-bottom:0;height:52px"><div class="grp"><button class="ibtn" title="Previous"><i data-i="left"></i></button><button class="ibtn" title="Next"><i data-i="right"></i></button></div><div style="display:flex;flex-direction:column;gap:1px;margin-left:4px"><b style="font-size:13px;font-weight:500">Dusty Rhodes</b><span class="modf">Modified</span></div><span class="spacer"></span><button class="btn sm">Revert</button></div>
+</aside>
+</div></div>
+
+<h2 id="s7"><span class="n">7</span>SONG view <small>chain editor, project card, visualizer · the PROJECT menu is shown open from the top bar (the one menu style)</small></h2>
+<div class="framewrap"><div class="frame" data-view="song" data-tracks="open" data-kbd="open" data-menu="project" style="width:1280px;height:800px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Song</span>
+    <div class="seg sm"><button>Pattern</button><button class="on">Song</button></div>
+    <span class="lbl">Loop</span><span class="switch on"></span>
+    <span class="vs"></span>
+    <span class="num">16 bars · 0:42 at 92 BPM</span>
+    <span class="spacer"></span>
+    <button class="dd sm">Pattern B <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button><button class="btn sm primary"><i data-i="plus"></i>Add entry</button>
+  </div>
+  <div class="card">
+    <div class="ch"><span class="lbl t">Chain</span><span class="cap">playing entry 2 · drag or use the arrows to reorder</span></div>
+    <div class="timeline" id="tl1"></div>
+    <div class="chain" id="chain1" style="margin-top:12px"></div>
+  </div>
+  <div class="row" style="align-items:stretch;gap:16px">
+    <div class="card" style="flex:1">
+      <div class="ch"><span class="lbl t">Project</span><span class="dot"></span><span class="cap">unsaved changes</span></div>
+      <div class="row wrap" style="gap:8px;margin-bottom:12px"><button class="btn"><i data-i="new"></i>New</button><button class="btn"><i data-i="open"></i>Open…</button><button class="btn primary"><i data-i="save"></i>Save</button><button class="btn">Save as…</button><span class="vs"></span><button class="btn"><i data-i="export"></i>Export WAV</button><span class="lbl">Repeats</span><button class="dd sm">×2 <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button></div>
+      <div class="lbl" style="margin-bottom:6px">Recent</div>
+      <div class="recent"><div class="ri"><i data-i="file"></i>late-night-02.beatslopper.json<small>today</small></div><div class="ri"><i data-i="file"></i>festival-idea.beatslopper.json<small>yesterday</small></div><div class="ri"><i data-i="file"></i>rhodes-sketch.beatslopper.json<small>Oct 19</small></div></div>
+    </div>
+    <div class="card" style="width:380px;flex:none">
+      <div class="ch"><span class="lbl t">Visualizer</span><div class="seg sm"><button class="on">Scope</button><button>Bars</button><button>Radial</button></div></div>
+      <div class="viz"><svg viewBox="0 0 360 160" preserveAspectRatio="none"><path d="M0 80 C20 40,40 120,60 80 S100 20,120 80 S160 140,180 80 S220 30,240 80 S280 130,300 80 S340 50,360 80" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M0 80H360" stroke="var(--border)" stroke-dasharray="2 3"/></svg><button class="ibtn sm fs" title="Full screen (F11)"><i data-i="fullscreen"></i></button></div>
+    </div>
+  </div>
+</main>
+</div></div>
+
+<h2 id="s8"><span class="n">8</span>Narrow window · 850 × 600 (the 150 % case) <small>rail only, TRACKS as an overlay, PATTERN grid scrolls horizontally with its scrollbar, keyboard collapsed, nothing cut off</small></h2>
+<div class="framewrap"><div class="frame narrow" data-view="pattern" data-tracks="overlay" data-kbd="collapsed" style="width:850px;height:600px">
+<main class="view">
+  <div class="vh">
+    <span class="title">Pattern</span>
+    <div class="pats"><button class="pat on">A</button><button class="pat has">B</button><button class="pat has">C</button><button class="pat has">D</button><button class="pat">E</button><button class="pat">F</button><button class="pat">G</button><button class="pat">H</button></div>
+    <div class="seg sm"><button>1 bar</button><button class="on">2 bars</button><button>4 bars</button></div>
+    <span class="lbl">Bar</span><div class="seg sm"><button class="on">1</button><button>2</button></div>
+    <button class="btn sm on">Follow</button>
+    <span class="spacer"></span>
+    <button class="ibtn sm" title="Copy / Paste / Clear"><i data-i="more"></i></button>
+  </div>
+  <div class="card" style="min-width:max-content">
+    <div class="ch"><span class="lbl t">Drums</span></div>
+    <div class="grid" id="g2"></div>
+  </div>
+  <div class="card" style="min-width:max-content">
+    <div class="ch"><span class="ttag"><i class="chip" style="--c:var(--t3)"></i>Keys</span><span class="lbl">Note lane</span></div>
+    <div class="grid lane" id="lane2"></div>
+  </div>
+</main>
+</div></div>
+
+<h2 id="s9"><span class="n">9</span>Component sheet <small>every control and state · one accent · 32 pt hit targets</small></h2>
+<div class="sheet">
+  <div class="card"><span class="lbl t">Buttons</span>
+    <div class="row"><button class="btn primary">Primary</button><button class="btn">Secondary</button><button class="btn ghost">Ghost</button><button class="btn danger">Clear</button><button class="btn" disabled>Disabled</button></div>
+    <div class="row"><button class="btn on">Toggle on</button><button class="btn">Toggle off</button><button class="btn sm">Small</button><button class="btn sm on">Follow</button><button class="btn primary"><i data-i="plus"></i>With icon</button></div>
+    <div class="row"><button class="ibtn"><i data-i="play"></i></button><button class="ibtn on"><i data-i="play"></i></button><button class="ibtn rec on"><i data-i="rec"></i></button><button class="ibtn flat"><i data-i="undo"></i></button><button class="ibtn" disabled><i data-i="redo"></i></button><button class="ibtn sm"><i data-i="plus"></i></button><span class="cap">icon · on · record · flat · disabled · sm</span></div>
+    <div class="row"><button class="btn" style="border-color:var(--border-strong)">Hover</button><button class="btn" style="filter:brightness(.96)">Pressed</button><button class="btn" style="outline:2px solid var(--accent);outline-offset:2px">Focus</button><span class="cap">states: border-strong · −4 % · 2 pt ring</span></div>
+  </div>
+  <div class="card"><span class="lbl t">Toggles · switch · segmented</span>
+    <div class="row"><span class="tg">M</span><span class="tg on">M</span><span class="tg on s">S</span><span class="cap">mute / solo (24 pt letter, 32 pt hit)</span></div>
+    <div class="row"><span class="switch"></span><span class="switch on"></span><span class="cap">switch off / on</span></div>
+    <div class="row"><div class="seg"><button class="on">Pattern</button><button>Song</button></div><div class="seg sm"><button>LP</button><button class="on">BP</button><button>HP</button></div></div>
+    <div class="row"><div class="pats"><button class="pat on">A</button><button class="pat has">B</button><button class="pat queued">C</button><button class="pat">D</button></div><span class="cap">pattern tabs: on · has content · queued (blinks)</span></div>
+  </div>
+  <div class="card"><span class="lbl t">Knobs</span>
+    <div class="knobs"><i class="knob" data-l="Cutoff" data-v="4.0 kHz" data-p=".62"></i><i class="knob" data-l="Detune" data-v="+12 c" data-p=".62" data-bi="1"></i><i class="knob" data-l="Detune" data-v="−30 c" data-p=".2" data-bi="1"></i><i class="knob sm" data-l="Vol" data-v="−2 dB" data-p=".7"></i><i class="knob c" style="--c:var(--t3)" data-l="Level" data-v="−4 dB" data-p=".66"></i><i class="knob disabled" data-l="Pulse" data-v="50 %" data-p=".5"></i></div>
+    <span class="cap">36 pt arc, 270° from 7:30; bipolar from 12 o'clock; sm 28 pt; track-coloured in the grid; disabled 40 %. Hover lifts the track, drag 120 pt = range, wheel = fine, double-click resets, click the value to type.</span>
+  </div>
+  <div class="card"><span class="lbl t">Faders · meters · sliders</span>
+    <div class="row" style="align-items:flex-end;gap:20px">
+      <div style="text-align:center"><div class="row" style="gap:4px;align-items:flex-end"><div class="fader" style="--p:.78;--m:.7"><i class="fm"></i><i class="ft"></i><i class="zero"></i></div><div class="gr" style="--g:.18"></div></div><span class="cap">fader + meter · GR</span></div>
+      <div style="text-align:center"><div style="height:160px"><div class="vmeter"><i style="--l:.72;--pk:.86"></i><i style="--l:.66;--pk:.8"></i></div></div><span class="cap">stereo + peak</span></div>
+      <div><div class="row"><div class="hslider lg"><i style="--p:.6"></i></div><span class="num">60 %</span></div><div class="row" style="margin-top:12px"><div class="smeter"><i style="--l:.72"></i><i style="--l:.66"></i></div><span class="cap">top-bar master meter</span></div><div class="adsr" style="margin-top:12px;height:70px"><div class="vs2"><span class="kv">8 ms</span><div class="tr" style="--p:.08"></div><span class="kl">A</span></div><div class="vs2"><span class="kv">240</span><div class="tr" style="--p:.4"></div><span class="kl">D</span></div></div></div>
+    </div>
+  </div>
+  <div class="card"><span class="lbl t">Step cells · notes</span>
+    <div class="row"><span class="cell"></span><span class="cell on"></span><span class="cell on acc"></span><span class="cell ph"></span><span class="cell ph on"></span><span class="cell sel"></span><span class="cell n c on" style="--c:var(--t3)">E♭3</span><span class="cell n">·</span><span class="cap">off · on · accent · playhead · playhead+on · selected · note cell</span></div>
+    <div class="row" style="gap:8px"><span class="note" style="width:64px;--c:var(--t3)"></span><span class="note" style="width:48px;--c:var(--t3);--vel:.5"></span><span class="note sel" style="width:40px;--c:var(--t3)"></span><span class="note ghost" style="width:64px;--c:var(--t1)"></span><span class="note ghost" style="width:32px;--c:var(--t2)"></span><span class="cap">note · low velocity · selected · ghosts (28 %)</span></div>
+    <div class="row"><span class="slot">Off</span><span class="slot on">Comp</span><span class="slot on">Drive</span><span class="slot on">Lo-fi</span><span class="slot on">Chorus</span><span class="slot on">EQ3</span><span class="cap">effect slot pills</span></div>
+    <div class="row"><span class="insbox">3</span><span class="insbox linked" style="--c:var(--t3)">3</span><span class="lamp"></span><span class="lamp on"></span><span class="lamp warn"></span><span class="dot"></span><span class="modf">Modified</span><span class="cap">insert box · linked · lamps · unsaved · modified</span></div>
+  </div>
+  <div class="card"><span class="lbl t">Dropdown · menu · text field · chips</span>
+    <div class="row"><button class="dd">Plate <svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></button><div class="field"><i data-i="search"></i><span class="ph">Search…</span></div><div class="field focus"><i data-i="search"></i><span>rhod</span></div></div>
+    <div class="row" style="align-items:flex-start"><div class="menu"><div class="mh">Insert 3 · Keys</div><div class="mi">Rename…<span class="kb">F2</span></div><div class="mi hover">Link to selected source<span class="kb">Ctrl+L</span></div><div class="mi">Route to…<span class="kb">▸</span></div><div class="sep"></div><div class="mi danger">Reset insert</div></div>
+      <div style="display:flex;flex-direction:column;gap:8px"><span class="tip">Play<span class="kb" style="color:inherit">Space</span></span><span class="tip">Cutoff · 4.0 kHz</span><span class="cap">tooltips (inverted)</span><div class="row"><span class="pchip on">All</span><span class="pchip">Lofi Keys</span><span class="ptag v">vinyl</span><span class="ptag d">drone</span></div></div></div>
+  </div>
+  <div class="card"><span class="lbl t">Rail items · tabs · list rows</span>
+    <div class="row" style="gap:16px"><div class="rail" style="width:56px;height:150px;border:1px solid var(--border);border-radius:8px;padding:8px 0;overflow:visible"><button class="ritem showtip" data-tip="Pattern"><i data-i="pattern"></i><span class="tip rt">Pattern</span></button><button class="ritem on"><i data-i="roll"></i></button><button class="ritem" style="background:var(--surface-3);color:var(--text)"><i data-i="mixer"></i></button></div><span class="cap">hover (label) · on · hover state</span><span class="ttag"><i class="chip" style="--c:var(--t3)"></i>Keys</span></div>
+    <div class="trow sel" style="--c:var(--t3)"><i class="chip"></i><div class="tn"><b>Keys</b><small>Dusty Rhodes</small><div class="lv" style="--p:.8"></div></div><div class="ms"><span class="tg">M</span><span class="tg">S</span></div><span class="insbox linked">3</span></div>
+    <div class="trow" style="--c:var(--t4);background:var(--surface-2)"><i class="chip"></i><div class="tn"><span class="edit">Pad</span><small>Night Drive Pad</small><div class="lv" style="--p:.6"></div></div><div class="ms"><span class="tg">M</span><span class="tg">S</span></div><span class="insbox">4</span></div>
+    <div class="trow muted" style="--c:var(--t1)"><i class="chip"></i><div class="tn"><b>Lead</b><small>Festival Saw</small><div class="lv" style="--p:.7"></div></div><div class="ms"><span class="tg on">M</span><span class="tg">S</span></div><span class="insbox">6</span></div>
+    <span class="cap">selected · hover with inline rename (double-click) · muted</span>
+    <div class="prow sel"><b>Dusty Rhodes</b><span class="tagz"><span class="ptag">Lofi Keys</span><span class="ptag v">vinyl</span></span></div>
+  </div>
+  <div class="card"><span class="lbl t">Scrollbar · keyboard keys</span>
+    <div class="scroll" style="height:90px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)"><div style="width:600px;height:200px;padding:10px" class="cap">10 pt scrollbars, thumb border-strong, hover text-3; always visible when content overflows (both axes).</div></div>
+    <div class="keys" style="margin:0;height:70px"><div class="w down"><span class="kc">A</span>C4</div><div class="w"><span class="kc">S</span></div><div class="w"><span class="kc">D</span></div><div class="w"><span class="kc">F</span></div><div class="w"><span class="kc">G</span></div><div class="b" style="left:calc(100%/5)"><span class="kc">W</span></div><div class="b down" style="left:calc(200%/5)"><span class="kc">E</span></div><div class="b" style="left:calc(400%/5)"><span class="kc">T</span></div></div>
+  </div>
+  <div class="card"><span class="lbl t">Shortcuts panel</span>
+    <div class="menu" style="box-shadow:none"><div class="mh">Transport</div><div class="mi">Play / stop<span class="kb">Space</span></div><div class="mi">Record arm<span class="kb">R</span></div><div class="mh">Project</div><div class="mi">Save · Save as<span class="kb">Ctrl+S · Ctrl+Shift+S</span></div><div class="mi">Open · New<span class="kb">Ctrl+O · Ctrl+N</span></div><div class="mi">Export WAV<span class="kb">Ctrl+E</span></div><div class="mi">Undo · Redo<span class="kb">Ctrl+Z · Ctrl+Y</span></div><div class="mh">Tracks</div><div class="mi">Add track<span class="kb">Ctrl+T</span></div><div class="mi">Previous / next preset<span class="kb">Ctrl+PgUp / PgDn</span></div><div class="mi">Link insert<span class="kb">Ctrl+L</span></div><div class="mi">Octave down / up<span class="kb">Z / X</span></div></div>
+  </div>
+  <div class="card" style="grid-column:span 3"><span class="lbl t">Empty state · new project</span>
+    <div class="frame narrow" data-view="pattern" data-tracks="open" data-kbd="collapsed" data-empty="1" style="width:100%;height:320px;box-shadow:none">
+      <main class="view"><div class="empty"><i data-i="tracks" style="width:28px;height:28px;color:var(--text-3)"></i><span class="big">Add a track to start</span><span class="cap">Pick a preset for it, then draw steps in the Pattern view or play the keyboard with record armed.</span><button class="btn primary"><i data-i="plus"></i>Add track<span class="kb" style="color:inherit;opacity:.7">Ctrl+T</span></button></div></main>
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+(function(){
+const S='<svg viewBox="0 0 18 18">',E='</svg>';
+const I={
+ play:'<svg viewBox="0 0 18 18" class="fill"><path d="M5 3l10 6-10 6z"/></svg>',
+ stop:'<svg viewBox="0 0 18 18" class="fill"><rect x="4" y="4" width="10" height="10" rx="1.5"/></svg>',
+ rec:'<svg viewBox="0 0 18 18" class="fill"><circle cx="9" cy="9" r="5"/></svg>',
+ undo:S+'<path d="M6 5L3 8l3 3M3 8h8a4 4 0 010 8"/>'+E, redo:S+'<path d="M12 5l3 3-3 3M15 8H7a4 4 0 000 8"/>'+E,
+ minus:S+'<path d="M4 9h10"/>'+E, plus:S+'<path d="M9 4v10M4 9h10"/>'+E,
+ moon:S+'<path d="M14 11A6 6 0 017 4a6 6 0 107 7z"/>'+E, sun:S+'<circle cx="9" cy="9" r="3.5"/><path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.7 3.7l1.4 1.4M12.9 12.9l1.4 1.4M3.7 14.3l1.4-1.4M12.9 5.1l1.4-1.4"/>'+E,
+ tracks:S+'<path d="M3 4h12M3 9h12M3 14h8"/><circle cx="14" cy="14" r="1.5" fill="currentColor" stroke="none"/>'+E,
+ pattern:S+'<rect x="2.5" y="2.5" width="5" height="5" rx="1"/><rect x="10.5" y="2.5" width="5" height="5" rx="1"/><rect x="2.5" y="10.5" width="5" height="5" rx="1"/><rect x="10.5" y="10.5" width="5" height="5" rx="1" fill="currentColor"/>'+E,
+ roll:S+'<rect x="2.5" y="3" width="13" height="12" rx="1.5"/><path d="M2.5 7h13M2.5 11h13M7 3v4M10 7v4M13 11v4"/>'+E,
+ mixer:S+'<path d="M4 3v12M9 3v12M14 3v12"/><rect x="2" y="7" width="4" height="3" rx="1" fill="currentColor"/><rect x="7" y="4" width="4" height="3" rx="1" fill="currentColor"/><rect x="12" y="10" width="4" height="3" rx="1" fill="currentColor"/>'+E,
+ synth:S+'<path d="M2 9c2-6 3-6 5 0s3 6 5 0 3-6 4 0"/>'+E,
+ song:S+'<rect x="2" y="6" width="5" height="6" rx="1"/><rect x="11" y="6" width="5" height="6" rx="1"/><path d="M7 9h4"/>'+E,
+ browser:S+'<path d="M2.5 5a1.5 1.5 0 011.5-1.5h3l2 2h5A1.5 1.5 0 0115.5 7v6.5A1.5 1.5 0 0114 15H4a1.5 1.5 0 01-1.5-1.5z"/>'+E,
+ browse:S+'<circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5L15 15"/>'+E, search:S+'<circle cx="8" cy="8" r="4.5"/><path d="M11.5 11.5L15 15"/>'+E,
+ viz:S+'<path d="M2 12l3-5 3 4 3-7 3 6 2-3"/>'+E, keyboard:S+'<rect x="2" y="5" width="14" height="8" rx="1.5"/><path d="M5 5v4M8 5v4M11 5v4"/>'+E, help:S+'<circle cx="9" cy="9" r="6.5"/><path d="M7 7.5a2 2 0 113 1.7c-.7.4-1 .8-1 1.5"/><circle cx="9" cy="13" r=".6" fill="currentColor"/>'+E,
+ copy:S+'<rect x="6" y="6" width="9" height="9" rx="1.5"/><path d="M12 6V4.5A1.5 1.5 0 0010.5 3h-6A1.5 1.5 0 003 4.5v6A1.5 1.5 0 004.5 12H6"/>'+E, paste:S+'<rect x="4" y="4" width="10" height="11" rx="1.5"/><path d="M7 4V3h4v1M7 9h4M7 12h4"/>'+E,
+ arrow:S+'<path d="M4 9h10M10 5l4 4-4 4"/>'+E, left:S+'<path d="M11 4L6 9l5 5"/>'+E, right:S+'<path d="M7 4l5 5-5 5"/>'+E, x:S+'<path d="M5 5l8 8M13 5l-8 8"/>'+E,
+ popout:S+'<path d="M10 3h5v5M15 3l-7 7M13 10v4a1 1 0 01-1 1H4a1 1 0 01-1-1V6a1 1 0 011-1h4"/>'+E,
+ eq:S+'<path d="M2 11c3 0 3-5 6-5s3 4 5 4 3-2 3-2"/>'+E, rev:S+'<path d="M3 9h2M7 5v8M11 3v12M15 7v4"/>'+E,
+ new:S+'<path d="M5 2.5h5l4 4V15a1 1 0 01-1 1H5a1 1 0 01-1-1V3.5a1 1 0 011-1z"/><path d="M10 2.5v4h4"/>'+E, open:S+'<path d="M2.5 5a1.5 1.5 0 011.5-1.5h3l2 2h5A1.5 1.5 0 0115.5 7v6.5A1.5 1.5 0 0114 15H4a1.5 1.5 0 01-1.5-1.5z"/>'+E,
+ save:S+'<path d="M3 4a1 1 0 011-1h8l3 3v8a1 1 0 01-1 1H4a1 1 0 01-1-1z"/><path d="M6 3v4h5V3M6 15v-4h6v4"/>'+E, export:S+'<path d="M9 11V3M5.5 6.5L9 3l3.5 3.5M3 11v3a1 1 0 001 1h10a1 1 0 001-1v-3"/>'+E,
+ file:S+'<path d="M5 2.5h5l4 4V15a1 1 0 01-1 1H5a1 1 0 01-1-1V3.5a1 1 0 011-1z"/>'+E, fullscreen:S+'<path d="M3 7V3h4M15 7V3h-4M3 11v4h4M15 11v4h-4"/>'+E,
+ more:S+'<circle cx="4" cy="9" r="1.3" fill="currentColor"/><circle cx="9" cy="9" r="1.3" fill="currentColor"/><circle cx="14" cy="9" r="1.3" fill="currentColor"/>'+E,
+ midi:S+'<circle cx="9" cy="9" r="6.5"/><circle cx="6" cy="8" r=".9" fill="currentColor"/><circle cx="9" cy="6" r=".9" fill="currentColor"/><circle cx="12" cy="8" r=".9" fill="currentColor"/><circle cx="7" cy="11.5" r=".9" fill="currentColor"/><circle cx="11" cy="11.5" r=".9" fill="currentColor"/>'+E, up:S+'<path d="M4 11l5-5 5 5"/>'+E, down:S+'<path d="M4 7l5 5 5-5"/>'+E, trash:S+'<path d="M3 5h12M7 5V3h4v2M5 5l1 10h6l1-10"/>'+E, link:S+'<path d="M7.5 10.5l3-3M6 12a2.5 2.5 0 01-3.5-3.5l2-2A2.5 2.5 0 018 8M12 6a2.5 2.5 0 013.5 3.5l-2 2A2.5 2.5 0 0110 10"/>'+E
+};
+const ic=n=>(I[n]||'').replace('<svg viewBox="0 0 18 18" class="fill"','<svg class="icn fill" viewBox="0 0 18 18"').replace('<svg viewBox','<svg class="icn" viewBox');
+const chev='<svg class="chev" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg>';
+const TRACKS=[{n:'Keys',p:'Dusty Rhodes',c:3,ins:3,l:.8},{n:'Pad',p:'Night Drive Pad',c:4,ins:4,l:.6},{n:'808',p:'Trap 808',c:2,ins:5,l:.9},{n:'Lead',p:'Festival Saw',c:1,ins:6,l:.7,m:1},{n:'Pluck',p:'Glass Pluck',c:0,ins:7,l:.65}];
+
+function topbar(view){return `<header class="topbar">
+<div class="tb-l"><button class="proj" title="Project menu">Late Night 02<i class="dot" title="Unsaved changes"></i>${chev}</button><div class="grp"><button class="ibtn flat" title="Undo (Ctrl+Z)">${ic('undo')}</button><button class="ibtn flat" disabled title="Redo (Ctrl+Y)">${ic('redo')}</button></div></div>
+<div class="tb-c"><div class="grp"><button class="ibtn on" title="Play / stop (Space)">${ic('play')}</button><button class="ibtn" title="Stop">${ic('stop')}</button><button class="ibtn rec" title="Record arm (R)">${ic('rec')}</button></div><span class="vs"></span>
+<div class="bpm" title="BPM"><button class="ibtn sm">${ic('minus')}</button><span class="big">92</span><button class="ibtn sm">${ic('plus')}</button><button class="btn sm nr">Tap</button></div><span class="vs nr"></span>
+<div class="row nr" style="gap:6px"><span class="lbl">Swing</span><div class="hslider"><i style="--p:.16"></i></div><span class="num">16 %</span></div><span class="vs"></span>
+<div class="seg sm"><button class="${view==='song'?'':'on'}">Pattern</button><button class="${view==='song'?'on':''}">Song</button></div>
+<span class="pos"><b>A</b> · bar 1/2</span></div>
+<div class="tb-r"><button class="ibtn flat midi" title="MIDI input: Launchkey Mini (connected)">${ic('midi')}<i class="lamp on"></i></button><div class="row" style="gap:6px"><span class="lbl nr">Master</span><div class="hslider nr"><i style="--p:.78"></i></div><span class="num">−3.0 dB</span><div class="smeter"><i style="--l:.72"></i><i style="--l:.66"></i></div></div><button class="ibtn flat" title="Light / dark theme">${ic('moon')}</button></div>
+</header>`;}
+
+function rail(view,tracksOn,browserOn){
+ const items=[['tracks','Tracks','tracks'],['pattern','Pattern'],['roll','Piano roll'],['mixer','Mixer'],['synth','Synth & FX'],['song','Song'],['browser','Presets']];
+ const bottom=[['viz','Visualizer'],['keyboard','Keyboard'],['help','Shortcuts']];
+ const it=([id,label])=>{const on=(id===view)||(id==='tracks'&&tracksOn)||(id==='browser'&&browserOn);return `<button class="ritem${on?' on':''}" data-tip="${label}" title="${label}">${ic(id)}<span class="tip rt">${label}</span></button>`;};
+ return `<nav class="rail">${it(items[0])}<div class="rdiv"></div>${items.slice(1).map(it).join('')}<div class="sp"></div>${bottom.map(it).join('')}</nav>`;
+}
+function tracksPanel(mode,empty){
+ const rows=empty?`<div class="empty" style="min-height:160px"><span class="cap">No tracks yet</span></div>`:TRACKS.map((t,i)=>`<div class="trow${i===0?' sel':''}${t.m?' muted':''}" style="--c:var(--t${t.c})"><i class="chip"></i><div class="tn"><b>${t.n}</b><small>${t.p}</small><div class="lv" style="--p:${t.l}"></div></div><div class="ms"><span class="tg${t.m?' on':''}">M</span><span class="tg">S</span></div><span class="insbox${i===0?' linked':''}">${t.ins}</span></div>`).join('');
+ return `<aside class="tracks${mode==='overlay'?' overlay':''}"><div class="th"><span class="title">Tracks</span><span class="cap">${empty?0:TRACKS.length} / 8</span><button class="ibtn sm" title="Add track (Ctrl+T)">${ic('plus')}</button>${mode==='overlay'?`<button class="ibtn sm flat" title="Close">${ic('x')}</button>`:''}</div><div class="tlist">${rows}</div><div class="tf">${ic('help')}<span>double-click to rename · drag to reorder · right-click for colour</span></div></aside>`;
+}
+function kbd(mode){
+ const caps=['A','S','D','F','G','H','J','K','L',';','','','',''],notes=['C4','','','','','','','C5','','','','','','','B5'];
+ const bl=[[0,'W'],[1,'E'],[3,'T'],[4,'Y'],[5,'U'],[7,'O'],[8,'P'],[10,''],[11,''],[12,'']];
+ let keys='';for(let i=0;i<14;i++)keys+=`<div class="w${i===0?' down':''}">${caps[i]?`<span class="kc">${caps[i]}</span>`:''}${notes[i]||''}</div>`;
+ for(const [i,c] of bl)keys+=`<div class="b${i===1?' down':''}" style="left:calc(${i+1} * 100% / 14)">${c?`<span class="kc">${c}</span>`:''}</div>`;
+ return `<footer class="kbd${mode==='collapsed'?' collapsed':''}"><div class="kbd-head"><span class="lbl">Keyboard</span><div class="oct"><span class="cap">Octave</span><button class="ibtn sm" title="Octave down (Z)">${ic('minus')}</button><span class="num">4</span><button class="ibtn sm" title="Octave up (X)">${ic('plus')}</button></div><span class="vs"></span><span class="lbl">Velocity</span><div class="hslider"><i style="--p:.8"></i></div><span class="num">80 %</span><span class="spacer"></span><span class="cap nr">A W S E D F T G Y H U J K O L P ;  ·  C4 = A  ·  playing on the selected track</span><button class="ibtn sm flat" title="${mode==='collapsed'?'Expand':'Collapse'} keyboard">${ic(mode==='collapsed'?'up':'down')}</button></div><div class="keys">${keys}</div></footer>`;
+}
+const projMenu=`<div class="menu" style="position:absolute;left:12px;top:44px;z-index:8;min-width:240px"><div class="mh">Project</div><div class="mi">${ic('new')}New<span class="kb">Ctrl+N</span></div><div class="mi">${ic('open')}Open…<span class="kb">Ctrl+O</span></div><div class="mi hover">${ic('save')}Save<span class="kb">Ctrl+S</span></div><div class="mi">Save as…<span class="kb">Ctrl+Shift+S</span></div><div class="mi">${ic('export')}Export WAV…<span class="kb">Ctrl+E</span></div><div class="sep"></div><div class="mh">Recent</div><div class="mi">${ic('file')}late-night-02</div><div class="mi">${ic('file')}festival-idea</div><div class="mi">${ic('file')}rhodes-sketch</div><div class="sep"></div><div class="mi">Rename project…<span class="kb">F2</span></div><div class="mi">${ic('help')}Shortcuts<span class="kb">?</span></div></div>`;
+
+document.querySelectorAll('.frame').forEach(f=>{
+ const view=f.dataset.view,tr=f.dataset.tracks,kb=f.dataset.kbd,empty=f.dataset.empty;
+ const main=f.querySelector('main.view');const over=f.querySelector('.slideover');
+ const body=document.createElement('div');body.className='fbody';
+ body.innerHTML=rail(view,tr!=='closed',!!over)+(tr==='closed'?'':tracksPanel(tr,empty));
+ body.appendChild(main);if(over)body.appendChild(over);
+ f.insertAdjacentHTML('afterbegin',topbar(view));f.appendChild(body);f.insertAdjacentHTML('beforeend',kbd(kb));
+ if(f.dataset.menu==='project')f.insertAdjacentHTML('beforeend',projMenu);
+});
+
+/* knobs */
+function knobSvg(p,bi){
+ const c=18,r=14,a0=-135,sw=270;const pt=a=>{const t=a*Math.PI/180;return [c+r*Math.sin(t),c-r*Math.cos(t)];};
+ const arc=(a1,a2,cls)=>{if(Math.abs(a2-a1)<.5)return '';const [x1,y1]=pt(a1),[x2,y2]=pt(a2);const lg=Math.abs(a2-a1)>180?1:0,swp=a2>a1?1:0;return `<path class="${cls}" d="M${x1.toFixed(2)} ${y1.toFixed(2)}A${r} ${r} 0 ${lg} ${swp} ${x2.toFixed(2)} ${y2.toFixed(2)}" fill="none" stroke-width="3" stroke-linecap="round"/>`;};
+ const av=a0+sw*p;const [px,py]=pt(av);const t=av*Math.PI/180;const ix=c+r*.45*Math.sin(t),iy=c-r*.45*Math.cos(t);
+ return `<svg viewBox="0 0 36 36">${arc(a0,a0+sw,'arc-t')}${bi?arc(0,av,'arc-v'):arc(a0,av,'arc-v')}<line class="ptr" x1="${ix.toFixed(2)}" y1="${iy.toFixed(2)}" x2="${px.toFixed(2)}" y2="${py.toFixed(2)}" stroke-width="2.5" stroke-linecap="round"/></svg>`;
+}
+function renderKnobs(root){root.querySelectorAll('i.knob:not(.r)').forEach(k=>{k.classList.add('r');k.innerHTML=knobSvg(+k.dataset.p||0,!!k.dataset.bi)+(k.dataset.nl?'':`<span class="kl">${k.dataset.l||''}</span>`)+(k.dataset.nv?'':`<span class="kv">${k.dataset.v||''}</span>`);});}
+
+/* pattern grid */
+const DR=[['Kick','0 dB',.78,'0 st',.5,'1000100010001000','1000000010000000'],['Snare','−2 dB',.7,'+1 st',.55,'0000100000001000','0000100000000000'],['Clap','−6 dB',.55,'0 st',.5,'0000100000001010','0000000000000000'],['Closed Hat','−8 dB',.5,'+3 st',.6,'1010101010101010','1000100010001000'],['Open Hat','−10 dB',.45,'−2 st',.42,'0010000000100001','0000000000000000']];
+const PH=4;
+function steps(fn){let h='';for(let g=0;g<4;g++){h+='<div class="g">';for(let j=0;j<4;j++){const s=g*4+j;h+=fn(s);}h+='</div>';}return `<div class="steps">${h}</div>`;}
+function grid(id){const el=document.getElementById(id);if(!el)return;
+ let h=`<div class="gh"></div><div class="gh"></div><div class="gh">Vol</div><div class="gh">Tune</div><div class="gh"><div class="beatnums"><span class="ph">1</span><span>2</span><span>3</span><span>4</span></div></div>`;
+ for(const [n,v,vp,t,tp,on,acc] of DR){h+=`<div class="rn"><i class="chip"></i>${n}</div><div class="ms grp"><span class="tg">M</span><span class="tg">S</span></div><i class="knob sm" data-nl="1" data-v="${v}" data-p="${vp}"></i><i class="knob sm" data-nl="1" data-v="${t}" data-p="${tp}" data-bi="1"></i>`+steps(s=>`<span class="cell${on[s]==='1'?' on':''}${acc[s]==='1'?' acc':''}${s===PH?' ph':''}"></span>`);}
+ el.innerHTML=h;renderKnobs(el);}
+const LANE={0:['C3',1],3:['E♭3'],4:['G3'],6:['B♭3'],8:['C3',1],10:['E♭3'],12:['G3'],14:['F3']};
+function lane(id){const el=document.getElementById(id);if(!el)return;
+ el.innerHTML=`<div class="rn"><i class="chip" style="--c:var(--t3)"></i>Keys</div><div class="ms grp"><span class="tg">M</span><span class="tg">S</span></div><i class="knob sm c" style="--c:var(--t3)" data-nl="1" data-v="−4 dB" data-p=".66"></i><div class="cap" style="text-align:center">—</div>`+steps(s=>{const n=LANE[s];return `<span class="cell n c${n?' on':''}${n&&n[1]?' acc':''}${s===PH?' ph':''}${s===6?' sel':''}" style="--c:var(--t3)">${n?n[0]:''}</span>`;});
+ renderKnobs(el);}
+grid('g1');grid('g2');lane('lane1');lane('lane2');
+
+/* piano roll */
+function roll(id){const el=document.getElementById(id);if(!el)return;const NN=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];const TOP=71,BOT=36,ROWS=TOP-BOT+1,ST=32;
+ let keys='',bg='';for(let r=0;r<ROWS;r++){const p=TOP-r;const nm=NN[p%12],oc=Math.floor(p/12),b=nm.includes('#');keys+=`<div class="${b?'b':''}${nm==='C'?' c':''}">${b?'':nm+oc}</div>`;if(b)bg+=`<div class="brow" style="top:${r*16}px"></div>`;}
+ const note=(p,s,l,v,c,g,sel)=>`<span class="note${g?' ghost':''}${sel?' sel':''}" style="--c:var(--t${c});--vel:${v||1};left:${(s/ST*100).toFixed(3)}%;width:calc(${(l/ST*100).toFixed(3)}% - 2px);top:${(TOP-p)*16+1}px"></span>`;
+ let n='';
+ const pad=[[55,0,16],[58,0,16],[62,0,16],[53,16,16],[56,16,16],[60,16,16]];for(const [p,s,l] of pad)n+=note(p,s,l,1,4,1);
+ const b808=[[36,0,3],[36,4,1],[43,6,2],[41,8,3],[36,12,2],[38,16,3],[36,20,1],[39,24,4],[36,28,2]];for(const [p,s,l] of b808)n+=note(p,s,l,1,2,1);
+ const lead=[[63,0,2],[67,2,2],[70,4,1],[67,6,2],[63,8,4],[65,12,2],[67,16,2],[70,18,4],[72,22,2],[70,24,4],[67,28,4]];for(const [p,s,l] of lead)n+=note(p,s,l,1,1,1);
+ const keysN=[[36,0,4,.9],[39,0,4,.8],[43,0,4,.75],[46,0,4,.7],[41,6,2,.6],[44,6,2,.6],[48,6,2,.55],[36,8,4,.9],[39,8,4,.8],[43,8,4,.75],[48,12,1,.5],[50,13,1,.5],[51,14,2,.7,1],[41,16,4,.85],[44,16,4,.8],[48,16,4,.75],[39,22,2,.6],[43,24,4,.8],[46,24,4,.7],[50,24,4,.7],[55,28,4,.6]];for(const [p,s,l,v,sel] of keysN)n+=note(p,s,l,v,3,0,sel);
+ el.innerHTML=`<div class="roll-head"><div class="kc"></div><div class="bars"><span>1</span><span>1.2</span><span>1.3</span><span>1.4</span><span>2</span><span>2.2</span><span>2.3</span><span>2.4</span></div></div><div class="roll-body"><div class="roll-keys">${keys}</div><div class="roll-grid" style="min-width:1152px;height:${ROWS*16}px;background-size:100% 16px,calc(100%/32) 100%,calc(100%/8) 100%">${bg}${n}<div class="playhead" style="left:${PH/ST*100}%"></div></div></div>`;
+ const rh=el.querySelector('.roll-head .bars');rh.querySelectorAll('span').forEach(s=>s.style.width='calc(1152px/8)');
+ const body=el.querySelector('.roll-body');body.scrollTop=16*8;body.addEventListener('scroll',()=>{rh.style.transform=`translateX(${-body.scrollLeft}px)`;});}
+roll('roll1');
+
+/* mixer */
+function mixer(){const src=document.getElementById('src1'),ins=document.getElementById('ins1');if(!src)return;
+ const SRC=[['Kick',1,null,.78,.7],['Snare',1,null,.72,.6],['Clap',1,null,.6,.4],['Cl. Hat',2,null,.55,.5],['Op. Hat',2,null,.5,.3],['Keys',3,3,.8,.65,1],['Pad',4,4,.6,.5],['808',5,2,.9,.8],['Lead',6,1,.7,0,0,1],['Pluck',7,0,.65,.45]];
+ src.innerHTML=SRC.map(([n,i,c,p,m,sel,mu])=>`<div class="strip src${sel?' on':''}" style="--c:${c==null?'var(--text-2)':'var(--t'+c+')'}"><span class="sn"><i class="chip"></i>${n}</span><span class="insbox${sel?' linked':''}" title="Insert">${i}</span><div class="fz"><div class="fader" style="--p:${p};--m:${m}"><i class="fm"></i><i class="ft"></i></div></div><div class="ms"><span class="tg${mu?' on':''}">M</span><span class="tg">S</span></div></div>`).join('');
+ const INS=[[1,'Drums',null,['Comp','EQ3','Off'],'Master',.8,.7,.2],[2,'Hats',null,['Lo-fi','Off','Off'],'→ 1',.6,.45,0],[3,'Keys',3,['Chorus','Comp','Off'],'Master',.78,.65,.15,1],[4,'Pad',4,['Off','Off','Off'],'Master',.6,.5,0],[5,'808',2,['Drive','Comp','Off'],'Master',.85,.8,.3],[6,'Lead',1,['EQ3','Off','Off'],'Master',.7,0,0],[7,'Pluck',0,['Off','Off','Off'],'Master',.65,.45,0]];
+ for(let i=8;i<=16;i++)INS.push([i,'Insert '+i,null,['Off','Off','Off'],'Master',.78,0,0]);
+ const eqv=['Lo','Mid','Hi'];
+ ins.innerHTML=INS.map(([no,n,c,sl,rt,p,m,g,sel])=>`<div class="strip${sel?' on':''}" style="--c:${c==null?'var(--text-2)':'var(--t'+c+')'}"><span class="sn"><span class="no">${no}</span><i class="chip"></i>${n}</span><div class="slots">${sl.map(s=>`<span class="slot${s!=='Off'?' on':''}">${s}</span>`).join('')}</div><div class="eq3">${eqv.map((e,k)=>`<i class="knob sm" data-l="${e}" data-nv="1" data-v="${k===1&&sel?'−2':'0'} dB" data-p="${k===1&&sel?.42:.5}" data-bi="1" style="width:24px"></i>`).join('')}</div><div class="sends"><i class="knob sm" data-l="Dly" data-v="${sel?'20':'0'} %" data-p="${sel?.2:0}" style="width:34px"></i><i class="knob sm" data-l="Rev" data-v="${sel?'35':'0'} %" data-p="${sel?.35:0}" style="width:34px"></i></div><button class="dd sm route">${rt} ${chev}</button><div class="fz"><div class="fader" style="--p:${p};--m:${m}"><i class="fm"></i><i class="ft"></i><i class="zero"></i></div><div class="gr" style="--g:${g}"></div></div><span class="db">${(p>=.78?'+'+((p-.78)*30).toFixed(1):'−'+((.78-p)*30).toFixed(1))} dB</span><div class="ms"><span class="tg">M</span><span class="tg">S</span></div></div>`).join('')
+ +`<div class="strip master"><span class="sn">MASTER</span><div class="row" style="gap:6px"><span class="lbl">Limiter</span><span class="switch on"></span><span class="lamp warn"></span></div><button class="dd sm route">EQ: Clarity ${ic('popout')}</button><div class="fz"><div class="fader" style="--p:.78;--m:.74"><i class="fm"></i><i class="ft"></i><i class="zero"></i></div><div class="vmeter"><i style="--l:.72;--pk:.86"></i><i style="--l:.66;--pk:.8"></i></div><div class="gr" style="--g:.12"></div></div><span class="db">0.0 dB · GR −1.2</span><div class="ms"><span class="tg">M</span></div></div>`;
+ renderKnobs(ins);}
+mixer();
+
+/* preset list */
+function plist(){const el=document.getElementById('plist1');if(!el)return;
+ const P=[['Dusty Rhodes','Lofi Keys','v',1],['Bedroom Keys','Lofi Keys','v'],['Tape Wurli','Lofi Keys'],['Lofi Piano','Lofi Keys','v'],['Cassette Keys','Lofi Keys'],['Nylon Guitar','Lofi Guitars'],['Jazz Hollowbody','Lofi Guitars','v'],['Night Drive Pad','Lofi Pads','d'],['VHS Strings','Lofi Pads'],['Festival Saw','EDM Leads'],['Hoover','EDM Leads'],['Trap 808','EDM Bass'],['Reese Bass','EDM Bass'],['Glass Pluck','EDM Plucks'],['Anthem Pad','EDM Pads','d'],['White Riser','Risers & FX'],['Infinite Hall','Risers & FX','d']];
+ el.innerHTML=P.map(([n,c,t,sel])=>`<div class="prow${sel?' sel':''}"><b>${n}</b><span class="tagz"><span class="ptag">${c}</span>${t==='v'?'<span class="ptag v">vinyl</span>':''}${t==='d'?'<span class="ptag d">drone</span>':''}</span></div>`).join('');}
+plist();
+
+/* song chain */
+function chain(){const el=document.getElementById('chain1'),tl=document.getElementById('tl1');if(!el)return;
+ const C=[['A',2,2],['B',2,2,1],['A',2,1],['C',1,2],['D',4,1]];
+ el.innerHTML=C.map(([p,b,r,pl],i)=>`<div class="crow${pl?' playing':''}"><span class="idx">${i+1}</span><span class="pl">${p}</span><span class="bars">${b} bar${b>1?'s':''} × ${r} = ${b*r} bars</span><span class="reps"><span class="lbl">Repeats</span><button class="ibtn sm">${ic('minus')}</button><span class="num">×${r}</span><button class="ibtn sm">${ic('plus')}</button></span><span class="mv"><button class="ibtn sm flat" title="Move up"${i===0?' disabled':''}>${ic('up')}</button><button class="ibtn sm flat" title="Move down"${i===C.length-1?' disabled':''}>${ic('down')}</button><button class="ibtn sm flat" title="Remove" style="color:var(--danger)">${ic('trash')}</button></span></div>`).join('');
+ let t='',bar=0;C.forEach(([p,b,r])=>{for(let k=0;k<r;k++){t+=`<div class="${bar>=4&&bar<6?'on':''}" style="flex:${b}">${p}</div>`;bar+=b;}});tl.innerHTML=t;}
+chain();
+
+/* icons, knobs */
+document.querySelectorAll("i[data-i]").forEach(i=>{i.outerHTML=ic(i.dataset.i).replace("class=\"icn","class=\"icn "+i.className).replace("<svg",`<svg style="${i.getAttribute("style")||""}"`);});
+renderKnobs(document);
+
+/* theme */
+const btn=document.getElementById('themeBtn');const html=document.documentElement;
+function setTheme(t){if(t==='dark')html.setAttribute('data-theme','dark');else html.removeAttribute('data-theme');btn.querySelector('span').textContent=t==='dark'?'Light theme':'Dark theme';btn.querySelector('svg').outerHTML=ic(t==='dark'?'sun':'moon');}
+btn.addEventListener('click',()=>setTheme(html.getAttribute('data-theme')==='dark'?'light':'dark'));
+document.querySelectorAll('.topbar .tb-r .ibtn:last-child').forEach(b=>b.addEventListener('click',()=>setTheme(html.getAttribute('data-theme')==='dark'?'light':'dark')));
+/* rail tab switching inside a frame is out of scope; the rail items only show their labels */
+})();
+</script>
+</body>
+</html>

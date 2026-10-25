@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BeatSlopper design round 3</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 32px; background: #15171b; color: #e6e8ec; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p { max-width: 70ch; color: #b4b9c2; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; margin-top: 24px; }
+  a.card { display: block; background: #1f2228; border: 1px solid #30343c; border-radius: 10px; padding: 16px; color: inherit; text-decoration: none; }
+  a.card:hover { border-color: #f0b429; }
+  a.card img { width: 100%; border-radius: 6px; border: 1px solid #30343c; margin-bottom: 12px; background: #000; }
+  .tag { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #2b2f37; color: #cfd3da; margin-right: 6px; }
+  h2 { font-size: 17px; margin: 4px 0 6px; }
+  .card p { font-size: 14px; margin: 0; }
+</style>
+</head>
+<body>
+<h1>BeatSlopper design round 3: the UI overhaul</h1>
+<p>Three directions for the new look and layout. Each page has a token sheet at the top, a theme toggle,
+the real screens at 1280 x 800, a narrow 850 x 600 frame (the 150 % scaling case) and a component sheet.
+Open one, scroll through it, then tell the orchestrator which to build.</p>
+<div class="grid">
+  <a class="card" href="preview-b.html">
+    <img src="captures/preview-b-main.png" alt="Preview B">
+    <h2>B · Deck</h2>
+    <span class="tag">FL Studio layout</span><span class="tag">dark first</span><span class="tag">dense, 8 px rhythm</span>
+    <p>Browser column, channel rack (tracks + steps in one), piano roll as the main window, mixer as a bottom drawer, F5 to F9 views.</p>
+  </a>
+  <a class="card" href="preview-a.html">
+    <img src="captures/preview-a-main.png" alt="Preview A">
+    <h2>A · Studio Flat</h2>
+    <span class="tag">Ableton layout</span><span class="tag">flat greys</span><span class="tag">one accent</span>
+    <p>Browser column, session-style track strips over the step grid, Clip | Devices | Keyboard tabs at the bottom.</p>
+  </a>
+  <a class="card" href="preview-c.html">
+    <img src="captures/preview-c-main.png" alt="Preview C">
+    <h2>C · Clearwave</h2>
+    <span class="tag">icon rail</span><span class="tag">light first</span><span class="tag">spacious, 32 pt targets</span>
+    <p>Left icon rail with a sliding tracks panel, one full-width view at a time, teal accent, cards with hairlines.</p>
+  </a>
+</div>
+</body>
+</html>
