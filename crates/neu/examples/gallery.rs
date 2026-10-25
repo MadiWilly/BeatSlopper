@@ -6,8 +6,9 @@
 //! theme toggle, the mock's SYNTH and FX panels built from the M2 controls (knobs, dials,
 //! segmented selectors, vertical sliders, the limiter lamp), the SEQUENCER panel (the mock's
 //! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills),
-//! the PIANO ROLL panel (a chord, a long note and the full draw / move / resize / delete
-//! interaction on a scrollable three-octave grid with the running playhead), a VISUALIZERS
+//! the PIANO ROLL panel (a chord, a long note, two other tracks' ghost notes in their track
+//! colours and the full draw / move / resize / delete interaction on a scrollable
+//! three-octave grid with the running playhead), a VISUALIZERS
 //! panel (the six presets over a synthetic beat, animated while Play is on) and a KEYS panel
 //! (two octaves of piano keys with a few held notes and the octave/swing steppers), so the
 //! look can be checked against `design/preview-a.html`. The transport line carries the brand
@@ -18,8 +19,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Align2, Layout, Rect, Vec2, pos2, vec2};
 use neu::{
-    Depth, DialSize, Icon, KnobSize, KnobSpec, PianoRollModel, RollNote, SliderSpec, StepCellSpec,
-    TextKind, Theme, ThemeMode, VisualInput,
+    Depth, DialSize, GhostNote, Icon, KnobSize, KnobSpec, PianoRollModel, RollNote, SliderSpec,
+    StepCellSpec, TextKind, Theme, ThemeMode, VisualInput,
 };
 
 /// The mock's drum rows (`rows` in `design/preview-a.html`): name, volume and the demo
@@ -415,6 +416,26 @@ impl Gallery {
             note(8, 8, 60, 1.0),
             note(12, 1, 58, 0.8),
             note(14, 2, 55, 0.8),
+        ]
+    }
+
+    /// The PIANO ROLL demo's ghosts (M10): two other tracks' notes in their track colours, a
+    /// pad's long F3 on track 1 under the chord and a keys line's D4 on track 2 over the
+    /// second half. Built per frame so a theme toggle recolours them.
+    fn demo_roll_ghosts(theme: &Theme) -> Vec<GhostNote> {
+        vec![
+            GhostNote {
+                start: 2,
+                length: 6,
+                pitch: 53,
+                colour: theme.track_colour(1),
+            },
+            GhostNote {
+                start: 9,
+                length: 3,
+                pitch: 62,
+                colour: theme.track_colour(2),
+            },
         ]
     }
 
@@ -1378,12 +1399,14 @@ impl Gallery {
                     neu::label(
                         ui,
                         theme,
-                        "drag = draw / move / edge resize · dbl-click = delete · shift-click = accent · wheel = scroll",
+                        "drag = draw / move / edge resize · dbl-click = delete · shift-click = accent · wheel = scroll · dim = other tracks",
                     );
                 });
             });
             ui.add_space(14.0);
-            let out = neu::piano_roll(ui, theme, &mut self.roll, &self.roll_notes);
+            let ghosts = Self::demo_roll_ghosts(theme);
+            let out =
+                neu::piano_roll_with_ghosts(ui, theme, &mut self.roll, &self.roll_notes, &ghosts);
             if let Some(n) = out.add {
                 self.roll_notes.push(n);
                 self.roll.selected = Some(self.roll_notes.len() - 1);

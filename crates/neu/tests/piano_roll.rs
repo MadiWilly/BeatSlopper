@@ -1,7 +1,8 @@
 //! egui_kittest tests for the M7 piano roll: it renders in both themes with and without notes,
 //! every gesture reports the documented edit (draw, select, move, resize, double-click delete,
 //! Delete key, shift-click accent), the wheel scrolls `low_pitch` with clamping, and the
-//! public geometry helpers round-trip.
+//! public geometry helpers round-trip. M10: the other tracks' ghost notes render in both
+//! themes, take no part in any gesture and are not painted past the grid.
 
 use egui::{
     Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2, Rect, TouchPhase,
@@ -9,13 +10,14 @@ use egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use neu::{PianoRollModel, PianoRollOutput, RollNote, Theme, ThemeMode};
+use neu::{GhostNote, PianoRollModel, PianoRollOutput, RollNote, Theme, ThemeMode};
 
-/// The host side of the roll: the notes, the view model and a log of every output that
-/// carried anything.
+/// The host side of the roll: the notes, the other tracks' ghosts, the view model and a log
+/// of every output that carried anything.
 struct Roll {
     model: PianoRollModel,
     notes: Vec<RollNote>,
+    ghosts: Vec<GhostNote>,
     log: Vec<PianoRollOutput>,
 }
 
@@ -65,6 +67,14 @@ fn two_notes() -> Vec<RollNote> {
 }
 
 fn harness(mode: ThemeMode, notes: Vec<RollNote>) -> Harness<'static, Roll> {
+    harness_with_ghosts(mode, notes, Vec::new())
+}
+
+fn harness_with_ghosts(
+    mode: ThemeMode,
+    notes: Vec<RollNote>,
+    ghosts: Vec<GhostNote>,
+) -> Harness<'static, Roll> {
     let mut harness = Harness::builder()
         .with_size(vec2(560.0, 600.0))
         .with_step_dt(1.0 / 60.0)
@@ -76,18 +86,58 @@ fn harness(mode: ThemeMode, notes: Vec<RollNote>) -> Harness<'static, Roll> {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    let out = neu::piano_roll(ui, &theme, &mut roll.model, &roll.notes);
+                    let out = neu::piano_roll_with_ghosts(
+                        ui,
+                        &theme,
+                        &mut roll.model,
+                        &roll.notes,
+                        &roll.ghosts,
+                    );
                     roll.apply(out);
                 });
             },
             Roll {
                 model: PianoRollModel::default(),
                 notes,
+                ghosts,
                 log: Vec::new(),
             },
         );
     harness.run();
     harness
+}
+
+/// Two other tracks' notes in the gallery's track colours: a 2-step D3 at step 2 (track 1)
+/// and a 3-step A3 at step 8 (track 2), plus one past the grid end, one above the visible
+/// rows and one at the same place as the first real note of `two_notes`.
+fn demo_ghosts(mode: ThemeMode) -> Vec<GhostNote> {
+    let theme = Theme::for_mode(mode);
+    let ghost = |start, length, pitch, track| GhostNote {
+        start,
+        length,
+        pitch,
+        colour: theme.track_colour(track),
+    };
+    vec![
+        ghost(2, 2, 50, 1),
+        ghost(8, 3, 57, 2),
+        ghost(16, 2, 50, 3),
+        ghost(0, 1, 110, 4),
+        ghost(0, 2, 48, 5),
+    ]
+}
+
+fn right_click(harness: &mut Harness<'_, Roll>, pos: Pos2) {
+    harness.event(Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.event(Event::PointerButton {
+            pos,
+            button: PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run();
+    }
 }
 
 fn outer(harness: &Harness<'_, Roll>) -> Rect {
@@ -426,6 +476,119 @@ fn wheel_scrolls_low_pitch_and_clamps() {
 
     // The notes are untouched by scrolling.
     assert_eq!(h.state().notes, two_notes());
+}
+
+#[test]
+fn ghosts_render_in_both_themes_and_hovering_one_reports_nothing() {
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let mut h = harness_with_ghosts(mode, two_notes(), demo_ghosts(mode));
+        assert_eq!(outer(&h).size(), PianoRollModel::default().size());
+        // Hover the middle of a ghost, its right edge (no resize cursor is asserted; it must
+        // simply not count as a note) and the ghost that overlaps a real note.
+        let ghost = cell_center(&h, 3, 50);
+        move_to(&mut h, ghost);
+        let edge = {
+            let grid = neu::grid_rect(outer(&h));
+            neu::note_rect(&h.state().model, grid, &note(2, 2, 50)).right_center() - vec2(2.0, 0.0)
+        };
+        move_to(&mut h, edge);
+        let overlap = cell_center(&h, 9, 57);
+        move_to(&mut h, overlap);
+        assert!(
+            h.state().log.is_empty(),
+            "{mode:?}: hovering a ghost reports nothing"
+        );
+        assert!(!h.state().last().has_edit());
+        assert_eq!(h.state().model.selected, None);
+        assert!(h.state().model.selection.is_empty());
+        assert_eq!(h.state().notes, two_notes());
+        // With a selection and the playhead on, still fine.
+        h.state_mut().model.set_selection(vec![0]);
+        h.state_mut().model.playhead_step = Some(3.0);
+        h.run();
+        assert_eq!(h.state().model.selected, Some(0));
+    }
+}
+
+#[test]
+fn clicking_a_ghost_cell_draws_a_note_like_an_empty_cell() {
+    let mode = ThemeMode::Dark;
+    let mut with = harness_with_ghosts(mode, two_notes(), demo_ghosts(mode));
+    let mut without = harness(mode, two_notes());
+    let cell = cell_center(&with, 3, 50);
+    click(&mut with, cell);
+    click(&mut without, cell);
+    let a = with.state().last();
+    let b = without.state().last();
+    assert_eq!(a, b, "a ghost cell behaves exactly like an empty cell");
+    assert_eq!(a.add, Some(note(3, 1, 50)));
+    assert!(a.selected.is_none() && a.moved.is_none() && a.removed.is_none());
+    assert_eq!(with.state().notes, without.state().notes);
+    assert_eq!(with.state().ghosts.len(), 5, "the ghosts are never touched");
+
+    // Dragging from a ghost's cell draws through it; the ghost is never moved or resized.
+    let from = cell_center(&with, 8, 57);
+    press(&mut with, from, Modifiers::NONE);
+    let to = cell_center(&with, 12, 57);
+    move_to(&mut with, to);
+    release(&mut with, to, Modifiers::NONE);
+    assert_eq!(with.state().last().add, Some(note(8, 5, 57)));
+    assert_eq!(with.state().ghosts, demo_ghosts(mode));
+
+    // A right-click on a ghost (with no real note under it) removes nothing; a Ctrl-marquee
+    // over ghosts alone selects nothing.
+    let mut h = harness_with_ghosts(mode, two_notes(), demo_ghosts(mode));
+    let edits = h.state().log.len();
+    let on_ghost = cell_center(&h, 9, 57);
+    right_click(&mut h, on_ghost);
+    assert_eq!(h.state().log.len(), edits);
+    assert_eq!(h.state().notes, two_notes());
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    let corner = cell_center(&h, 7, 59);
+    press(&mut h, corner, Modifiers::COMMAND);
+    let far = cell_center(&h, 12, 55);
+    move_to(&mut h, far);
+    release(&mut h, far, Modifiers::COMMAND);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run();
+    assert!(
+        h.state().model.selection.is_empty(),
+        "ghosts are not selectable"
+    );
+    assert!(!h.state().last().has_edit());
+
+    // The ghost that sits on a real note does not shadow it: the click selects the note.
+    let shared = cell_center(&h, 0, 48);
+    click(&mut h, shared);
+    assert_eq!(h.state().last().selected, Some(0));
+    assert_eq!(h.state().model.selected, Some(0));
+}
+
+#[test]
+fn ghosts_past_the_grid_or_off_the_rows_are_not_painted() {
+    let model = PianoRollModel::default();
+    let grid = neu::grid_rect(Rect::from_min_size(pos2(100.0, 50.0), model.size()));
+    let ghosts = demo_ghosts(ThemeMode::Light);
+    let rects = neu::ghost_rects(&model, grid, &ghosts);
+    // Only the three on-grid ghosts paint, in order, each in its own track colour.
+    assert_eq!(rects.len(), 3);
+    assert_eq!(
+        rects[0],
+        (
+            neu::note_rect(&model, grid, &note(2, 2, 50)),
+            ghosts[0].colour
+        )
+    );
+    assert_eq!(rects[1].0, neu::note_rect(&model, grid, &note(8, 3, 57)));
+    assert_eq!(rects[2].0, neu::note_rect(&model, grid, &note(0, 2, 48)));
+    assert_ne!(rects[0].1, rects[1].1);
+    assert!(rects.iter().all(|(r, _)| grid.contains_rect(*r)));
+    // The fill the roll paints is the colour at the ghost opacity.
+    assert_eq!(
+        neu::ghost_fill(ghosts[0].colour).a(),
+        (255.0 * neu::GHOST_OPACITY).round() as u8
+    );
+    const { assert!(neu::GHOST_RADIUS < neu::NOTE_RADIUS) };
 }
 
 #[test]

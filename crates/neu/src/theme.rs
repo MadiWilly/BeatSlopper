@@ -82,6 +82,37 @@ pub struct Theme {
 
 /// Corner radius of egui tooltips, popups and windows styled by [`Theme::apply`].
 pub const POPUP_RADIUS: u8 = 12;
+/// Number of track swatches in [`Theme::track_colour`] (one per instrument track, M10).
+pub const TRACK_COLOURS: usize = 8;
+
+/// The eight instrument-track swatches of the dark theme (M10): the accent itself, then the
+/// accent family walked around the hue wheel at the accent's weight (bright, 300/400-weight
+/// tints that sit on the dark surface). Index order: accent, amber, green, teal, sky,
+/// indigo, pink, coral.
+const TRACK_COLOURS_DARK: [Color32; TRACK_COLOURS] = [
+    rgb(0xFF7A1A),
+    rgb(0xFFC83C),
+    rgb(0x4ADE80),
+    rgb(0x2DD4BF),
+    rgb(0x38BDF8),
+    rgb(0x818CF8),
+    rgb(0xF472B6),
+    rgb(0xF87171),
+];
+
+/// The eight instrument-track swatches of the light theme (M10): the accent itself, then the
+/// same hue walk at the 600/700 weight so every swatch stays darker than the light surface.
+/// Index order: accent, amber, green, teal, sky, violet, pink, red.
+const TRACK_COLOURS_LIGHT: [Color32; TRACK_COLOURS] = [
+    rgb(0x1E5BFF),
+    rgb(0xB45309),
+    rgb(0x15803D),
+    rgb(0x0F766E),
+    rgb(0x0284C7),
+    rgb(0x6D28D9),
+    rgb(0xBE185D),
+    rgb(0xDC2626),
+];
 /// Seconds the pointer must rest on a control before its tooltip appears
 /// (`Style::interaction.tooltip_delay`, set by [`Theme::apply`]).
 pub const TOOLTIP_DELAY: f32 = 0.3;
@@ -269,6 +300,19 @@ impl Theme {
         }
     }
 
+    /// The colour of instrument track `index` (M10): swatch 0 is the accent, the other seven
+    /// walk the accent family around the hue wheel. The index wraps every [`TRACK_COLOURS`]
+    /// tracks. Every swatch is at least 1.5:1 against the surface of its theme, and distinct
+    /// from the others, so a track reads both as a full note and as a dimmed ghost
+    /// ([`crate::piano_roll::ghost_fill`]).
+    pub fn track_colour(&self, index: u8) -> Color32 {
+        let swatches = match self.mode {
+            ThemeMode::Light => &TRACK_COLOURS_LIGHT,
+            ThemeMode::Dark => &TRACK_COLOURS_DARK,
+        };
+        swatches[usize::from(index) % TRACK_COLOURS]
+    }
+
     /// The egui theme that corresponds to this mode.
     pub fn egui_theme(&self) -> egui::Theme {
         match self.mode {
@@ -380,5 +424,37 @@ mod tests {
         assert_eq!(d.accent, Color32::from_rgb(0xFF, 0x7A, 0x1A));
         assert_eq!(l.accent, Color32::from_rgb(0x1E, 0x5B, 0xFF));
         assert_eq!(d.raised_l, l.raised_l);
+    }
+
+    #[test]
+    fn track_colours_are_distinct_and_read_on_the_surface_in_both_themes() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let mode = theme.mode;
+            let swatches: Vec<Color32> = (0..TRACK_COLOURS as u8)
+                .map(|i| theme.track_colour(i))
+                .collect();
+            assert_eq!(
+                swatches[0], theme.accent,
+                "{mode:?}: swatch 0 is the accent"
+            );
+            for (i, a) in swatches.iter().enumerate() {
+                let ratio = contrast_ratio(*a, theme.surface);
+                assert!(
+                    ratio >= 1.5,
+                    "{mode:?}: track {i} is {ratio:.2}:1 on the surface, needs 1.5:1"
+                );
+                for (j, b) in swatches.iter().enumerate().skip(i + 1) {
+                    assert_ne!(a, b, "{mode:?}: tracks {i} and {j} share a colour");
+                }
+            }
+            // The index wraps: track 8 is track 0 again, 255 is track 7.
+            assert_eq!(theme.track_colour(8), swatches[0]);
+            assert_eq!(theme.track_colour(255), swatches[7]);
+        }
+        // The two themes are different palettes (bright tints on dark, deep tones on light).
+        assert_ne!(
+            Theme::dark().track_colour(3),
+            Theme::light().track_colour(3)
+        );
     }
 }

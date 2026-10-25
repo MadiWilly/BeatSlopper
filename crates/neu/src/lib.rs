@@ -61,8 +61,10 @@ pub use piano_keys::{
 };
 pub use piano_roll::{
     ACCENT_DOT, ACCENT_DOT_INSET, ACCENT_THRESHOLD, ACCENT_VELOCITY, DEFAULT_VELOCITY,
-    KEY_COLUMN_WIDTH, NOTE_RADIUS, PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote,
-    black_row_tint, cell_at, grid_rect, is_black_key, note_rect, piano_roll, row_rect,
+    GHOST_OPACITY, GHOST_OUTLINE_OPACITY, GHOST_RADIUS, GhostNote, KEY_COLUMN_WIDTH, NOTE_RADIUS,
+    PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote, black_row_tint, cell_at, ghost_fill,
+    ghost_outline, ghost_rects, grid_rect, is_black_key, note_rect, piano_roll,
+    piano_roll_with_ghosts, row_rect,
 };
 pub use segmented::{SEGMENTED_CHIP_HEIGHT, SEGMENTED_HEIGHT, chip_rect, segmented};
 pub use shadow::{
@@ -76,7 +78,9 @@ pub use slider::{
 };
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};
-pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode, contrast_ratio};
+pub use theme::{
+    POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, TRACK_COLOURS, Theme, ThemeMode, contrast_ratio,
+};
 pub use value_edit::{
     ValueEditOutput, begin_edit, cancel_edit, floating_edit, is_editing, parse_int, parse_number,
     parse_value, readout, show_edit, value_for_display, wheel_notches, wheel_steps,

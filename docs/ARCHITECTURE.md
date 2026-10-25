@@ -860,6 +860,31 @@ format change.
 - `ui/tracks.rs`: the TRACKS panel (right-column tab `Tracks`); `ui/sequencer.rs` head shows
   the edit track; `neu::piano_roll` gains a `ghosts: &[(Note, colour)]` input.
 
+### neu: M10 as built
+- Ghost notes live in `crates/neu/src/piano_roll.rs`. The existing
+  `neu::piano_roll(ui, theme, &mut model, notes)` is unchanged (it is the no-ghost case);
+  the app calls the sibling
+  `neu::piano_roll_with_ghosts(ui: &mut Ui, theme: &Theme, model: &mut PianoRollModel,
+  notes: &[RollNote], ghosts: &[GhostNote]) -> PianoRollOutput`
+  with the other tracks' notes. `neu::GhostNote { start: u8, length: u8, pitch: u8, colour:
+  Color32 }` (`GhostNote::from_note(&RollNote, Color32)`, `.as_roll_note()`); build the slice
+  per frame from every track except `edit_track`, colour = `theme.track_colour(track.colour)`.
+- Ghosts are painted after the grid lines and before the editable notes: the colour at
+  `neu::GHOST_OPACITY` (0.35, `neu::ghost_fill(colour)`), `neu::GHOST_RADIUS` (3 pt) corners
+  and a 1 pt outline at `neu::GHOST_OUTLINE_OPACITY` (0.6, `neu::ghost_outline(colour)`).
+  They are never hit-tested or selected and never reach `PianoRollOutput`: a press on a ghost
+  cell draws a note there like an empty cell. Ghosts off the visible rows (hidden black keys
+  included) or starting at or past `model.steps` are not drawn; one running past the grid end
+  is clipped. `neu::ghost_rects(&PianoRollModel, grid: Rect, &[GhostNote]) ->
+  Vec<(Rect, Color32)>` is the pure rule (unit-tested).
+- Track colours: `neu::TRACK_COLOURS = 8` and `Theme::track_colour(&self, index: u8) ->
+  Color32` (index wraps mod 8; swatch 0 is the accent) in `crates/neu/src/theme.rs`. Dark:
+  `FF7A1A FFC83C 4ADE80 2DD4BF 38BDF8 818CF8 F472B6 F87171`; light: `1E5BFF B45309 15803D
+  0F766E 0284C7 6D28D9 BE185D DC2626`. Tested pairwise distinct and >= 1.5:1 against the
+  surface in both themes (`neu::contrast_ratio`); the 35 % ghost composite is >= 1.2:1.
+- The gallery's PIANO ROLL panel shows two ghosts (tracks 1 and 2); the hint line ends in
+  "dim = other tracks".
+
 ## M11 additions (FL-style mixer)
 - `inserts.rs`: `INSERT_COUNT = 16`, `Insert { level, pan, mute, solo, sends, eq3: Eq3,
   slots: [Slot; 3], route: Route::{Master, Insert(u8 > self)} }`, `Slot::{Off, Compressor(..),

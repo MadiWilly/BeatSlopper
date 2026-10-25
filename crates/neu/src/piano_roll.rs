@@ -22,6 +22,15 @@
 //! the press. It is a hover-only cue and conveys no state. A note removed with the right
 //! button "pops": its outline grows and fades over [`POP_SECONDS`].
 //!
+//! Ghost notes (M10): [`piano_roll_with_ghosts`] also takes the other instrument tracks' notes
+//! as [`GhostNote`]s, each with its track's colour ([`Theme::track_colour`]). They are painted
+//! after the grid lines and before the real notes as reference only: the colour at
+//! [`GHOST_OPACITY`] with a [`GHOST_RADIUS`] corner and a 1 pt outline at
+//! [`GHOST_OUTLINE_OPACITY`], like FL Studio's ghost channels. They are never hit-tested,
+//! never selectable and never part of [`PianoRollOutput`]: a press on a ghost's cell draws a
+//! new note there exactly as on an empty cell. Ghosts off the visible rows or past the grid
+//! end are not drawn ([`ghost_rects`] is the pure rule).
+//!
 //! Interaction is one `Sense::click_and_drag` response with a small gesture state machine kept
 //! in egui's temporary memory under `response.id` (see [`piano_roll`] for the rules). The
 //! widget never edits the notes itself: it reports the edits in [`PianoRollOutput`] and the
@@ -100,6 +109,12 @@ pub const MARQUEE_WASH: f32 = 0.15;
 pub const POP_SECONDS: f64 = 0.18;
 /// How much a popping note's outline grows (as a fraction of its size) by the end.
 pub const POP_GROWTH: f32 = 0.6;
+/// Opacity of a ghost note's fill (its track colour over the surface).
+pub const GHOST_OPACITY: f32 = 0.35;
+/// Opacity of a ghost note's 1 pt outline (its track colour).
+pub const GHOST_OUTLINE_OPACITY: f32 = 0.6;
+/// Corner radius of a ghost note bar (half a real note's, so it reads as reference).
+pub const GHOST_RADIUS: f32 = 3.0;
 /// Number of white keys in MIDI 0..=127 (C-1 .. G9).
 pub const WHITE_KEYS: usize = 75;
 /// Rows in an octave with the black keys shown / hidden.
@@ -125,6 +140,45 @@ pub struct RollNote {
     /// Painted with the on-glow treatment (the host's own selection flag; the widget also
     /// honours `PianoRollModel::selection`).
     pub selected: bool,
+}
+
+/// A note of another instrument track, drawn dimmed in that track's colour behind the
+/// editable notes (M10). Reference only: never hit-tested, never selected, never reported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GhostNote {
+    /// First step (0-based).
+    pub start: u8,
+    /// Length in steps (at least 1; 0 draws as 1).
+    pub length: u8,
+    /// MIDI pitch 0..=127.
+    pub pitch: u8,
+    /// The owning track's colour ([`Theme::track_colour`]); the roll applies the ghost
+    /// opacity itself.
+    pub colour: Color32,
+}
+
+impl GhostNote {
+    /// A ghost at `note`'s place in `colour` (velocity and selection are dropped).
+    pub fn from_note(note: &RollNote, colour: Color32) -> Self {
+        Self {
+            start: note.start,
+            length: note.length,
+            pitch: note.pitch,
+            colour,
+        }
+    }
+
+    /// The same position as a [`RollNote`] (default velocity, unselected): the shape the
+    /// geometry helpers take.
+    pub fn as_roll_note(&self) -> RollNote {
+        RollNote {
+            start: self.start,
+            length: self.length,
+            pitch: self.pitch,
+            velocity: DEFAULT_VELOCITY,
+            selected: false,
+        }
+    }
 }
 
 /// View state of the roll: grid extent, scroll position, cell size, playhead, selection,
@@ -450,6 +504,39 @@ pub fn black_row_tint(theme: &Theme) -> Color32 {
         .lerp_to_gamma(theme.shadow_dark, BLACK_ROW_TINT)
 }
 
+/// A ghost note's fill: its track `colour` at [`GHOST_OPACITY`] (alpha, so it sits on whatever
+/// row tint is under it).
+pub fn ghost_fill(colour: Color32) -> Color32 {
+    colour.gamma_multiply(GHOST_OPACITY)
+}
+
+/// A ghost note's outline colour: its track `colour` at [`GHOST_OUTLINE_OPACITY`].
+pub fn ghost_outline(colour: Color32) -> Color32 {
+    colour.gamma_multiply(GHOST_OUTLINE_OPACITY)
+}
+
+/// What the ghosts paint as: the bar of every ghost that has a visible row and starts inside
+/// the grid, clipped to `grid`, with its track colour (undimmed; see [`ghost_fill`]). A ghost
+/// off the visible rows (a hidden black key included) or starting at or past `model.steps`
+/// is left out; one running past the grid end is clipped. The order is the input order.
+pub fn ghost_rects(
+    model: &PianoRollModel,
+    grid: Rect,
+    ghosts: &[GhostNote],
+) -> Vec<(Rect, Color32)> {
+    if model.steps == 0 || model.pitches == 0 {
+        return Vec::new();
+    }
+    ghosts
+        .iter()
+        .filter(|g| model.is_visible(g.pitch) && usize::from(g.start) < model.steps)
+        .filter_map(|g| {
+            let r = note_rect(model, grid, &g.as_roll_note()).intersect(grid);
+            (r.width() > 0.0 && r.height() > 0.0).then_some((r, g.colour))
+        })
+        .collect()
+}
+
 /// Which gesture a press started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Gesture {
@@ -752,11 +839,29 @@ struct Pop {
 ///   [`PianoRollModel::max_low_pitch`]; `scrolled` is set. Shift+wheel is reserved (no-op).
 ///
 /// At most one kind of edit is reported per frame.
+///
+/// This is [`piano_roll_with_ghosts`] with no ghosts.
 pub fn piano_roll(
     ui: &mut Ui,
     theme: &Theme,
     model: &mut PianoRollModel,
     notes: &[RollNote],
+) -> PianoRollOutput {
+    piano_roll_with_ghosts(ui, theme, model, notes, &[])
+}
+
+/// [`piano_roll`] that also draws the other instrument tracks' notes as `ghosts` (M10): dimmed
+/// bars in each track's colour ([`ghost_fill`], [`GHOST_RADIUS`] corners, a 1 pt
+/// [`ghost_outline`]) painted after the grid lines and before `notes`. Ghosts take no part in
+/// any gesture: they are not hit-tested, cannot be selected or dragged and never appear in the
+/// output, so a press on a ghost's cell draws a new note there exactly as on an empty cell.
+/// Ghosts off the visible rows or past the grid end are not drawn ([`ghost_rects`]).
+pub fn piano_roll_with_ghosts(
+    ui: &mut Ui,
+    theme: &Theme,
+    model: &mut PianoRollModel,
+    notes: &[RollNote],
+    ghosts: &[GhostNote],
 ) -> PianoRollOutput {
     model.normalise(notes.len());
     let (outer, response) = ui.allocate_exact_size(model.size(), Sense::click_and_drag());
@@ -883,6 +988,7 @@ pub fn piano_roll(
             theme,
             model,
             notes,
+            ghosts,
             outer,
             grid,
             &response,
@@ -1016,14 +1122,15 @@ fn finish(
     }
 }
 
-/// Paints the roll: background, rows, lines, key column, notes, drag ghosts, marquee, pops,
-/// playhead and the focus ring.
+/// Paints the roll: background, rows, lines, track ghosts, key column, notes, drag ghosts,
+/// marquee, pops, playhead and the focus ring.
 #[allow(clippy::too_many_arguments)]
 fn paint(
     ui: &Ui,
     theme: &Theme,
     model: &PianoRollModel,
     notes: &[RollNote],
+    ghosts: &[GhostNote],
     outer: Rect,
     grid: Rect,
     response: &Response,
@@ -1075,6 +1182,18 @@ fn paint(
         grid.y_range(),
         Stroke::new(1.0, theme.shadow_dark),
     );
+
+    // Track ghosts (the other tracks' notes): dimmed, small-radius, thinly outlined bars in
+    // their track colour, under the hover cue and the real notes. Reference only.
+    for (r, colour) in ghost_rects(model, grid, ghosts) {
+        painter.rect_filled(r, GHOST_RADIUS, ghost_fill(colour));
+        painter.rect_stroke(
+            r,
+            GHOST_RADIUS,
+            Stroke::new(1.0, ghost_outline(colour)),
+            egui::StrokeKind::Inside,
+        );
+    }
 
     // Hovered cell (idle only) and the resize cursor over a note's right edge.
     let hover = response.hover_pos().filter(|p| grid.contains(*p));
@@ -1570,6 +1689,77 @@ mod tests {
         );
         assert_eq!(resize_notes(&model, &group, 20)[1].1.length, 13);
         assert_eq!(resize_notes(&model, &group, -5)[1].1.length, 1);
+    }
+
+    #[test]
+    fn ghost_rects_skip_off_grid_ghosts_and_clip_the_rest() {
+        let (model, g) = grid();
+        let c = Color32::from_rgb(1, 2, 3);
+        let ghost = |start, length, pitch| GhostNote {
+            start,
+            length,
+            pitch,
+            colour: c,
+        };
+        let ghosts = [
+            ghost(2, 2, 48),   // plain
+            ghost(16, 1, 48),  // at the pattern length: not painted
+            ghost(200, 1, 48), // far beyond it: not painted
+            ghost(14, 4, 50),  // runs past the grid end: clipped to two steps
+            ghost(0, 1, 100),  // above the visible rows
+            ghost(0, 1, 35),   // below them
+            ghost(5, 0, 40),   // zero length draws as one step
+        ];
+        let rects = ghost_rects(&model, g, &ghosts);
+        assert_eq!(rects.len(), 3, "{rects:?}");
+        assert_eq!(rects[0], (note_rect(&model, g, &note(2, 2, 48)), c));
+        let clipped = rects[1].0;
+        assert_eq!(clipped.min.x, g.min.x + 14.0 * model.step_width);
+        assert_eq!(clipped.max.x, g.max.x);
+        assert_eq!(rects[2].0, note_rect(&model, g, &note(5, 1, 40)));
+        assert!(rects.iter().all(|(r, _)| g.contains_rect(*r)));
+
+        // A hidden black key has no row, so its ghost is not painted either.
+        let white = PianoRollModel {
+            black_keys: false,
+            ..PianoRollModel::default()
+        };
+        let g2 = grid_rect(Rect::from_min_size(pos2(0.0, 0.0), white.size()));
+        assert!(ghost_rects(&white, g2, &[ghost(0, 1, 37)]).is_empty());
+        assert_eq!(ghost_rects(&white, g2, &[ghost(0, 1, 38)]).len(), 1);
+
+        // An empty grid paints nothing.
+        let empty = PianoRollModel {
+            steps: 0,
+            ..PianoRollModel::default()
+        };
+        assert!(ghost_rects(&empty, g, &[ghost(0, 1, 48)]).is_empty());
+
+        // Round trips with RollNote.
+        let n = note(3, 2, 60);
+        let gh = GhostNote::from_note(&n, c);
+        assert_eq!((gh.start, gh.length, gh.pitch, gh.colour), (3, 2, 60, c));
+        assert_eq!(gh.as_roll_note(), n);
+    }
+
+    #[test]
+    fn ghost_fill_keeps_contrast_against_the_surface_for_every_track() {
+        // The ghost is the track colour at GHOST_OPACITY over the surface: the composite must
+        // still read against a bare surface in both themes, for all eight tracks.
+        for theme in [Theme::dark(), Theme::light()] {
+            for i in 0..crate::theme::TRACK_COLOURS as u8 {
+                let colour = theme.track_colour(i);
+                let fill = ghost_fill(colour);
+                assert_eq!(fill.a(), (255.0 * GHOST_OPACITY).round() as u8);
+                let composite = theme.surface.lerp_to_gamma(colour, GHOST_OPACITY);
+                let ratio = crate::theme::contrast_ratio(composite, theme.surface);
+                assert!(
+                    ratio >= 1.2,
+                    "{:?}: ghost of track {i} is {ratio:.2}:1 on the surface",
+                    theme.mode
+                );
+            }
+        }
     }
 
     #[test]
