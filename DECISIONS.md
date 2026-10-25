@@ -130,3 +130,26 @@ design is done by DSP reasoning and measurable tests since the build machine can
 - `FORMAT_VERSION` was bumped 5 -> 6 on this branch as instructed; main's M8 also bumps it, so
   the merge must resolve the version (and the doc list) by hand. Existing tests now compare
   against `FORMAT_VERSION` instead of a literal.
+## 2026-10-25: Visualizers (branch `madi/visualizers-bc3bf5`)
+- The master-output tap is a plain `rtrb` ring of whole stereo frames written once per block
+  with `push_entire_slice` (no per-sample cost). An SPSC ring cannot drop its oldest entries
+  from the producer side, so a full ring (the UI stalled) skips the rest of the block instead;
+  the reader drains everything each frame and keeps its own 2048-frame window, so the picture
+  catches up after one UI frame. Drum hits are a latched `AtomicU32` bitmask (`fetch_or` on
+  the audio thread, `swap(0)` in the UI) rather than a per-block value, so no hit is lost
+  between frames.
+- The spectrum FFT is hand written (radix-2, fixed 2048 points, precomputed twiddles): no new
+  dependency to vet, and the size never changes.
+- Visualizer animation state lives in egui temp memory keyed by the widget id, so the kit keeps
+  the stateless `fn(ui, theme, input, style)` widget signature while the strip, panel and
+  overlay animate independently.
+- Layout: the right column's head became the `Project | Chain | Visual` tab alone. Three tabs
+  plus a title do not fit the 220 pt inner width, and a second row pushed the PROJECT panel's
+  status line into the KEYS panel; the selected tab is set in the title style, so it reads as
+  the title. The transport bar had no free width for the 220 pt strip at 1280: the Test tone
+  pill moved under the MIDI selector (the column had the vertical room) and the group gap
+  drops from 24 to 16 while the strip is shown; the strip then gets about 144 pt at 1280 and
+  grows to 220 in wider windows, hiding below 100 pt instead of pushing the right-hand group
+  out.
+- The visualizer preset is an app setting (eframe storage), not project data; "Off" is a
+  preset so the choice is a single persisted index.

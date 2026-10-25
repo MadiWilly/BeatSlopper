@@ -101,6 +101,21 @@ HANDOFF: see docs/HANDOFF.md. The next orchestrator session pulls, finishes the 
 - [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
 - [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
 
+## Visualizers (side branch `madi/visualizers-bc3bf5`, 2026-10-25)
+- [x] engine: lock-free master-output tap (`scope.rs`: `ScopeTap` / `ScopeReader` /
+  `ScopeWindow`) and a latched drum-hit bitmask (`EngineHandle::take_hits`), three lines in
+  `render`; tests for round trip, overflow and hit bits
+- [x] neu: `visualizer` module: scope, bars, radial, vector, waves, particles with
+  `VisualInput` / `VisualStyle`, the 7-entry `PRESETS` table; kittest renders in both themes,
+  frame-time sanity; a VISUALIZERS panel in the gallery example
+- [x] app: `spectrum.rs` (hand-written 2048-point FFT, 64 log bands, smoothed), the VISUAL
+  tab in the right column (preset stepper, FULL), the transport mini strip, the full overlay
+  (Escape / CLOSE), persisted preset; tests for strip, panel fit, overlay, persistence, feed
+- Shared files touched (for the merge): `engine/src/engine.rs` (tap + hits hooks),
+  `engine/src/lib.rs`, `neu/src/lib.rs`, `app/src/app.rs`, `app/src/lib.rs`,
+  `app/src/ui/{mod,controls,transport_bar}.rs`, `app/tests/ui_renders.rs`,
+  `neu/examples/gallery.rs`, docs
+
 ## Later (ideas beyond M9, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
 

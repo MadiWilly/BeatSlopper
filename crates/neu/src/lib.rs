@@ -19,6 +19,9 @@
 //!   [`meter_fraction`]) and the square [`toggle_button_sized`] for mute / solo.
 //! * M7 editor: the [`piano_roll`] (notes as rounded bars on a step x pitch grid, with draw /
 //!   move / resize / delete gestures and the geometry helpers [`cell_at`], [`note_rect`]).
+//! * Visualizers ([`visualizer`]): six theme-matched drawings of the master output
+//!   ([`scope`], [`bars`], [`radial`], [`vector`], [`waves`], [`particles`]) over a
+//!   [`VisualInput`] with a [`VisualStyle`], and the [`PRESETS`] table ([`VisualPreset`]).
 
 pub mod button;
 pub mod knob;
@@ -33,6 +36,7 @@ pub mod step_cell;
 pub mod stepper;
 pub mod text;
 pub mod theme;
+pub mod visualizer;
 
 pub use button::{
     Icon, SMALL_DEPTH_MAX, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon,
@@ -66,6 +70,10 @@ pub use slider::{
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};
 pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode};
+pub use visualizer::{
+    OFF_PRESET, PRESETS, Palette, VisualInput, VisualPreset, VisualStyle, Visualizer, bars,
+    particles, radial, scope, vector, visualizer as show_visualizer, waves,
+};
 
 pub use step_cell::{
     ACCENT_MARKER, BEAT_NUMBER_HEIGHT, PLAYHEAD_DOT_CURRENT, PLAYHEAD_DOT_IDLE,

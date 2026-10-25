@@ -104,8 +104,11 @@ use crate::midi::{MidiConnection, MidiInput, UI_QUEUE_CAPACITY};
 use crate::presets;
 use crate::project::ExportJob;
 use crate::shortcuts::{self, Shortcut};
+use crate::spectrum::Spectrum;
 use crate::undo::{Snapshot, UndoStack};
 use crate::window;
+use engine::{ScopeReader, ScopeWindow};
+use neu::{VisualInput, VisualPreset};
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
@@ -140,6 +143,17 @@ pub const ROLL_EXTRA_ROWS_KEY: &str = "roll_extra_rows";
 /// Most extra rows the roll can be dragged to (the default roll shows about 16 rows, so the
 /// whole MIDI range fits at the maximum).
 pub const MAX_ROLL_EXTRA_ROWS: usize = 112;
+/// eframe storage key for the chosen visualizer preset (index into [`neu::PRESETS`]).
+pub const VISUAL_PRESET_KEY: &str = "visual_preset";
+
+/// Preset shown on a fresh install ("Soft Scope").
+pub const DEFAULT_VISUAL_PRESET: usize = 0;
+
+/// How long after the last drum hit the visuals keep repainting (particles, rings).
+pub const VISUAL_HIT_TAIL: Duration = Duration::from_millis(1500);
+
+/// Scope window samples below this count as silence for the repaint decision.
+pub const SCOPE_SILENT: f32 = 1e-4;
 
 /// How fast a shown meter falls after its peak, in dB per second (M6).
 pub const METER_DECAY_DB_PER_S: f32 = 20.0;
@@ -181,13 +195,15 @@ pub enum PendingAction {
     Open,
 }
 
-/// Which panel the right-hand column shows (M5): the PROJECT panel or the SONG CHAIN panel.
-/// The column has room for one at a time; switching the play mode switches the tab too.
+/// Which panel the right-hand column shows (M5): the PROJECT panel, the SONG CHAIN panel or
+/// the VISUALIZER panel. The column has room for one at a time; switching the play mode
+/// switches the tab too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RightTab {
     #[default]
     Project,
     Chain,
+    Visual,
 }
 
 /// Which panel the top row's right-hand slot shows (M6): the FX rack or the MIXER. Both heads
@@ -495,6 +511,27 @@ pub struct AppState {
     pub midi_note_on_count: u64,
     /// MIDI note-offs applied through [`AppState::poll_midi`] (diagnostics).
     pub midi_note_off_count: u64,
+
+    // ---- Visualizers ----
+    /// Index into [`neu::PRESETS`] of the chosen visualizer preset (persisted).
+    pub visual_preset: usize,
+    /// Whether the visualizer is popped out over the SYNTH | FX row (Escape closes).
+    pub visual_full: bool,
+    /// The master-output tap's reader (taken from the engine handle once; `None` once taken
+    /// by something else or when the engine was built without one).
+    pub scope: Option<ScopeReader>,
+    /// The latest 2048 frames of master output, drained from `scope` every frame.
+    pub scope_window: ScopeWindow,
+    /// The spectrum analyser over `scope_window` (64 log bands, smoothed).
+    pub spectrum: Spectrum,
+    /// Drum rows that hit since the previous frame (`EngineHandle::take_hits`).
+    pub visual_hits: u8,
+    /// When `update_visuals` last ran (for the spectrum release `dt`).
+    pub visual_updated: Option<Instant>,
+    /// When a drum hit was last seen (the visuals keep repainting for [`VISUAL_HIT_TAIL`]).
+    pub visual_last_hit: Option<Instant>,
+    /// Where the SYNTH | FX row was drawn last frame (the full overlay covers it).
+    pub top_row_rect: Option<egui::Rect>,
 }
 
 /// Where a note event came from, which decides whether the UI path tells the engine.
@@ -523,6 +560,9 @@ impl AppState {
     fn from_parts(mode: ThemeMode, mut engine: EngineHandle, audio: Option<AudioOutput>) -> Self {
         // The MIDI queue producer is taken once, right here, so a later connection can own it.
         let midi_handle = engine.take_midi_handle();
+        // So is the master-output tap's reader (the visualizers drain it every frame).
+        let scope = engine.take_scope_reader();
+        let sample_rate = audio.as_ref().map_or(48_000.0, AudioOutput::sample_rate);
         Self {
             theme_override: None,
             mode,
@@ -585,6 +625,15 @@ impl AppState {
             midi_failed_port: None,
             midi_note_on_count: 0,
             midi_note_off_count: 0,
+            visual_preset: DEFAULT_VISUAL_PRESET,
+            visual_full: false,
+            scope,
+            scope_window: ScopeWindow::new(),
+            spectrum: Spectrum::new(sample_rate),
+            visual_hits: 0,
+            visual_updated: None,
+            visual_last_hit: None,
+            top_row_rect: None,
         }
     }
 
@@ -1946,9 +1995,95 @@ impl AppState {
             if escape && self.roll_selected.is_some() {
                 self.roll_selected = None;
             }
+            if escape && self.visual_full {
+                self.visual_full = false;
+            }
             ctx.input(|i| self.input.handle_events(&i.events))
         };
         self.apply_note_events(&events);
+    }
+
+    // ---- Visualizers ----
+
+    /// Chooses a visualizer preset by index into [`neu::PRESETS`] (out-of-range indices clamp
+    /// to the last entry, "Off"). A setting, not a project edit.
+    pub fn set_visual_preset(&mut self, index: usize) {
+        self.visual_preset = index.min(neu::PRESETS.len() - 1);
+    }
+
+    /// The chosen visualizer preset.
+    #[must_use]
+    pub fn visual_preset(&self) -> &'static VisualPreset {
+        neu::visualizer::preset(self.visual_preset)
+    }
+
+    /// Pops the visualizer out over the SYNTH | FX row, or puts it back.
+    pub fn set_visual_full(&mut self, full: bool) {
+        self.visual_full = full;
+    }
+
+    /// Flips [`set_visual_full`](Self::set_visual_full).
+    pub fn toggle_visual_full(&mut self) {
+        self.visual_full = !self.visual_full;
+    }
+
+    /// Per-frame visualizer feed: drains the master-output tap into the scope window, takes
+    /// this frame's drum hits and (unless the visualizer is off) runs the spectrum analyser
+    /// on the window. Called by `tick` after the meters.
+    pub fn update_visuals(&mut self) {
+        let now = Instant::now();
+        let dt = self
+            .visual_updated
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        self.visual_updated = Some(now);
+        let drained = self
+            .scope
+            .as_mut()
+            .map_or(0, |reader| reader.drain_into(&mut self.scope_window));
+        self.visual_hits = self.engine.take_hits();
+        if self.visual_hits != 0 {
+            self.visual_last_hit = Some(now);
+        }
+        if self.visual_preset().is_off() {
+            return;
+        }
+        if drained > 0 || self.spectrum.is_active() {
+            self.spectrum.analyse(self.scope_window.mono(), dt);
+        }
+    }
+
+    /// `true` while the visualizers have something moving to draw (audio running or still
+    /// decaying, a recent hit), so the UI keeps repainting. Always `false` when off.
+    #[must_use]
+    pub fn visuals_active(&self) -> bool {
+        if self.visual_preset().is_off() {
+            return false;
+        }
+        let recent_hit = self
+            .visual_last_hit
+            .is_some_and(|at| at.elapsed() < VISUAL_HIT_TAIL);
+        self.playing
+            || self.playhead.playing
+            || self.meters_active()
+            || self.spectrum.is_active()
+            || recent_hit
+            || !self.scope_window.is_silent(SCOPE_SILENT)
+    }
+
+    /// This frame's [`VisualInput`]: the left and right scope windows, the spectrum bands,
+    /// the decayed master meters as the peak, the hit bits, the playhead within the bar.
+    #[must_use]
+    pub fn visual_input(&self, time: f64) -> VisualInput<'_> {
+        VisualInput {
+            samples: self.scope_window.left(),
+            samples_r: Some(self.scope_window.right()),
+            spectrum: self.spectrum.bins(),
+            peak: (self.shown_meters.master[0], self.shown_meters.master[1]),
+            hits: self.visual_hits,
+            playhead: (f32::from(self.playhead.step) + self.playhead.frac) / STEPS as f32,
+            bpm: self.bpm,
+            time,
+        }
     }
 
     /// Flips the theme mode as a manual choice (stored as the override).
@@ -2293,6 +2428,13 @@ pub struct BeatSlopperApp {
     plugins: PluginHost,
 }
 
+/// The persisted visualizer preset index ([`VISUAL_PRESET_KEY`]), if the storage has a valid
+/// one (an index past the table is ignored).
+#[must_use]
+pub fn load_visual_preset(storage: &dyn Storage) -> Option<usize> {
+    eframe::get_value::<usize>(storage, VISUAL_PRESET_KEY).filter(|i| *i < neu::PRESETS.len())
+}
+
 impl BeatSlopperApp {
     /// Builds the app: loads the persisted theme override, preset, project path and export
     /// repeats, opens audio (failure is logged and tolerated) and applies the initial theme.
@@ -2330,6 +2472,7 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<PluginWindows>(s, PLUGIN_WINDOWS_KEY))
             .unwrap_or_default();
+        let visual_preset = cc.storage.and_then(load_visual_preset);
 
         let mut state = AppState::with_audio(mode);
         // Windows that were open last time reopen where they were (never in the smoke test).
@@ -2344,6 +2487,7 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<usize>(s, ROLL_EXTRA_ROWS_KEY));
         state.set_roll_extra_rows(roll_extra_rows.unwrap_or(0));
+        state.set_visual_preset(visual_preset.unwrap_or(DEFAULT_VISUAL_PRESET));
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -2498,6 +2642,7 @@ impl BeatSlopperApp {
         self.state.flush_outbox();
         self.state.update_playhead();
         self.state.update_meters();
+        self.state.update_visuals();
         self.state.poll_export();
         self.state.expire_status();
         // Shortcuts first, so their keys are consumed before the piano sees the frame.
@@ -2516,11 +2661,13 @@ impl BeatSlopperApp {
         if self.state.playing
             || self.state.playhead.playing
             || self.state.meters_active()
+            || self.state.visuals_active()
             || midi_events > 0
             || !self.state.outbox.is_empty()
         {
             // The playhead moves between frames; keep drawing while the loop runs, while the
-            // meters are still falling, and while the outbox has messages waiting.
+            // meters are still falling, while the visualizers have audio or a recent hit to
+            // animate, and while the outbox has messages waiting.
             ctx.request_repaint();
         } else if self.state.is_exporting() || self.state.status.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -2636,6 +2783,7 @@ impl App for BeatSlopperApp {
             PLUGIN_WINDOWS_KEY,
             &self.plugins.geometry(self.state.plugin_open),
         );
+        eframe::set_value(storage, VISUAL_PRESET_KEY, &self.state.visual_preset);
     }
 
     fn persist_egui_memory(&self) -> bool {

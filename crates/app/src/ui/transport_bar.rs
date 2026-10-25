@@ -7,9 +7,11 @@
 //! `SetSwing`), the large concentric dial (`neu::dial` Lg bound to `MasterGain`, shown in %),
 //! the MODE group (M5: `Pattern | Song` `segmented` bound to `SetPlayMode` over the position
 //! text `"A · bar 2/4"` / `"SONG 3/5 · B"` from `Position`),
-//! then flush right: a small Test tone toggle, the MIDI group (M4: a "MIDI" lamp lit while a
-//! port is open, the connected port's name, and a port selector with a "None" entry) and the
-//! theme toggle (sun, switch, moon).
+//! then the mini visualizer strip ([`visualizer::strip`], up to 220 x 40, taking the room
+//! left before the right-hand group and hiding when there is none), then flush right: the
+//! MIDI group (M4: a "MIDI" lamp lit while a port is open, the connected port's name, a port
+//! selector with a "None" entry, and the small Test tone toggle under it) and the theme
+//! toggle (sun, switch, moon). With the strip on, the group gap tightens from 24 to 16.
 //!
 //! Play and Record show their ON state as an accent fill with the on-glow (the mock's
 //! `.icon-btn.on`); `neu::icon_button` has no on-state, so [`transport_button`] paints the
@@ -30,9 +32,13 @@ use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
 use crate::app::{AppState, EditKey, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
 use crate::shortcuts::Shortcut;
 use crate::ui::controls::{Knob, fmt_percent};
+use crate::ui::visualizer;
 
 /// Minimum height of the transport bar's content row (the dial normally sets it).
 const ROW_HEIGHT: f32 = 48.0;
+/// Width assumed for the right-hand group before it has been measured (first frame), so the
+/// mini visualizer does not push it out of the bar.
+const RIGHT_GROUP_FALLBACK_WIDTH: f32 = 340.0;
 /// Diameter of the transport icon buttons.
 pub const TRANSPORT_BUTTON: f32 = 48.0;
 /// Gap between the transport buttons (`.tp-group{gap:10px}`).
@@ -57,9 +63,17 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             .unwrap_or(ROW_HEIGHT)
             .max(ROW_HEIGHT);
         ui.set_min_height(row_height);
+        // The mock's group gap is 24; with the mini visualizer on, the bar tightens to 16 (the
+        // next step down the spacing scale that frees enough room) so the strip gets a usable
+        // width at 1280 without pushing the right-hand group out of the bar.
+        let gap = if state.visual_preset().is_off() {
+            theme.space_6
+        } else {
+            theme.space_4
+        };
         ui.horizontal(|ui| {
             ui.set_min_height(row_height);
-            ui.spacing_mut().item_spacing.x = theme.space_6;
+            ui.spacing_mut().item_spacing.x = gap;
 
             brand(ui, theme, state.audio_error.as_deref());
 
@@ -71,9 +85,13 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             ui.data_mut(|d| d.insert_temp(height_id, dial.rect.height()));
             mode_group(ui, state, theme);
 
-            // Right-align the remaining groups using the width they measured last frame.
+            // Right-align the remaining groups using the width they measured last frame; the
+            // mini visualizer takes whatever room is left between MODE and that group.
             let width_id = ui.scope_id().with("transport_right_width");
             let known_width: Option<f32> = ui.data(|d| d.get_temp(width_id));
+            let reserved = known_width.unwrap_or(RIGHT_GROUP_FALLBACK_WIDTH)
+                + ui.spacing().item_spacing.x * 2.0;
+            visualizer::strip(ui, state, theme, ui.available_width() - reserved);
             if let Some(width) = known_width {
                 let pad = ui.available_width() - width;
                 if pad > 0.0 {
@@ -83,8 +101,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             // `with_layout` takes the whole remaining rect, so the group spans the full row
             // height and its items centre on the same line as the dial and the buttons.
             let group = ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = theme.space_6;
-                test_tone_group(ui, state, theme);
+                ui.spacing_mut().item_spacing.x = gap;
                 midi_group(ui, state, theme);
                 theme_group(ui, state, theme);
             });
@@ -298,6 +315,9 @@ fn midi_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 label(ui, theme, &text);
             });
             midi_selector(ui, state, theme);
+            // The diagnostic Test tone pill sits under the selector (the column has the
+            // vertical room; the row does not have the width beside the visualizer strip).
+            test_tone_group(ui, state, theme);
         },
     );
     ui.data_mut(|d| d.insert_temp(height_id, column.response.rect.height()));

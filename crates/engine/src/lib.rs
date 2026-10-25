@@ -24,6 +24,8 @@
 //!   pan law; [`engine::Meters`] carries the per-block peaks to the UI.
 //! - [`spectrum`]: the lock-free master-output tap and FFT analyser behind the EQ plugin's
 //!   display; `fx::eq` and `fx::reverb` hold the plugin states ([`EqState`], [`ReverbState`]).
+//! - [`scope`]: the lock-free master-output tap ([`ScopeTap`] / [`ScopeReader`]) and the
+//!   drum-hit bitmask for the UI visualizers.
 
 #![warn(missing_docs)]
 
@@ -37,6 +39,7 @@ pub mod params;
 pub mod pattern;
 pub mod presets;
 pub mod project;
+pub mod scope;
 pub mod spectrum;
 pub mod synth;
 pub mod transport;
@@ -59,4 +62,5 @@ pub use pattern::{
 pub use project::{Project, ProjectError};
 
 pub use fx::{EqBand, EqKind, EqParam, EqState, ReverbParam, ReverbState};
+pub use scope::{SCOPE_CAPACITY_FRAMES, SCOPE_WINDOW_FRAMES, ScopeReader, ScopeTap, ScopeWindow};
 pub use spectrum::{Analyzer, SPECTRUM_BINS, SPECTRUM_SIZE, SpectrumReader};

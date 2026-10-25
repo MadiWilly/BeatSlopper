@@ -964,7 +964,8 @@ fn mode_switch_shows_the_song_chain_panel_and_add_remove_edit_the_chain() {
     let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
     harness.run_steps(2);
     radio(&harness, "Project");
-    assert!(harness.query_by_label("Song chain").is_none());
+    // The SONG CHAIN panel (its REPEATS stepper) is not showing in pattern mode.
+    assert!(harness.query_by_label("Repeats").is_none());
     harness.get_by_label("A · bar 1/1");
     harness.get_by_label(ui::project_bar::EXPORT_LOOP_LABEL);
 
@@ -974,7 +975,7 @@ fn mode_switch_shows_the_song_chain_panel_and_add_remove_edit_the_chain() {
     assert_eq!(state.bank.mode, engine::PlayMode::Song);
     assert_eq!(state.right_tab, app::app::RightTab::Chain);
     assert!(!state.dirty, "the mode is not a project edit");
-    harness.get_by_label("Song chain");
+    harness.get_by_label("Repeats");
     harness.get_by_label("SONG 1/1 · A");
     harness.get_by_label("Entry 1: A x1");
 
@@ -1789,4 +1790,265 @@ fn m8_groups_do_not_push_the_sequencer_down() {
     let bits = harness.get_by_label("Bits").rect();
     assert!(fm.min.y > glide.min.y, "the M8 row is below the M2 row");
     assert!(bits.min.y > drive.min.y, "LO-FI is below DRIVE");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Visualizers.
+
+use app::app::{RightTab, load_visual_preset};
+use app::ui::visualizer::{CLOSE_LABEL, FULL_LABEL, STRIP_SIZE};
+
+/// Renders the transport bar at 1240 wide with the given visualizer preset and returns the
+/// rects of the mini strip (if drawn), the MASTER dial and the Test tone pill.
+fn transport_with_preset(
+    mode: ThemeMode,
+    preset: usize,
+) -> (Option<egui::Rect>, egui::Rect, egui::Rect) {
+    let (mut state, _engine) = AppState::headless(mode);
+    state.set_visual_preset(preset);
+    let theme = Theme::for_mode(mode);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1240.0, 200.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::transport_bar::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(4);
+    let strip = harness
+        .query_by_label("Scope visualizer")
+        .map(|node| node.rect());
+    let master = harness.get_by_label("Master").rect();
+    let test_tone = harness.get_by_label("Test tone").rect();
+    (strip, master, test_tone)
+}
+
+#[test]
+fn transport_strip_renders_in_both_themes_without_growing_the_bar() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (none, master_off, tone_off) = transport_with_preset(mode, neu::OFF_PRESET);
+        assert!(none.is_none(), "Off draws no strip");
+        let (strip, master_on, tone_on) = transport_with_preset(mode, 0);
+        let strip = strip.expect("Soft Scope draws the strip at 1240 wide");
+        assert!(strip.width() <= STRIP_SIZE.x + 0.5 && strip.height() <= STRIP_SIZE.y + 0.5);
+        assert!(strip.width() >= ui::visualizer::STRIP_MIN_WIDTH);
+        // The dial sets the row height; the strip sits inside its vertical span.
+        assert!(strip.min.y >= master_on.min.y - 0.5 && strip.max.y <= master_on.max.y + 0.5);
+        assert_eq!(
+            master_on.height(),
+            master_off.height(),
+            "the bar keeps its height"
+        );
+        // The right-hand group stays inside the bar, to the right of the strip.
+        assert!(tone_on.min.x >= strip.max.x, "{tone_on:?} vs {strip:?}");
+        assert!(tone_on.max.x <= 1240.0 - 20.0 && tone_off.max.x <= 1240.0 - 20.0);
+    }
+}
+
+#[test]
+fn visualizer_panel_fits_the_right_column_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (mut state, _engine) = AppState::headless(mode);
+        state.right_tab = RightTab::Visual;
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 1140.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| {
+                    state.handle_keyboard(ui.ctx());
+                    ui::show(ui, state, &theme);
+                },
+                state,
+            );
+        harness.run_steps(4);
+        let octave = harness.get_by_label("Octave").rect();
+        let keys_panel_top = octave.min.y - 30.0;
+        // Panel drawing + transport strip both exist; the panel's is the lower one.
+        let mut scopes: Vec<egui::Rect> = harness
+            .query_all_by_label("Scope visualizer")
+            .map(|n| n.rect())
+            .collect();
+        assert_eq!(scopes.len(), 2, "strip + panel");
+        scopes.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+        let panel_scope = scopes[1];
+        assert!(
+            panel_scope.width() > 100.0 && panel_scope.height() > 40.0,
+            "{panel_scope:?}"
+        );
+        assert!(
+            panel_scope.max.y + 20.0 <= keys_panel_top,
+            "the panel ends at {} but KEYS starts at {keys_panel_top}",
+            panel_scope.max.y
+        );
+        // Inside the column: no wider than the panel's 220 pt inner width, right of the grid.
+        let bass = harness.get_by_label("Bass step 16").rect();
+        assert!(
+            panel_scope.width() <= 220.5 && panel_scope.min.x >= bass.max.x,
+            "{panel_scope:?}"
+        );
+        harness.get_by_label(FULL_LABEL);
+        harness.get_by_label(ui::visualizer::PRESET_LABEL);
+        harness.get_by_label("Soft Scope");
+        assert_eq!(harness.state().right_tab, RightTab::Visual);
+        assert!(!harness.state().visual_full);
+    }
+}
+
+#[test]
+fn full_toggle_opens_the_overlay_and_escape_or_close_shuts_it() {
+    let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+    state.right_tab = RightTab::Visual;
+    let theme = Theme::dark();
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| {
+                state.handle_keyboard(ui.ctx());
+                ui::show(ui, state, &theme);
+            },
+            state,
+        );
+    harness.run_steps(3);
+    assert!(harness.query_by_label(CLOSE_LABEL).is_none());
+
+    harness.get_by_label(FULL_LABEL).click();
+    harness.run_steps(3);
+    assert!(harness.state().visual_full);
+    let close = harness.get_by_label(CLOSE_LABEL).rect();
+    let top_row = harness
+        .state()
+        .top_row_rect
+        .expect("the top row was measured");
+    assert!(
+        top_row.contains_rect(close),
+        "CLOSE sits inside the overlay over the top row"
+    );
+    assert_eq!(
+        harness.query_all_by_label("Scope visualizer").count(),
+        3,
+        "strip + panel + overlay"
+    );
+
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(!harness.state().visual_full, "Escape closes the overlay");
+    assert!(harness.query_by_label(CLOSE_LABEL).is_none());
+
+    harness.get_by_label(FULL_LABEL).click();
+    harness.run_steps(3);
+    assert!(harness.state().visual_full);
+    harness.get_by_label(CLOSE_LABEL).click();
+    harness.run_steps(3);
+    assert!(!harness.state().visual_full, "CLOSE closes the overlay");
+}
+
+#[test]
+fn preset_pills_choose_a_preset_and_off_hides_the_drawing() {
+    let (mut state, _engine) = AppState::headless(ThemeMode::Light);
+    state.right_tab = RightTab::Visual;
+    let theme = Theme::light();
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(2);
+    // The overlay carries one pill per preset; the panel's stepper shows the chosen name.
+    harness.get_by_label(FULL_LABEL).click();
+    harness.run_steps(2);
+    harness.get_by_label("Orbit").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().visual_preset().name, "Orbit");
+    assert_eq!(
+        harness.query_all_by_label("Radial visualizer").count(),
+        3,
+        "strip + panel + overlay"
+    );
+    harness.get_by_label("Off").click();
+    harness.run_steps(2);
+    assert!(harness.state().visual_preset().is_off());
+    assert!(harness.query_by_label("Radial visualizer").is_none());
+    assert!(harness.query_by_label("Scope visualizer").is_none());
+    // Stepping past "Off" wraps to the first preset; the stepper label shows it.
+    harness.get_by_label(CLOSE_LABEL).click();
+    harness.run_steps(2);
+    harness.state_mut().set_visual_preset(neu::OFF_PRESET);
+    harness.run_steps(1);
+    harness.get_by_label("Off");
+    harness.state_mut().set_visual_preset(0);
+    harness.run_steps(1);
+    harness.get_by_label("Soft Scope");
+    assert!(
+        !harness.state().dirty,
+        "the visualizer is a setting, not a project edit"
+    );
+}
+
+#[derive(Default)]
+struct MemStorage(std::collections::HashMap<String, String>);
+
+impl eframe::Storage for MemStorage {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    fn flush(&mut self) {}
+}
+
+#[test]
+fn visual_preset_choice_is_persisted() {
+    use eframe::App;
+    let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let mut storage = MemStorage::default();
+    assert_eq!(load_visual_preset(&storage), None, "nothing stored yet");
+    app.state_mut().set_visual_preset(4);
+    app.save(&mut storage);
+    assert_eq!(load_visual_preset(&storage), Some(4));
+    app.state_mut().set_visual_preset(neu::OFF_PRESET);
+    app.save(&mut storage);
+    assert_eq!(load_visual_preset(&storage), Some(neu::OFF_PRESET));
+    // A stale index past the table is ignored rather than crashing.
+    eframe::Storage::set_string(&mut storage, app::app::VISUAL_PRESET_KEY, "99".to_owned());
+    assert_eq!(load_visual_preset(&storage), None);
+}
+
+#[test]
+fn rendered_audio_reaches_the_visualizer_feed() {
+    let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+    assert!(state.scope_window.is_silent(1e-6));
+    assert!(
+        !state.visuals_active(),
+        "silence, stopped: nothing to animate"
+    );
+    engine.set_test_tone(true);
+    let mut out = vec![0.0_f32; 4096 * 2];
+    engine.render(&mut out, 4096);
+    state.update_visuals();
+    assert!(
+        !state.scope_window.is_silent(1e-3),
+        "the tap filled the window"
+    );
+    assert!(state.spectrum.is_active(), "the analyser saw the tone");
+    let band = app::spectrum::Spectrum::band_of(440.0).unwrap();
+    assert_eq!(
+        state.spectrum.peak_bin(),
+        Some(band),
+        "A4 peaks in its band"
+    );
+    assert!(state.visuals_active());
+    let input = state.visual_input(1.0);
+    assert_eq!(input.samples.len(), engine::SCOPE_WINDOW_FRAMES);
+    assert_eq!(
+        input.samples_r.map(<[f32]>::len),
+        Some(engine::SCOPE_WINDOW_FRAMES)
+    );
+    assert_eq!(input.spectrum.len(), app::spectrum::BINS);
+    assert_eq!(input.hits, 0);
+    state.set_visual_preset(neu::OFF_PRESET);
+    assert!(!state.visuals_active(), "Off never asks for repaints");
 }

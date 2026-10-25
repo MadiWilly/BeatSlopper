@@ -14,6 +14,7 @@
 //! - [`presets`]: the built-in synth presets shown in the SYNTH panel.
 //! - [`project`]: save / load / WAV export glue over `engine::Project` (worker thread).
 //! - [`shortcuts`]: keyboard shortcuts as a pure mapping from egui input.
+//! - [`spectrum`]: the FFT spectrum analyser feeding the visualizers.
 //! - [`undo`]: the undo / redo snapshot stack.
 //! - [`ui`]: the panels, as functions over `&mut AppState` and `&neu::Theme`.
 //! - [`window`]: window sizing at display scaling and the title with the unsaved marker.
@@ -27,6 +28,7 @@ pub mod plugins;
 pub mod presets;
 pub mod project;
 pub mod shortcuts;
+pub mod spectrum;
 pub mod ui;
 pub mod undo;
 pub mod window;
