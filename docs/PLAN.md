@@ -352,3 +352,120 @@ builds the library on top. Same rules, gate, tags (m8, m9) and loop as before.
   1; every category has at least 8 presets; names unique; presets differ pairwise in at
   least 4 parameters; the browser filters by category and search (kittest); prev/next wrap.
 - Done = I can open the browser, pick "Lofi Piano" or "Nylon Guitar" and play it.
+
+---
+
+# Phase 4 brief (added 2026-10-25): M10 instrument tracks (layered rolls), M11 FL-style mixer
+
+The user's words: "i need mixing channels similar to FL + the biggest feature i want is the
+ability to layer different synths into a roll. I should be able to make a roll with a pad, add
+effects, reverb, etc. Then make another roll on top that is keys. I should have an easy list to
+see these as well. look at how ableton and FL studio does stuff." Research (2026-10-25, the
+FL Studio and Ableton Live manuals; sources in DECISIONS.md) settled the model:
+
+- **FL Studio Channel Rack:** one row per instrument; *every pattern holds notes for every
+  channel* (switching patterns changes the notes, never the instrument list); each row has a
+  mute light, pan and volume, a **mixer-track number box** and a channel button whose piano
+  roll edits that channel's notes; the *selected* channel receives live keyboard/MIDI input;
+  "Clone" copies the instrument's settings but not its notes.
+- **FL Studio Mixer:** insert tracks with effect slots; audio flows slots -> track EQ ->
+  fader/pan -> destination (master or another insert, so inserts can be groups); several
+  channels may share one insert; sends are post-fader; tracks are named and coloured; the
+  selected track's effects are what you edit; selected faders move together.
+- **Ableton Live:** a MIDI track = instrument + its effect chain + a mixer strip (volume, pan,
+  activator/mute, solo, arm, sends); tracks have names and colours; the selected track's
+  device chain is shown below the track list; an **Instrument Rack** layers sounds as parallel
+  chains, each with its own instrument, effects, volume, pan, mute and solo; return tracks
+  carry shared delay/reverb; group tracks sum their members.
+
+BeatSlopper copies the parts that fit a one-window app: tracks (FL channels / Ableton tracks)
+with per-track synth + inserts + notes per pattern, a Tracks list, ghost notes in the roll,
+the selected track receiving the keys, and later free channel-to-insert routing with effect
+slots. Same rules, gate, auto-fix policy, state files and loop. **Order:** finish M8 (engine
+wiring), then **M10**, then **M9** (the preset browser is per track, so tracks come first),
+then **M11**. Tag m8, m10, m9, m11. Stop the loop when M11 is done and green, or everything is
+blocked.
+
+## M10: Instrument tracks (layer synths into rolls)
+- **Model:** up to 8 instrument tracks (`MAX_TRACKS = 8`, fixed slots with an `active` flag;
+  a new project starts with one active track named "Synth"). A track owns: a name (<= 16
+  chars) and a colour index (8 accent-compatible swatches), a full set of the per-track
+  parameters (every `ParamId::is_synth()` id plus the synth-insert ids: drive, lo-fi, chorus,
+  sidechain), its own 16-voice `VoicePool`, its own stereo insert chain (drive -> lo-fi ->
+  chorus -> ducker), a preset name, and a mixer strip. Global and shared: delay, reverb, EQ,
+  master gain, limiter, BPM, swing, the drum kit.
+- **Notes:** every pattern holds a note list *per track* (`[NoteTrack; MAX_TRACKS]`, 64 notes
+  each; the drum rows are unchanged). The grid's bass lane and the piano roll edit the
+  **selected** track's notes; the roll draws the other active tracks' notes as **ghosts**
+  (dimmed, in the track's colour, not editable). Keyboard and MIDI play the selected track;
+  record-arm writes into it.
+- **Mixer:** channels become 5 drum rows + 8 tracks (`Channel::Track(u8)` or a 13-entry enum;
+  pick what keeps the M6 tests compiling with the least churn); inactive tracks' strips are
+  hidden. The MIXER panel scrolls horizontally when 13 strips do not fit; FL-style docks:
+  drums left, tracks middle, master right.
+- **Engine:** `SetEditTrack(u8)` chooses the track that `NoteOn/NoteOff`, `SetParam`, the
+  note messages and the keyboard target; explicit forms carry a track index too
+  (`SetTrackParam { track, id, value }`, `SetNote { track, .. }`, `ClearNotes { pattern,
+  track }`), so the UI can address any track. Track lifecycle messages: `SetTrackActive {
+  track, on }` (off releases its voices and clears its notes in every pattern), `CopyTrack {
+  from, to }` (settings only, FL "clone"), `SwapTracks(a, b)` (reorder: swaps params, voices'
+  settings, notes in every pattern and strips). All `Copy`; copying inside the engine is
+  fixed-size array work, no allocation. An inactive track costs no CPU; an idle voice returns
+  early. Add an `#[ignore]` release-mode perf test (8 tracks, 4-note chords, unison 7, 1 s of
+  audio renders in well under 1 s) that the orchestrator runs in the gate with `cargo test
+  --release -p engine -- --ignored`.
+- **Project v7:** `tracks: Vec<TrackState { name, colour, active, preset, params: BTreeMap }>`
+  and per-pattern `tracks` note lists; v6 and older load as one track "Synth" holding the
+  file's synth params, insert params and notes, with the synth strip as its strip. Export
+  honours every track.
+- **App:** a **TRACKS panel** (the right column gets a `Tracks` tab, and the sequencer head
+  shows the selected track's colour chip and name): one row per active track with colour chip,
+  name (double-click or a pencil to rename inline), preset name, `M` / `S`, a small level knob,
+  a `ROLL` pill (selects the track and switches to Roll view); `+ ADD` (new track with the
+  default preset, selected), `DUP` (clone settings, not notes), `DEL` (with the inline
+  "Discard?" style confirm), up/down arrows to reorder. The SYNTH panel head reads
+  "SYNTH · <track name>" and edits the selected track; the FX rack's DRIVE / LO-FI / CHORUS /
+  SIDECHAIN groups say "<track name>" and edit it too; the preset row applies to the selected
+  track. Undo covers every track operation. Shortcuts: `Ctrl+T` add track, `Ctrl+Shift+D`
+  duplicate, `Alt+Up/Down` select previous/next track.
+- **Tests:** two tracks with different presets render as the sum of each alone (no coupling
+  through shared state); muting track 2 leaves track 1 intact; notes on track 2 never trigger
+  track 1's voices; `SetEditTrack` routes `NoteOn`; a v6 project migrates into track 1 and
+  renders sample-identical to the pre-M10 output of the same file (store a reference render
+  hash in the test or compare against the v6 render path before the refactor lands); 8-track
+  project round-trips; `SetTrackActive off` clears notes in every pattern; `SwapTracks` keeps
+  notes with their track; kittest: add, rename, select, the synth head changes, the roll
+  shows ghosts, the mixer shows one strip per active track, the whole-sequencer visibility
+  tests stay green.
+- **Done =** make a roll with a pad, add lo-fi and a reverb send, add a second track playing
+  keys on top, see both in the Tracks list, mute or solo each, save, reload, export.
+
+## M11: FL-style mixer (inserts, effect slots, routing)
+- **Model:** 16 insert tracks plus MASTER. Every source (5 drum rows, 8 instrument tracks) has
+  an insert number (FL's number box; default drums 1..5, tracks 6..13; `0` = straight to
+  master). Several sources may share an insert (a drum bus). Each insert: name, colour, level,
+  pan, mute, solo, delay and reverb sends (post-fader), a built-in 3-band EQ (low shelf, peak,
+  high shelf, like FL's track EQ), **3 effect slots** choosing from a built-in list (Off,
+  Compressor, Drive, Lo-fi, Chorus, EQ3 extra) each with its own small parameter set, and a
+  `route to` destination (MASTER or a *higher-numbered* insert, so groups and sub-groups work
+  and feedback is impossible by construction), and a meter. Sources keep the M10 per-track
+  inserts (drive, lo-fi, chorus, ducker) before the insert, like FL's channel -> insert order.
+- **DSP:** feed-forward peak compressor (threshold, ratio, attack, release, makeup, gain
+  reduction meter), 3-band EQ from the biquads in `fx/eq.rs`; everything pre-allocated, no
+  allocation on route changes.
+- **Project v8:** `inserts: Vec<InsertState>`, per-source `insert` numbers; v7 strips become
+  inserts 1..13 with the sources routed one-to-one, so an old project sounds the same.
+- **App:** the MIXER panel becomes the FL layout: scrollable inserts with name (rename
+  inline), colour, slot pills (click to pick an effect, its knobs appear under the strip or in
+  a pop-out like the EQ window), EQ3 knobs, route-to selector, sends, fader + meter, M / S;
+  the selected source's insert is highlighted; the TRACKS panel rows and the drum rows get the
+  insert number box; "LINK TO NEW INSERT" on a track row (FL Ctrl+L); selected faders move
+  together with Shift-select. Undo covers every mixer edit.
+- **Tests:** two sources routed to one insert sum there and a muted insert silences both;
+  route-to groups (kick + snare -> DRUMS insert -> master) and the feedback rule (route to a
+  lower number is refused); compressor reduces the peak of a loud burst and leaves a quiet
+  signal alone; EQ3 shelves measurably cut lows / highs; slot order matters (drive before
+  lo-fi differs from after); v7 migration renders sample-identical; kittest: pick a slot
+  effect, rename an insert, route a track, meters show.
+- **Done =** route kick, snare and clap to one DRUMS insert, compress it, and mute it with one
+  button; put the keys track through a chorus slot; everything saves and exports.

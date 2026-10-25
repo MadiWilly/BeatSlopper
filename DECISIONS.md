@@ -252,3 +252,34 @@ whether they fight; findings and choices:
   name and the whole-app tests query it by label.
 - `neu::knob_noted` (a knob whose tooltip carries a second line) was added rather than
   stacking a second `on_hover_text` on the response, so a knob keeps one tooltip.
+
+
+## 2026-10-25: Phase 4 (instrument tracks, FL-style mixer) and the milestone order
+The user asked for FL-style mixing channels and, as the biggest feature, layering different
+synths into a roll (a pad roll with effects and reverb, then a keys roll on top) with an easy
+list of them, modelled on how FL Studio and Ableton Live do it. The model and the reasons:
+- **Tracks, not a "layer" flag.** FL's Channel Rack and Ableton's track list both treat an
+  instrument as a row that owns its sound, its effects and a mixer strip, and FL stores notes
+  for *every* channel in *every* pattern. BeatSlopper's `Pattern` therefore carries a note
+  list per track, the selected track receives the keyboard and MIDI (FL's channel selector
+  rule), and the roll ghosts the other tracks (what producers use to line up a layer).
+  Ableton's Instrument Rack (parallel chains under one note stream) was considered and
+  rejected for now: two tracks playing the same notes give the same result, and tracks also
+  cover the "different notes per layer" case the rack does not.
+- **Per-track vs global effects.** Drive, lo-fi, chorus and the sidechain ducker move into
+  the track (FL: channel -> its insert; Ableton: the track's device chain). Delay, reverb and
+  the master EQ stay shared returns (Ableton return tracks, FL send tracks); the mixer's sends
+  already express "how much of this track goes to the reverb".
+- **Order M8 -> M10 -> M9 -> M11.** The preset browser (M9) picks a preset *for a track*, so
+  tracks land first and the browser is built once. The FL mixer (M11: inserts, effect slots,
+  free routing, groups) sits on top of tracks and is the user's second ask.
+- **M11 routing rule.** An insert may route only to MASTER or a higher-numbered insert, so a
+  feedback loop cannot be expressed (FL greys out sources that would loop; a static rule is
+  simpler and testable).
+- Sources read for this design: FL Studio manual, Mixer
+  (https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/mixer.htm),
+  Mixer routing (…/mixer_iorouting.htm), Channel Rack (…/channelrack.htm), Layer channel
+  (…/chansettings_layer.htm); Ableton Live 12 manual, Mixing
+  (https://www.ableton.com/en/live-manual/12/mixing/), Instrument, Drum and Effect Racks
+  (https://www.ableton.com/en/live-manual/12/instrument-drum-and-effect-racks/), Working with
+  Instruments and Effects (https://www.ableton.com/en/live-manual/12/working-with-instruments-and-effects/).

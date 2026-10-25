@@ -82,7 +82,7 @@ yet, leave it; its session reports to the old orchestrator session, so check the
 ## Loop command for the new session
 Paste this to run unattended:
 
-    /loop Continue the BeatSlopper build: read docs/HANDOFF.md first, then follow docs/PLAN.md "Loop procedure" and the "Phase 3 brief", using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state; merge the side-session branches listed in HANDOFF.md into main as they finish. Stop the loop when M9 is done and green and every finished branch is merged, or everything is blocked.
+    /loop Continue the BeatSlopper build: read docs/HANDOFF.md first, then follow docs/PLAN.md "Loop procedure" with the "Phase 3 brief" and the "Phase 4 brief" (order M8 -> M10 -> M9 -> M11), using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state; merge the side-session branches listed in HANDOFF.md into main as they finish. Stop the loop when M11 is done and green and every finished branch is merged, or everything is blocked.
 
 ## Added after the handoff was written
 - `madi/design-cleanup-3a9db8` (session "Design cleanup: selection states and polish"): the
@@ -91,3 +91,13 @@ Paste this to run unattended:
   it like the others when its session reports done.
 - Main now also carries the M8 synth DSP commit (77dd850); M8 still needs only the engine
   wiring listed above, then the gate and tag m8.
+
+## Taken over 2026-10-25 (second orchestrator)
+- Every branch above (test-feedback, plugins-eq-reverb, visualizers, qol-polish, design-cleanup,
+  reverb-audit) had no commits left outside main at takeover; only `madi/test-feedback-deb72b`
+  may still grow (the user's live session): check `git log main..madi/test-feedback-deb72b`.
+- `project::FORMAT_VERSION` is already 6 (the plugins branch bumped it); M8 adds no bump.
+- New Phase 4 brief (docs/PLAN.md): M10 instrument tracks (layer synths into rolls, Tracks list,
+  ghost notes, selected track gets the keys), M11 FL-style mixer (inserts, slots, routing).
+  Order: M8 wiring -> M10 -> M9 -> M11. Interfaces in docs/ARCHITECTURE.md, reasons and sources
+  in DECISIONS.md.

@@ -827,3 +827,43 @@ format change.
   next entry after the current project. Missing files are dropped with a status line.
 - Window title: `BeatSlopper – file * · 128 BPM · A` (`window_title_full`).
 - Clean-up: the brand sub-label no longer names a milestone.
+
+## M10 additions (instrument tracks)
+
+### engine
+- `track.rs`: `MAX_TRACKS = 8`, `TrackId = u8` (`0..MAX_TRACKS`). `Track { active: bool,
+  pool: VoicePool, insert: SynthInsert (drive -> lo-fi -> chorus -> ducker, stereo out),
+  params: [f32; ParamId::COUNT] (only per-track ids are meaningful) }`; `TrackState { name:
+  String (<= 16), colour: u8 (0..8), active: bool, preset: String, params: BTreeMap<String,
+  f32> }` is the serde form. `ParamId::is_track()` = `is_synth() || is_synth_insert()`
+  (drive, lo-fi, chorus, sidechain); everything else is global.
+- `pattern.rs`: `NoteTrack { notes: [Note; MAX_NOTES], note_count: u8 }`; `Pattern.tracks:
+  [NoteTrack; MAX_TRACKS]` replaces `notes` / `note_count`; `Pattern.synth` (the lane) is the
+  derived view of the *edit* track and is rebuilt when the edit track changes. The note
+  helpers take a `track: TrackId`.
+- `mixer.rs`: `Channel` grows to 5 drum rows + 8 tracks (`Channel::Track(u8)`), `Channel::COUNT
+  = 13`; `MixerState.strips` follows; `effective_gain` unchanged; `Meters.channel` follows.
+- `engine.rs`: `tracks: [Track; MAX_TRACKS]`, `edit_track: TrackId`. Render per sample: drums
+  -> rows; each active track: `pool.tick()` -> `insert.process(x) -> (l, r)` -> its mixer
+  channel (stereo inputs: `mix_frame` takes `[(f32, f32); Channel::COUNT]`); the kick trigger
+  calls every active track's ducker. Messages: `SetEditTrack(u8)`, `SetTrackParam { track, id,
+  value }`, `SetNote { track, .. }`, `ClearNotes { pattern, track }`, `SetTrackActive { track,
+  on }`, `CopyTrack { from, to }`, `SwapTracks(u8, u8)`; `NoteOn/NoteOff/SetParam` and the
+  older note messages act on the edit track. `seq_active` becomes per track.
+- `project.rs`: v7 (`tracks: Vec<TrackState>`, patterns carry `tracks`); the v6 loader maps
+  `params` (track ids) + `notes` + the Synth strip into track 0.
+
+### app
+- `AppState.tracks: Vec<TrackUi { name, colour, preset_name, modified }>`, `edit_track`,
+  `params` becomes per track (`track_params: [[f32; COUNT]; MAX_TRACKS]`, the global ids live
+  in `params` still); `set_param` sends `SetTrackParam` for track ids.
+- `ui/tracks.rs`: the TRACKS panel (right-column tab `Tracks`); `ui/sequencer.rs` head shows
+  the edit track; `neu::piano_roll` gains a `ghosts: &[(Note, colour)]` input.
+
+## M11 additions (FL-style mixer)
+- `inserts.rs`: `INSERT_COUNT = 16`, `Insert { level, pan, mute, solo, sends, eq3: Eq3,
+  slots: [Slot; 3], route: Route::{Master, Insert(u8 > self)} }`, `Slot::{Off, Compressor(..),
+  Drive(..), Lofi(..), Chorus(..), Eq3(..)}` with fixed-size parameter arrays; sources carry
+  `insert: u8` (`0` = master). `fx/compressor.rs`, `fx/eq3.rs`. Render: sources -> their
+  track inserts -> insert buses (summed, processed in ascending number order so a route to a
+  higher insert is already available) -> master. Project v8.

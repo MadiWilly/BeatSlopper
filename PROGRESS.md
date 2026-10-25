@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M8 (Synthesis extensions) for an EDM + Joji-style lofi preset library (M9). M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** M8 engine wiring, then Phase 4 order M10 (instrument tracks) -> M9 (presets) -> M11 (FL mixer); see docs/PLAN.md "Phase 4 brief". M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -61,8 +61,10 @@
 release build, smoke exit 0).
 
 ## Next action
-HANDOFF: see docs/HANDOFF.md. The next orchestrator session pulls, finishes the M8 engine wiring
-(synth insert, ducker, v6), gates and tags m8, then M9, merging side-session branches as they finish.
+Orchestrator took over 2026-10-25 (all side-session branches merged). 1) Finish the M8 engine
+wiring (synth insert, ducker, tests), gate, tag m8. 2) M10 instrument tracks (Phase 4 brief).
+3) M9 presets + per-track browser. 4) M11 FL-style mixer. Re-merge `madi/test-feedback-deb72b`
+whenever it gains commits.
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
@@ -100,6 +102,16 @@ HANDOFF: see docs/HANDOFF.md. The next orchestrator session pulls, finishes the 
 - [ ] engine: 80+ categorised presets with tags, search helpers, per-preset tests
 - [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
 - [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
+
+## M10: Instrument tracks (layer synths into rolls; Phase 4 brief in docs/PLAN.md)
+- [ ] engine: `track.rs` (8 tracks: own voice pool, per-track params, stereo insert chain), per-track note lists in every pattern, edit-track routing, lifecycle messages, 13 mixer channels, project v7 with v6 migration (sample-identical render)
+- [ ] app: TRACKS panel (list, add/dup/del/rename/reorder, M/S, ROLL), synth panel + FX insert groups follow the selected track, roll ghosts, mixer strips per track, undo, shortcuts
+- [ ] Tests per PLAN.md M10 (incl. the release perf test); gate green, tag m10
+
+## M11: FL-style mixer (inserts, effect slots, routing)
+- [ ] engine: 16 inserts + master, source -> insert numbers, EQ3 + compressor DSP, 3 effect slots, route-to higher inserts, project v8 with v7 migration
+- [ ] app: FL mixer layout (scrollable inserts, slot pills, EQ3, route selector, rename/colour, link to new insert), insert number boxes in TRACKS and drum rows, undo
+- [ ] Tests per PLAN.md M11; gate green, tag m11, final summary updated
 
 ## Visualizers (side branch `madi/visualizers-bc3bf5`, 2026-10-25)
 - [x] engine: lock-free master-output tap (`scope.rs`: `ScopeTap` / `ScopeReader` /
