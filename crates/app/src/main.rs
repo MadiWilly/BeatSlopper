@@ -30,7 +30,7 @@ fn native_options() -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("BeatSlopper")
             .with_app_id("beatslopper")
-            .with_inner_size([1280.0, 1080.0])
+            .with_inner_size([1280.0, 1140.0])
             .with_min_inner_size([1240.0, 760.0]),
         persist_window: true,
         ..Default::default()

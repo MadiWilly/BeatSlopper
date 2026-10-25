@@ -11,6 +11,8 @@
 //!   control).
 //! * [`knob`], [`segmented`], [`slider`]: the M2 controls (rotary knobs and the concentric
 //!   dial, the segmented selector, the thin vertical slider and the indicator lamp).
+//! * [`step_cell`]: the M3 sequencer pieces (step cells, the playhead dot row, beat numbers
+//!   and the row geometry helpers).
 
 pub mod button;
 pub mod knob;
@@ -46,4 +48,10 @@ pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, display, label, title, value};
 pub use theme::{ShadowPair, Theme, ThemeMode};
 
-pub use step_cell::{STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, playhead_dot, step_cell};
+pub use step_cell::{
+    ACCENT_MARKER, BEAT_NUMBER_HEIGHT, PLAYHEAD_DOT_CURRENT, PLAYHEAD_DOT_IDLE,
+    PLAYHEAD_ROW_HEIGHT, SELECT_RING, STEP_CELL, STEP_GAP, STEP_GROUP, STEP_GROUP_GAP,
+    StepCellSpec, StepRowOutput, beat_numbers, playhead_dot, playhead_row, playhead_tint,
+    step_cell, step_cell_named, step_gap_after, step_index_at, step_row, step_row_width,
+    step_x_offset, with_step_gaps,
+};

@@ -24,6 +24,7 @@
 pub mod drums;
 pub mod dsp;
 pub mod engine;
+pub mod export;
 pub mod fx;
 pub mod params;
 pub mod pattern;
@@ -41,4 +42,6 @@ pub use voice::{MAX_VOICES, SynthParams, VoicePool};
 
 pub use drums::DrumRow;
 pub use engine::Position;
+pub use export::{ExportError, ExportStats};
 pub use pattern::{DrumStep, Pattern, STEPS, SynthStep};
+pub use project::{Project, ProjectError};

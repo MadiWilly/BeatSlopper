@@ -16,15 +16,28 @@
 //! sends every value. After the audio stream starts, every parameter and the tempo are sent
 //! once so the engine matches the UI. The chosen preset index is persisted next to the theme
 //! override and re-applied on the next launch.
+//!
+//! Sequencer (M3): [`AppState::pattern`] is the UI's source of truth for the 16-step pattern.
+//! Every edit goes through a `set_*` / `toggle_*` / `clear_*` method that updates the mirror
+//! and sends the matching `Message` (one step per message; a whole-pattern resend is 16 * 6
+//! step messages plus the per-row volumes and tunes, see [`AppState::send_pattern`]). The
+//! playhead is read from `EngineHandle::position()` every frame while the transport runs.
+//! Note entry: a selected bass step takes the next note-on; with the transport playing and
+//! record armed, note-ons are quantised to the nearest step ([`quantise_step`]) and written to
+//! the bass lane. Save / load / export live in [`crate::project`].
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
-use engine::{EngineHandle, Message, ParamId};
+use engine::{DrumRow, EngineHandle, Message, ParamId, Pattern, Position, STEPS};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_io::AudioOutput;
 use crate::input::{InputState, NoteEvent};
 use crate::presets;
+use crate::project::ExportJob;
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
@@ -32,12 +45,31 @@ pub const THEME_OVERRIDE_KEY: &str = "theme_override";
 /// eframe storage key for the selected preset index.
 pub const PRESET_INDEX_KEY: &str = "preset_index";
 
-/// Tempo sent to the engine at startup (the M3 transport will own it).
+/// eframe storage key for the last project path.
+pub const PROJECT_PATH_KEY: &str = "project_path";
+
+/// eframe storage key for the export repeats choice.
+pub const EXPORT_REPEATS_KEY: &str = "export_repeats";
+
+/// Tempo of a fresh project.
 pub const DEFAULT_BPM: f32 = 120.0;
 
 /// Lowest / highest tempo the engine accepts (`Engine::set_bpm` clamps to the same range).
 pub const MIN_BPM: f32 = 60.0;
 pub const MAX_BPM: f32 = 200.0;
+
+/// Swing range offered by the SWING knob (fraction of a step odd steps are delayed by).
+pub const MIN_SWING: f32 = 0.0;
+pub const MAX_SWING: f32 = 0.75;
+
+/// Repeat counts offered by the EXPORT WAV selector.
+pub const EXPORT_REPEATS: [u32; 4] = [1, 2, 4, 8];
+
+/// How long a status line stays visible.
+pub const STATUS_DURATION: Duration = Duration::from_secs(5);
+
+/// A recorded note-on at or above this velocity becomes an accented step.
+pub const ACCENT_VELOCITY: f32 = 0.95;
 
 /// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
 #[must_use]
@@ -51,6 +83,18 @@ pub fn default_params() -> [f32; ParamId::COUNT] {
 
 /// Frames to render before `--smoke-test` closes the window.
 pub const SMOKE_TEST_FRAMES: u32 = 60;
+
+/// The step a note played at `position` is recorded to: the current step while less than half
+/// of it has elapsed, otherwise the next one (wrapping 15 -> 0).
+#[must_use]
+pub fn quantise_step(position: Position) -> usize {
+    let step = usize::from(position.step) % STEPS;
+    if position.frac >= 0.5 {
+        (step + 1) % STEPS
+    } else {
+        step
+    }
+}
 
 /// Serialisable mirror of [`ThemeMode`] for storage (keeps `neu` free of serde).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,8 +158,29 @@ pub struct AppState {
     pub params: [f32; ParamId::COUNT],
     /// Index into [`presets::ALL`] of the preset shown as selected.
     pub preset_index: usize,
-    /// Tempo in BPM (M3's transport will edit it; M2 only sends the default for the delay).
+    /// Tempo in BPM (`MIN_BPM..=MAX_BPM`).
     pub bpm: f32,
+    /// Swing amount (`MIN_SWING..=MAX_SWING`).
+    pub swing: f32,
+    /// UI-side mirror of the engine's pattern (source of truth for the grid).
+    pub pattern: Pattern,
+    /// Whether the UI asked the transport to run (the button state; `playhead.playing` is what
+    /// the audio thread reports).
+    pub playing: bool,
+    /// Record arm: while playing, note-ons are written to the bass lane.
+    pub armed: bool,
+    /// Bass-lane step selected for note entry.
+    pub selected_step: Option<usize>,
+    /// Playhead as last read from the engine (updated every frame by `tick`).
+    pub playhead: Position,
+    /// Path of the current project file (set by Open / Save As; persisted).
+    pub project_path: Option<PathBuf>,
+    /// Bars written by EXPORT WAV (one of [`EXPORT_REPEATS`]; persisted).
+    pub export_repeats: u32,
+    /// A short status line and when it was set (hidden after [`STATUS_DURATION`]).
+    pub status: Option<(String, Instant)>,
+    /// A running WAV export, if any (polled by `tick`).
+    pub export_job: Option<ExportJob>,
     /// `Some` while an output stream is running; `None` when no device could be opened.
     pub audio: Option<AudioOutput>,
     /// Set when the audio device could not be opened (shown in the transport bar).
@@ -139,7 +204,8 @@ impl AppState {
         (Self::from_parts(mode, handle, None), engine)
     }
 
-    /// Fresh state (defaults everywhere) around an engine handle and an optional stream.
+    /// Fresh state (defaults everywhere, the demo pattern) around an engine handle and an
+    /// optional stream.
     fn from_parts(mode: ThemeMode, engine: EngineHandle, audio: Option<AudioOutput>) -> Self {
         Self {
             theme_override: None,
@@ -149,6 +215,20 @@ impl AppState {
             params: default_params(),
             preset_index: 0,
             bpm: DEFAULT_BPM,
+            swing: 0.0,
+            pattern: Pattern::demo(),
+            playing: false,
+            armed: false,
+            selected_step: None,
+            playhead: Position {
+                step: 0,
+                frac: 0.0,
+                playing: false,
+            },
+            project_path: None,
+            export_repeats: EXPORT_REPEATS[0],
+            status: None,
+            export_job: None,
             audio,
             audio_error: None,
             input: InputState::new(),
@@ -159,14 +239,13 @@ impl AppState {
     }
 
     /// Tries to open the default audio device. On failure the app keeps running silently.
-    /// With a stream running, every parameter and the tempo are sent so the engine matches
-    /// the UI from the first buffer.
+    /// With a stream running, every parameter, the tempo, the swing and the whole pattern are
+    /// sent so the engine matches the UI from the first buffer.
     pub fn with_audio(mode: ThemeMode) -> Self {
         match AudioOutput::start(engine::new_engine) {
             Ok((audio, handle)) => {
                 let mut state = Self::from_parts(mode, handle, Some(audio));
-                state.resend_all_params();
-                state.set_bpm(DEFAULT_BPM);
+                state.resend_all();
                 state
             }
             Err(err) => {
@@ -176,6 +255,14 @@ impl AppState {
                 state
             }
         }
+    }
+
+    /// Sample rate of the running stream, or 48 kHz without one (offline export).
+    #[must_use]
+    pub fn sample_rate(&self) -> f32 {
+        self.audio
+            .as_ref()
+            .map_or(48_000.0, AudioOutput::sample_rate)
     }
 
     /// Flips the test tone and tells the engine.
@@ -224,6 +311,15 @@ impl AppState {
         }
     }
 
+    /// Sends everything the engine mirrors: parameters, tempo, swing and the whole pattern
+    /// (startup and project load).
+    pub fn resend_all(&mut self) {
+        self.resend_all_params();
+        self.engine.send(Message::SetBpm(self.bpm));
+        self.engine.send(Message::SetSwing(self.swing));
+        self.send_pattern();
+    }
+
     /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine.
     pub fn set_bpm(&mut self, bpm: f32) {
         let bpm = if bpm.is_finite() {
@@ -233,6 +329,17 @@ impl AppState {
         };
         self.bpm = bpm;
         self.engine.send(Message::SetBpm(bpm));
+    }
+
+    /// Stores the swing (clamped to [`MIN_SWING`]`..=`[`MAX_SWING`]) and tells the engine.
+    pub fn set_swing(&mut self, swing: f32) {
+        let swing = if swing.is_finite() {
+            swing.clamp(MIN_SWING, MAX_SWING)
+        } else {
+            0.0
+        };
+        self.swing = swing;
+        self.engine.send(Message::SetSwing(swing));
     }
 
     /// Selects preset `index` (clamped to the list): every parameter goes back to its default,
@@ -257,15 +364,227 @@ impl AppState {
             .map_or("", |preset| preset.name)
     }
 
-    /// Starts `note` (MIDI) at `velocity` (0..=1): tells the engine and lights the key.
+    // -----------------------------------------------------------------------------------------
+    // Transport.
+
+    /// Starts the loop from step 0.
+    pub fn play(&mut self) {
+        self.playing = true;
+        self.engine.send(Message::Play);
+    }
+
+    /// Stops the loop (the engine releases the sequencer's notes and rewinds).
+    pub fn stop(&mut self) {
+        self.playing = false;
+        self.engine.send(Message::Stop);
+    }
+
+    /// Play / Stop from one button.
+    pub fn toggle_play(&mut self) {
+        if self.playing {
+            self.stop();
+        } else {
+            self.play();
+        }
+    }
+
+    /// Flips the record arm (overdub into the bass lane while playing).
+    pub fn toggle_arm(&mut self) {
+        self.armed = !self.armed;
+    }
+
+    /// `true` while note-ons are being recorded into the bass lane.
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.playing && self.armed
+    }
+
+    /// Reads the playhead the audio thread last published.
+    pub fn update_playhead(&mut self) {
+        self.playhead = self.engine.position();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Pattern edits (mirror first, then the matching message).
+
+    /// Sets one drum step (step index wraps into `0..16`).
+    pub fn set_drum_step(&mut self, row: DrumRow, step: usize, on: bool, accent: bool) {
+        let step = step % STEPS;
+        // An off step carries no accent.
+        let accent = accent && on;
+        self.pattern.set_drum_step(row, step as u8, on, accent);
+        self.engine.send(Message::SetDrumStep {
+            row,
+            step: step as u8,
+            on,
+            accent,
+        });
+    }
+
+    /// A click on a drum cell: toggles the step; with shift, turns it on and flips the accent.
+    pub fn toggle_drum_step(&mut self, row: DrumRow, step: usize, shift: bool) {
+        let step = step % STEPS;
+        let current = self.pattern.drums[row.index()][step];
+        if shift {
+            self.set_drum_step(row, step, true, !(current.on && current.accent));
+        } else {
+            self.set_drum_step(row, step, !current.on, false);
+        }
+    }
+
+    /// Sets one bass-lane step (step index wraps into `0..16`).
+    pub fn set_synth_step(&mut self, step: usize, note: Option<u8>, accent: bool) {
+        let step = step % STEPS;
+        let note = note.map(|n| n.min(127));
+        let accent = accent && note.is_some();
+        self.pattern.set_synth_step(step as u8, note, accent);
+        self.engine.send(Message::SetSynthStep {
+            step: step as u8,
+            note,
+            accent,
+        });
+    }
+
+    /// A click on a bass cell: selects the step for note entry (a second click deselects).
+    /// With shift: flips the accent of a step that has a note, or gives an empty step the C
+    /// of the current keyboard octave.
+    pub fn click_synth_step(&mut self, step: usize, shift: bool) {
+        let step = step % STEPS;
+        if shift {
+            let current = self.pattern.synth[step];
+            match current.note {
+                Some(note) => self.set_synth_step(step, Some(note), !current.accent),
+                None => self.set_synth_step(step, Some(self.input.base_note()), false),
+            }
+        } else if self.selected_step == Some(step) {
+            self.selected_step = None;
+        } else {
+            self.selected_step = Some(step);
+        }
+    }
+
+    /// Clears the selected bass step (Delete / Backspace), keeping it selected.
+    pub fn clear_selected_step(&mut self) {
+        if let Some(step) = self.selected_step {
+            self.set_synth_step(step, None, false);
+        }
+    }
+
+    /// Clears one drum row (volume and tune stay).
+    pub fn clear_row(&mut self, row: DrumRow) {
+        self.pattern.clear_row(row);
+        self.engine.send(Message::ClearRow(row));
+    }
+
+    /// Clears the bass lane.
+    pub fn clear_synth(&mut self) {
+        self.pattern.clear_synth();
+        self.engine.send(Message::ClearSynth);
+    }
+
+    /// Clears every row and the bass lane.
+    pub fn clear_all(&mut self) {
+        self.pattern.clear_all();
+        self.engine.send(Message::ClearAll);
+    }
+
+    /// Per-row drum volume in dB (clamped by the pattern).
+    pub fn set_drum_volume(&mut self, row: DrumRow, db: f32) {
+        self.pattern.set_drum_volume(row, db);
+        let db = self.pattern.drum_volume[row.index()];
+        self.engine.send(Message::SetDrumVolume { row, db });
+    }
+
+    /// Per-row drum tune in semitones (clamped by the pattern).
+    pub fn set_drum_tune(&mut self, row: DrumRow, semitones: f32) {
+        self.pattern.set_drum_tune(row, semitones);
+        let semitones = self.pattern.drum_tune[row.index()];
+        self.engine.send(Message::SetDrumTune { row, semitones });
+    }
+
+    /// Sends the whole pattern as step messages (16 per drum row and 16 for the bass lane)
+    /// plus every row's volume and tune: [`PATTERN_MESSAGES`] messages in total.
+    pub fn send_pattern(&mut self) {
+        for row in DrumRow::ALL {
+            for (step, cell) in self.pattern.drums[row.index()].iter().enumerate() {
+                self.engine.send(Message::SetDrumStep {
+                    row,
+                    step: step as u8,
+                    on: cell.on,
+                    accent: cell.accent,
+                });
+            }
+        }
+        for (step, cell) in self.pattern.synth.iter().enumerate() {
+            self.engine.send(Message::SetSynthStep {
+                step: step as u8,
+                note: cell.note,
+                accent: cell.accent,
+            });
+        }
+        for row in DrumRow::ALL {
+            self.engine.send(Message::SetDrumVolume {
+                row,
+                db: self.pattern.drum_volume[row.index()],
+            });
+            self.engine.send(Message::SetDrumTune {
+                row,
+                semitones: self.pattern.drum_tune[row.index()],
+            });
+        }
+    }
+
+    /// Replaces the pattern and sends it to the engine.
+    pub fn set_pattern(&mut self, pattern: Pattern) {
+        self.pattern = pattern;
+        self.selected_step = None;
+        self.send_pattern();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Status line.
+
+    /// Shows `message` for [`STATUS_DURATION`].
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        self.status = Some((message.into(), Instant::now()));
+    }
+
+    /// The status line, if one is still showing.
+    #[must_use]
+    pub fn status_text(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .filter(|(_, since)| since.elapsed() < STATUS_DURATION)
+            .map(|(text, _)| text.as_str())
+    }
+
+    /// Drops an expired status line.
+    pub fn expire_status(&mut self) {
+        if self.status_text().is_none() {
+            self.status = None;
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Notes.
+
+    /// Starts `note` (MIDI) at `velocity` (0..=1): tells the engine and lights the key. A
+    /// selected bass step takes the note (and stays selected); otherwise, while playing and
+    /// armed, the note is quantised to the nearest step and recorded (accent at
+    /// [`ACCENT_VELOCITY`] or above). The note always sounds live.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
         let note = note.min(127);
+        let velocity = velocity.clamp(0.0, 1.0);
+        if let Some(step) = self.selected_step {
+            let accent = self.pattern.synth[step % STEPS].accent;
+            self.set_synth_step(step, Some(note), accent);
+        } else if self.is_recording() {
+            let step = quantise_step(self.playhead);
+            self.set_synth_step(step, Some(note), velocity >= ACCENT_VELOCITY);
+        }
         self.held_notes[usize::from(note)] = true;
         self.note_on_count += 1;
-        self.engine.send(Message::NoteOn {
-            note,
-            velocity: velocity.clamp(0.0, 1.0),
-        });
+        self.engine.send(Message::NoteOn { note, velocity });
     }
 
     /// Stops `note` (MIDI): tells the engine and unlights the key.
@@ -295,10 +614,25 @@ impl AppState {
 
     /// Reads this frame's egui events and plays the computer keyboard. While a text edit has
     /// focus the keys type instead of play; anything still held is released so no note sticks.
+    /// With a bass step selected, Delete / Backspace clear it and Escape deselects it.
     pub fn handle_keyboard(&mut self, ctx: &egui::Context) {
         let events = if ctx.text_edit_focused() {
             self.input.release_all()
         } else {
+            if self.selected_step.is_some() {
+                let (clear, deselect) = ctx.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
+                        i.key_pressed(egui::Key::Escape),
+                    )
+                });
+                if clear {
+                    self.clear_selected_step();
+                }
+                if deselect {
+                    self.selected_step = None;
+                }
+            }
             ctx.input(|i| self.input.handle_events(&i.events))
         };
         self.apply_note_events(&events);
@@ -332,6 +666,10 @@ impl AppState {
     }
 }
 
+/// Messages one [`AppState::send_pattern`] produces: 16 steps for each of the 5 drum rows and
+/// the bass lane, plus a volume and a tune per drum row.
+pub const PATTERN_MESSAGES: usize = STEPS * (DrumRow::COUNT + 1) + 2 * DrumRow::COUNT;
+
 /// The eframe application.
 pub struct BeatSlopperApp {
     /// Tokens for the mode currently applied to the egui context.
@@ -345,8 +683,8 @@ pub struct BeatSlopperApp {
 }
 
 impl BeatSlopperApp {
-    /// Builds the app: loads the persisted theme override, opens audio (failure is logged and
-    /// tolerated) and applies the initial theme.
+    /// Builds the app: loads the persisted theme override, preset, project path and export
+    /// repeats, opens audio (failure is logged and tolerated) and applies the initial theme.
     pub fn new(cc: &CreationContext<'_>, smoke_test: bool) -> Self {
         let theme_override: Option<ThemeMode> = cc
             .storage
@@ -357,12 +695,23 @@ impl BeatSlopperApp {
         let preset_index: Option<usize> = cc
             .storage
             .and_then(|s| eframe::get_value::<usize>(s, PRESET_INDEX_KEY));
+        let project_path: Option<PathBuf> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Option<PathBuf>>(s, PROJECT_PATH_KEY))
+            .flatten();
+        let export_repeats: Option<u32> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<u32>(s, EXPORT_REPEATS_KEY));
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
+        }
+        state.project_path = project_path;
+        if let Some(repeats) = export_repeats.filter(|r| EXPORT_REPEATS.contains(r)) {
+            state.export_repeats = repeats;
         }
 
         let mut app = Self {
@@ -428,11 +777,22 @@ impl BeatSlopperApp {
         }
     }
 
-    /// Per-frame logic (runs before the UI): theme sync, the computer-keyboard piano and the
-    /// smoke-test counter. Public so tests can drive a frame without an `eframe::Frame`.
+    /// Per-frame logic (runs before the UI): theme sync, playhead, export polling, the
+    /// computer-keyboard piano and the smoke-test counter. Public so tests can drive a frame
+    /// without an `eframe::Frame`.
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.sync_theme(ctx);
+        self.state.update_playhead();
+        self.state.poll_export();
+        self.state.expire_status();
         self.state.handle_keyboard(ctx);
+
+        if self.state.playing || self.state.playhead.playing {
+            // The playhead moves between frames; keep drawing while the loop runs.
+            ctx.request_repaint();
+        } else if self.state.is_exporting() || self.state.status.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
 
         if self.smoke_test {
             self.frames += 1;
@@ -470,6 +830,8 @@ impl App for BeatSlopperApp {
         let stored: Option<StoredThemeMode> = self.state.theme_override.map(Into::into);
         eframe::set_value(storage, THEME_OVERRIDE_KEY, &stored);
         eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index);
+        eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
+        eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -485,6 +847,7 @@ impl App for BeatSlopperApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::{DrumStep, SynthStep};
 
     #[test]
     fn override_beats_os_theme() {
@@ -605,6 +968,11 @@ mod tests {
         assert_eq!(state.params, default_params());
         assert_eq!(state.preset_index, 0);
         assert_eq!(state.bpm, DEFAULT_BPM);
+        assert_eq!(state.swing, 0.0);
+        assert_eq!(state.pattern, Pattern::demo());
+        assert!(!state.playing && !state.armed);
+        assert_eq!(state.selected_step, None);
+        assert_eq!(state.export_repeats, 1);
         assert_eq!(state.master_gain(), ParamId::MasterGain.default_value());
         assert!(state.limiter_on());
         for id in ParamId::ALL {
@@ -710,6 +1078,20 @@ mod tests {
     }
 
     #[test]
+    fn swing_is_clamped_and_sent() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_swing(2.0);
+        assert_eq!(state.swing, MAX_SWING);
+        state.set_swing(-1.0);
+        assert_eq!(state.swing, 0.0);
+        state.set_swing(f32::INFINITY);
+        assert_eq!(state.swing, 0.0);
+        state.set_swing(0.5);
+        engine.process_messages();
+        assert_eq!(engine.transport().swing(), 0.5);
+    }
+
+    #[test]
     fn resend_all_params_sends_one_message_per_id() {
         let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
         state.params[ParamId::DriveMix.index()] = 0.9;
@@ -727,5 +1109,318 @@ mod tests {
         state.mode = ThemeMode::Light; // what the toggle widget does
         assert!(state.commit_mode_change(ThemeMode::Dark));
         assert_eq!(state.theme_override, Some(ThemeMode::Light));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M3: transport and sequencer.
+
+    fn at(step: u8, frac: f32) -> Position {
+        Position {
+            step,
+            frac,
+            playing: true,
+        }
+    }
+
+    #[test]
+    fn quantisation_rounds_to_the_nearest_step_and_wraps() {
+        assert_eq!(quantise_step(at(3, 0.0)), 3);
+        assert_eq!(quantise_step(at(3, 0.49)), 3);
+        assert_eq!(quantise_step(at(3, 0.5)), 4);
+        assert_eq!(quantise_step(at(3, 0.99)), 4);
+        assert_eq!(quantise_step(at(15, 0.2)), 15);
+        assert_eq!(quantise_step(at(15, 0.5)), 0);
+        assert_eq!(quantise_step(at(15, 0.99)), 0);
+    }
+
+    #[test]
+    fn play_and_stop_reach_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert!(!engine.transport().is_playing());
+        state.play();
+        assert!(state.playing);
+        engine.process_messages();
+        assert!(engine.transport().is_playing());
+        assert!(state.engine.position().playing);
+
+        state.toggle_play();
+        assert!(!state.playing);
+        engine.process_messages();
+        assert!(!engine.transport().is_playing());
+        assert!(!state.engine.position().playing);
+
+        state.toggle_play();
+        assert!(state.playing);
+        state.toggle_arm();
+        assert!(state.armed && state.is_recording());
+        state.toggle_arm();
+        assert!(!state.is_recording());
+    }
+
+    #[test]
+    fn send_pattern_sends_every_step_volume_and_tune() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(PATTERN_MESSAGES, 16 * 6 + 10);
+        state.pattern.drum_volume[DrumRow::Snare.index()] = -6.0;
+        state.pattern.drum_tune[DrumRow::Kick.index()] = 3.0;
+        assert_ne!(engine.pattern(), &state.pattern);
+
+        let free_before = state.engine.free_slots();
+        state.send_pattern();
+        assert_eq!(free_before - state.engine.free_slots(), PATTERN_MESSAGES);
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern().drum_volume[DrumRow::Snare.index()], -6.0);
+        assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 3.0);
+    }
+
+    #[test]
+    fn resend_all_fits_the_queue_and_mirrors_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_bpm(140.0);
+        state.set_swing(0.25);
+        let free_before = state.engine.free_slots();
+        state.resend_all();
+        assert_eq!(
+            free_before - state.engine.free_slots(),
+            ParamId::COUNT + 2 + PATTERN_MESSAGES
+        );
+        engine.process_messages();
+        assert_eq!(engine.bpm(), 140.0);
+        assert_eq!(engine.transport().swing(), 0.25);
+        assert_eq!(engine.pattern(), &state.pattern);
+    }
+
+    #[test]
+    fn drum_clicks_toggle_and_shift_clicks_accent() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_pattern();
+        let kick = DrumRow::Kick.index();
+        // Demo: kick step 1 is off.
+        assert!(!state.pattern.drums[kick][1].on);
+        state.toggle_drum_step(DrumRow::Kick, 1, false);
+        assert_eq!(
+            state.pattern.drums[kick][1],
+            DrumStep {
+                on: true,
+                accent: false
+            }
+        );
+        // Shift on an unaccented step: stays on, gains the accent.
+        state.toggle_drum_step(DrumRow::Kick, 1, true);
+        assert_eq!(
+            state.pattern.drums[kick][1],
+            DrumStep {
+                on: true,
+                accent: true
+            }
+        );
+        // Shift again: still on, accent off.
+        state.toggle_drum_step(DrumRow::Kick, 1, true);
+        assert_eq!(
+            state.pattern.drums[kick][1],
+            DrumStep {
+                on: true,
+                accent: false
+            }
+        );
+        // Shift on an off step turns it on, accented.
+        state.toggle_drum_step(DrumRow::Snare, 2, true);
+        assert_eq!(
+            state.pattern.drums[DrumRow::Snare.index()][2],
+            DrumStep {
+                on: true,
+                accent: true
+            }
+        );
+        // A plain click on an accented step turns it off and drops the accent.
+        state.toggle_drum_step(DrumRow::Snare, 2, false);
+        assert_eq!(
+            state.pattern.drums[DrumRow::Snare.index()][2],
+            DrumStep::default()
+        );
+        // Step indices wrap like the engine's.
+        state.toggle_drum_step(DrumRow::Clap, 17, false);
+        assert!(state.pattern.drums[DrumRow::Clap.index()][1].on);
+
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+    }
+
+    #[test]
+    fn bass_clicks_select_and_shift_clicks_accent_or_add_a_note() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_pattern();
+        state.click_synth_step(0, false);
+        assert_eq!(state.selected_step, Some(0));
+        state.click_synth_step(5, false);
+        assert_eq!(state.selected_step, Some(5));
+        state.click_synth_step(5, false);
+        assert_eq!(state.selected_step, None);
+
+        // Demo step 0 has C2; shift flips its accent and leaves the selection alone.
+        assert_eq!(state.pattern.synth[0].note, Some(36));
+        state.click_synth_step(0, true);
+        assert_eq!(
+            state.pattern.synth[0],
+            SynthStep {
+                note: Some(36),
+                accent: true
+            }
+        );
+        state.click_synth_step(0, true);
+        assert!(!state.pattern.synth[0].accent);
+        assert_eq!(state.selected_step, None);
+
+        // Demo step 1 is a rest; shift gives it the keyboard's C (octave 4 = 60).
+        assert_eq!(state.pattern.synth[1].note, None);
+        state.click_synth_step(1, true);
+        assert_eq!(
+            state.pattern.synth[1],
+            SynthStep {
+                note: Some(60),
+                accent: false
+            }
+        );
+
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+    }
+
+    #[test]
+    fn a_selected_step_takes_the_next_note_and_delete_clears_it() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_pattern();
+        state.click_synth_step(3, false);
+        state.note_on(67, 0.8);
+        // The note sounds live and lands in the step; the selection stays put.
+        assert!(state.held_notes[67]);
+        assert_eq!(state.note_on_count, 1);
+        assert_eq!(state.pattern.synth[3].note, Some(67));
+        assert!(!state.pattern.synth[3].accent);
+        assert_eq!(state.selected_step, Some(3));
+        state.note_off(67);
+
+        // A second note replaces it (accent untouched).
+        state.set_synth_step(3, Some(67), true);
+        state.note_on(69, 1.0);
+        assert_eq!(
+            state.pattern.synth[3],
+            SynthStep {
+                note: Some(69),
+                accent: true
+            }
+        );
+
+        state.clear_selected_step();
+        assert_eq!(state.pattern.synth[3], SynthStep::default());
+        assert_eq!(state.selected_step, Some(3));
+
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+    }
+
+    #[test]
+    fn record_arm_quantises_note_ons_into_the_bass_lane() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_synth();
+        // Not playing: nothing is recorded even when armed.
+        state.toggle_arm();
+        state.playhead = at(2, 0.1);
+        state.note_on(60, 0.8);
+        assert!(state.pattern.synth.iter().all(|s| s.note.is_none()));
+        state.note_off(60);
+
+        state.play();
+        state.playhead = at(2, 0.1);
+        state.note_on(60, 0.8);
+        assert_eq!(
+            state.pattern.synth[2],
+            SynthStep {
+                note: Some(60),
+                accent: false
+            }
+        );
+        state.note_off(60);
+
+        // Late in the step: the next one; velocity >= 0.95 accents.
+        state.playhead = at(2, 0.6);
+        state.note_on(62, 1.0);
+        assert_eq!(
+            state.pattern.synth[3],
+            SynthStep {
+                note: Some(62),
+                accent: true
+            }
+        );
+        state.note_off(62);
+
+        // Wraps at the end of the bar.
+        state.playhead = at(15, 0.75);
+        state.note_on(64, 0.95);
+        assert_eq!(
+            state.pattern.synth[0],
+            SynthStep {
+                note: Some(64),
+                accent: true
+            }
+        );
+        // The notes still sounded live.
+        assert_eq!(state.note_on_count, 4);
+
+        // Playing but not armed: no recording.
+        state.toggle_arm();
+        state.playhead = at(8, 0.0);
+        state.note_on(65, 0.8);
+        assert_eq!(state.pattern.synth[8].note, None);
+    }
+
+    #[test]
+    fn clear_row_synth_and_all_reach_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_drum_volume(DrumRow::Kick, -3.0);
+        state.set_drum_tune(DrumRow::Kick, 99.0);
+        assert_eq!(state.pattern.drum_tune[DrumRow::Kick.index()], 12.0);
+
+        state.clear_row(DrumRow::Kick);
+        assert!(
+            state.pattern.drums[DrumRow::Kick.index()]
+                .iter()
+                .all(|s| !s.on)
+        );
+        assert!(
+            state.pattern.drums[DrumRow::Snare.index()]
+                .iter()
+                .any(|s| s.on)
+        );
+        // Volume and tune survive a row clear.
+        assert_eq!(state.pattern.drum_volume[DrumRow::Kick.index()], -3.0);
+
+        state.clear_synth();
+        assert!(state.pattern.synth.iter().all(|s| s.note.is_none()));
+        assert!(!state.pattern.is_empty());
+
+        state.clear_all();
+        assert!(state.pattern.is_empty());
+
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern().drum_volume[DrumRow::Kick.index()], -3.0);
+        assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 12.0);
+    }
+
+    #[test]
+    fn status_line_shows_then_expires() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.status_text(), None);
+        state.set_status("Saved");
+        assert_eq!(state.status_text(), Some("Saved"));
+        state.expire_status();
+        assert!(state.status.is_some());
+        // Backdate the status past its lifetime.
+        state.status = Some(("Saved".into(), Instant::now() - STATUS_DURATION * 2));
+        assert_eq!(state.status_text(), None);
+        state.expire_status();
+        assert!(state.status.is_none());
     }
 }

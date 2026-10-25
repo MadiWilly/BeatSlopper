@@ -256,6 +256,21 @@ pub fn toggle(
     response
 }
 
+/// Whether shift is held for a click this frame: the raw modifier state, or the modifiers
+/// carried by this frame's pointer-button events (synthetic clicks, e.g. under `egui_kittest`,
+/// deliver shift only on the event).
+pub fn click_shift(ui: &Ui) -> bool {
+    ui.input(|i| {
+        i.modifiers.shift
+            || i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton { modifiers, .. } if modifiers.shift
+                )
+            })
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // Layout helpers.
 

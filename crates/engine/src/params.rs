@@ -269,6 +269,49 @@ impl ParamId {
         }
     }
 
+    /// Stable snake_case name used in project files (`"osc1_wave"`, `"filter_cutoff"`, ...).
+    ///
+    /// Unlike [`label`](Self::label) these are unique and must never change once a format
+    /// version has shipped: [`from_key`](Self::from_key) is the inverse.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            ParamId::Osc1Wave => "osc1_wave",
+            ParamId::Osc1Detune => "osc1_detune",
+            ParamId::Osc1Mix => "osc1_mix",
+            ParamId::Osc2Wave => "osc2_wave",
+            ParamId::Osc2Detune => "osc2_detune",
+            ParamId::Osc2Mix => "osc2_mix",
+            ParamId::FilterCutoff => "filter_cutoff",
+            ParamId::FilterResonance => "filter_resonance",
+            ParamId::FilterEnvAmount => "filter_env_amount",
+            ParamId::AmpAttack => "amp_attack",
+            ParamId::AmpDecay => "amp_decay",
+            ParamId::AmpSustain => "amp_sustain",
+            ParamId::AmpRelease => "amp_release",
+            ParamId::LfoRate => "lfo_rate",
+            ParamId::LfoDepth => "lfo_depth",
+            ParamId::LfoTarget => "lfo_target",
+            ParamId::Glide => "glide",
+            ParamId::DriveAmount => "drive_amount",
+            ParamId::DriveMix => "drive_mix",
+            ParamId::DelayTime => "delay_time",
+            ParamId::DelayFeedback => "delay_feedback",
+            ParamId::DelayMix => "delay_mix",
+            ParamId::ReverbSize => "reverb_size",
+            ParamId::ReverbDamping => "reverb_damping",
+            ParamId::ReverbMix => "reverb_mix",
+            ParamId::MasterGain => "master_gain",
+            ParamId::LimiterOn => "limiter_on",
+        }
+    }
+
+    /// Looks a parameter up by its [`key`](Self::key); `None` for unknown names.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<ParamId> {
+        Self::ALL.iter().copied().find(|id| id.key() == key)
+    }
+
     /// Clamps `value` into [`range`](Self::range). Non-finite values become the default.
     #[must_use]
     pub fn clamp(self, value: f32) -> f32 {

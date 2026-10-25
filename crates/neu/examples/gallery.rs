@@ -1,17 +1,70 @@
-//! Visual gallery of the `neu` M0, M1 and M2 widgets in both themes.
+//! Visual gallery of the `neu` M0, M1, M2 and M3 widgets in both themes.
 //!
 //! `cargo run -p neu --example gallery [-- --exit-after-secs N] [--light|--dark] [--scroll PX]`
 //!
 //! Shows a panel with every widget in its ON and OFF states, the raw depth swatches, the
 //! theme toggle, the mock's SYNTH and FX panels built from the M2 controls (knobs, dials,
-//! segmented selectors, vertical sliders, the limiter lamp) and a KEYS panel (two octaves of
-//! piano keys with a few held notes and the octave/swing steppers), so the look can be checked
-//! against `design/preview-a.html`.
+//! segmented selectors, vertical sliders, the limiter lamp), the SEQUENCER panel (the mock's
+//! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills)
+//! and a KEYS panel (two octaves of piano keys with a few held notes and the octave/swing
+//! steppers), so the look can be checked against `design/preview-a.html`.
 
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Align2, Layout, Rect, Vec2, pos2, vec2};
-use neu::{Depth, DialSize, Icon, KnobSize, KnobSpec, SliderSpec, TextKind, Theme, ThemeMode};
+use neu::{
+    Depth, DialSize, Icon, KnobSize, KnobSpec, SliderSpec, StepCellSpec, TextKind, Theme, ThemeMode,
+};
+
+/// The mock's drum rows (`rows` in `design/preview-a.html`): name, volume and the demo
+/// pattern (0 off, 1 on, 2 accent).
+const DRUM_ROWS: [(&str, f32, [u8; 16]); 5] = [
+    (
+        "Kick",
+        90.0,
+        [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0],
+    ),
+    (
+        "Snare",
+        80.0,
+        [0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0],
+    ),
+    (
+        "Clap",
+        60.0,
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1],
+    ),
+    (
+        "Closed hat",
+        70.0,
+        [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+    ),
+    (
+        "Open hat",
+        55.0,
+        [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    ),
+];
+
+/// The mock's bassline: semitones above C2, -1 for a rest.
+const BASS_ROW: [i8; 16] = [0, -1, -1, 0, -1, -1, 3, -1, 7, -1, -1, 3, -1, -1, 10, -1];
+
+/// Width of the row-name column and of the row-control column (`.seq-row .name` / `.rowctl`).
+const SEQ_NAME_WIDTH: f32 = 80.0;
+const SEQ_CTL_WIDTH: f32 = 34.0;
+/// Gap between the sequencer row's columns (`.seq-row` `gap: 16px`).
+const SEQ_COL_GAP: f32 = 16.0;
+/// Height of a sequencer row (`.seq-row`).
+const SEQ_ROW_HEIGHT: f32 = 34.0;
+
+/// Note name for a bass step (`noteName` in the mock: semitones above C2).
+fn bass_note_name(semis: i8) -> String {
+    const NOTES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let s = usize::try_from(semis).unwrap_or(0);
+    format!("{}{}", NOTES[s % 12], 2 + s / 12)
+}
 
 /// The mock's synth and FX parameter values (`data-val` attributes in `design/preview-a.html`).
 struct Params {
@@ -161,6 +214,16 @@ struct Gallery {
     /// Computer-key caps for the two octaves of the mock (A W S E D F T G Y H U J K O L P ;).
     labels: [Option<char>; 128],
     last_piano: neu::PianoOutput,
+    /// SEQUENCER panel state: drum steps (0 off, 1 on, 2 accent), bass steps (semitones above
+    /// C2, -1 rest), the bass accent flags, the bass cell selected for note entry, the per-row
+    /// volume knobs / bass tune knob, and the running playhead step.
+    drums: [[u8; 16]; 5],
+    bass: [i8; 16],
+    bass_accent: [bool; 16],
+    bass_selected: Option<usize>,
+    drum_vol: [f32; 5],
+    bass_tune: f32,
+    playhead: usize,
     started: Instant,
     exit_after: Option<Duration>,
     /// Initial vertical scroll offset (`--scroll`), applied for the first few frames (the
@@ -199,6 +262,25 @@ impl Gallery {
             held,
             labels: Self::labels_for_octave(4),
             last_piano: neu::PianoOutput::default(),
+            drums: [
+                DRUM_ROWS[0].2,
+                DRUM_ROWS[1].2,
+                DRUM_ROWS[2].2,
+                DRUM_ROWS[3].2,
+                DRUM_ROWS[4].2,
+            ],
+            bass: BASS_ROW,
+            bass_accent: [false; 16],
+            bass_selected: Some(6),
+            drum_vol: [
+                DRUM_ROWS[0].1,
+                DRUM_ROWS[1].1,
+                DRUM_ROWS[2].1,
+                DRUM_ROWS[3].1,
+                DRUM_ROWS[4].1,
+            ],
+            bass_tune: 0.0,
+            playhead: 4,
             started: Instant::now(),
             exit_after,
             scroll_to,
@@ -364,6 +446,14 @@ impl eframe::App for Gallery {
                     // panel at 1280).
                     self.synth_panel(ui, &theme);
                     self.fx_panel(ui, &theme);
+
+                    // SEQUENCER panel: the mock's demo pattern with a playhead that runs at
+                    // 120 BPM (a 16th every 125 ms) while "Play" is on.
+                    if self.playing {
+                        self.playhead = (self.started.elapsed().as_millis() / 125 % 16) as usize;
+                        ctx.request_repaint_after(Duration::from_millis(30));
+                    }
+                    self.sequencer_panel(ui, &theme);
 
                     // KEYS panel, like the mock: title + octave stepper in the head, two octaves
                     // of keys below. Padding is the mock's 16 20 18 (approximated by the panel's
@@ -692,6 +782,199 @@ impl Gallery {
             });
         });
     }
+
+    /// The mock's SEQUENCER panel: title, hint and "Clear all" in the head; a header row with
+    /// the beat numbers and the playhead dots over the step columns; five drum rows (name,
+    /// small volume knob, 16 step cells, a Clear pill) and the bass row whose cells carry note
+    /// names. Click toggles a step, shift-click accents it (drums) or steps to the next note
+    /// (bass); the last clicked bass cell shows the selection ring.
+    fn sequencer_panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        let shift = ui.input(|i| i.modifiers.shift);
+        let steps_x = SEQ_NAME_WIDTH + SEQ_COL_GAP + SEQ_CTL_WIDTH + SEQ_COL_GAP;
+        neu::panel(ui, theme, |ui| {
+            ui.horizontal(|ui| {
+                neu::title(ui, theme, "Sequencer");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 20.0;
+                    if neu::button(ui, theme, "Clear all").clicked() {
+                        self.drums = [[0; 16]; 5];
+                        self.bass = [-1; 16];
+                        self.bass_accent = [false; 16];
+                    }
+                    neu::label(ui, theme, "shift-click = accent / next note");
+                });
+            });
+            ui.add_space(14.0);
+
+            // `.seq-head`: beat numbers 6 pt over the playhead dots, aligned with the steps.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(steps_x);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    neu::beat_numbers(ui, theme, 16);
+                    neu::playhead_row(ui, theme, 16, Some(self.playhead));
+                });
+            });
+            ui.add_space(6.0);
+
+            // `.seq-grid`: rows 2 pt apart, each 34 pt high with 16 pt column gaps.
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (r, &(name, default_vol, _)) in DRUM_ROWS.iter().enumerate() {
+                let specs: Vec<StepCellSpec<'_>> = self.drums[r]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| StepCellSpec {
+                        on: v > 0,
+                        accent: v == 2,
+                        current: i == self.playhead,
+                        selected: false,
+                        label: None,
+                    })
+                    .collect();
+                let mut clicked = None;
+                let mut clear = false;
+                Self::seq_row(ui, theme, name, &specs, &mut clicked, &mut clear, |ui| {
+                    neu::knob(
+                        ui,
+                        theme,
+                        &mut self.drum_vol[r],
+                        &KnobSpec {
+                            label: "",
+                            size: KnobSize::Sm,
+                            ..pct_knob("Vol", default_vol)
+                        },
+                    );
+                });
+                if let Some(i) = clicked {
+                    let v = &mut self.drums[r][i];
+                    *v = if shift {
+                        if *v == 2 { 1 } else { 2 }
+                    } else if *v > 0 {
+                        0
+                    } else {
+                        1
+                    };
+                }
+                if clear {
+                    self.drums[r] = [0; 16];
+                }
+            }
+
+            // Bass row: note labels, "–" on rests, the selected cell ringed.
+            let labels: Vec<String> = self
+                .bass
+                .iter()
+                .map(|&v| {
+                    if v >= 0 {
+                        bass_note_name(v)
+                    } else {
+                        "–".to_owned()
+                    }
+                })
+                .collect();
+            let specs: Vec<StepCellSpec<'_>> = self
+                .bass
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| StepCellSpec {
+                    on: v >= 0,
+                    accent: self.bass_accent[i],
+                    current: i == self.playhead,
+                    selected: self.bass_selected == Some(i),
+                    label: Some(labels[i].as_str()),
+                })
+                .collect();
+            let mut clicked = None;
+            let mut clear = false;
+            Self::seq_row(ui, theme, "Bass", &specs, &mut clicked, &mut clear, |ui| {
+                neu::knob(
+                    ui,
+                    theme,
+                    &mut self.bass_tune,
+                    &KnobSpec {
+                        label: "",
+                        min: -12.0,
+                        max: 12.0,
+                        default: 0.0,
+                        log: false,
+                        bipolar: true,
+                        size: KnobSize::Sm,
+                        fmt: |v| format!("{v:.0} st"),
+                    },
+                );
+            });
+            if let Some(i) = clicked {
+                let v = &mut self.bass[i];
+                *v = if shift {
+                    if *v < 0 { 0 } else { (*v + 1) % 24 }
+                } else if *v >= 0 {
+                    -1
+                } else {
+                    0
+                };
+                self.bass_selected = Some(i);
+            }
+            if clear {
+                self.bass = [-1; 16];
+                self.bass_accent = [false; 16];
+            }
+        });
+    }
+
+    /// One `.seq-row`: an 80 pt name column, a 34 pt control column (`ctl`), the step cells
+    /// and a Clear pill, 16 pt apart, centred in a 34 pt row. Reports the clicked cell and the
+    /// Clear press through the out parameters.
+    #[allow(clippy::too_many_arguments)]
+    fn seq_row(
+        ui: &mut egui::Ui,
+        theme: &Theme,
+        name: &str,
+        specs: &[StepCellSpec<'_>],
+        clicked: &mut Option<usize>,
+        clear: &mut bool,
+        ctl: impl FnOnce(&mut egui::Ui),
+    ) {
+        ui.allocate_ui_with_layout(
+            vec2(ui.available_width().max(1.0), SEQ_ROW_HEIGHT),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = SEQ_COL_GAP;
+                fixed_cell(
+                    ui,
+                    vec2(SEQ_NAME_WIDTH, SEQ_ROW_HEIGHT),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        neu::label(ui, theme, name);
+                    },
+                );
+                fixed_cell(
+                    ui,
+                    vec2(SEQ_CTL_WIDTH, SEQ_ROW_HEIGHT),
+                    Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    ctl,
+                );
+                *clicked = neu::step_row(ui, theme, name, specs).clicked;
+                if neu::button(ui, theme, "Clear").clicked() {
+                    *clear = true;
+                }
+            },
+        );
+    }
+}
+
+/// A child ui of exactly `size` (the parent's cursor advances by `size` whatever the content
+/// does; `Ui::allocate_ui_with_layout` would size the cell to its content instead), so the
+/// sequencer's name and control columns stay fixed and the step columns line up.
+fn fixed_cell(
+    ui: &mut egui::Ui,
+    size: Vec2,
+    layout: Layout,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    add_contents(&mut child);
 }
 
 fn main() -> eframe::Result {
