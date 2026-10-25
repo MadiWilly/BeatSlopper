@@ -114,6 +114,22 @@ whenever it gains commits.
 - [ ] app: FL mixer layout (scrollable inserts, slot pills, EQ3, route selector, rename/colour, link to new insert), insert number boxes in TRACKS and drum rows, undo
 - [ ] Tests per PLAN.md M11; gate green, tag m11, final summary updated
 
+## M10 review follow-ups (reviewer pass 2026-10-25; no blockers)
+App side (run after the M9 browser lands, before tagging m9):
+- [ ] remove_track resets the slot's mixer strip to defaults (a deleted soloed track silenced everything); test: solo track 2, delete it, track 1 still meters
+- [ ] TRACKS row gains the brief's small level knob (ChannelParam::Level) after S
+- [ ] drop the eframe PRESET_INDEX_KEY start-up re-apply (the project carries the preset per track; the browser persists a name)
+- [ ] selected TRACKS row gets an accent cue (3 pt accent bar at the left edge or on-glow chip ring), per the design-cleanup rule
+- [ ] sequencer head shows chip AND name at 1280 (move the tag into the GRID | ROLL row or shorten the right group; seed the measured width so the first frame does not overflow)
+- [ ] clipboard reconciled on load/undo (notes on inactive slots dropped); optionally clear notes in set_track_active(on)
+- [ ] mixer MASTER pinned outside the horizontal scroll area
+- [ ] tracks.rs: drop the import-suppression dead code; side padding on the 4/8/12 scale; row well inset-m
+- [ ] app tests: MIDI overdub with edit_track != 0; paste carries per-track notes; clipboard after remove/move; export of a 2-track project matches the live render
+Engine side (after the M11 engine merge, in tests/tracks.rs + engine_alloc.rs):
+- [ ] v6-style fixture with non-default insert params pinned bit-identical; sum-of-tracks test variant with lo-fi/chorus on track 2 only
+- [ ] assert!(handle.send(..)) in the queue-driven tests (a full queue must fail the test, not pass vacuously)
+- [ ] document or drop the params reset in set_track_active(off) (Project::apply_to depends on its ordering)
+
 ## Visualizers (side branch `madi/visualizers-bc3bf5`, 2026-10-25)
 - [x] engine: lock-free master-output tap (`scope.rs`: `ScopeTap` / `ScopeReader` /
   `ScopeWindow`) and a latched drum-hit bitmask (`EngineHandle::take_hits`), three lines in
