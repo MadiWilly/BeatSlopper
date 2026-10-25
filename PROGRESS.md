@@ -57,8 +57,9 @@
 - [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-25 M7 (final, after review fixes): all green (fmt, clippy -D warnings, 492 tests, deny licenses ok,
-release build, smoke exit 0).
+2026-10-25 M8 (engine wiring): all green (fmt, clippy -D warnings, 707 tests, deny licenses ok,
+release build + smoke exit 0 from a detached worktree because the running app locks
+target/release/beatslopper.exe).
 
 ## Next action
 Orchestrator took over 2026-10-25 (all side-session branches merged). 1) Finish the M8 engine
@@ -91,12 +92,12 @@ whenever it gains commits.
 - [x] app: piano roll panel (draw, move, resize, delete, accent, zoom), synced with the grid
 - [x] Tests per PLAN.md M7; gate green, tag m7, final summary updated
 
-## M8: Synthesis extensions (EDM + lofi tools)
-- [x] engine: new ParamIds (pulse, unison 1-7, sub, noise, FM, pluck mode, filter type + ADSR, key track, velocity, pitch env, lo-fi, chorus, sidechain); project v6 bump pending
-- [ ] engine: oscillator/FM/noise/pluck DSP, filter types, filter ADSR, pitch env, velocity, unison
-- [ ] engine: lo-fi insert, chorus, kick-triggered ducker on the synth channel
-- [ ] app: synth panel and FX rack groups for the new parameters
-- [ ] Tests per PLAN.md M8; gate green, tag m8
+## M8: Synthesis extensions (EDM + lofi tools; done 2026-10-25, tag m8)
+- [x] engine: new ParamIds (pulse, unison 1-7, sub, noise, FM, pluck mode, filter type + ADSR, key track, velocity, pitch env, lo-fi, chorus, sidechain); project v6 (bumped by the plugins branch)
+- [x] engine: oscillator/FM/noise/pluck DSP, filter types, filter ADSR, pitch env, velocity, unison
+- [x] engine: lo-fi insert, chorus, kick-triggered ducker on the synth channel
+- [x] app: synth panel and FX rack groups for the new parameters
+- [x] Tests per PLAN.md M8; gate green, tag m8 (2026-10-25)
 
 ## M9: Preset library + browser (EDM + Joji-style lofi)
 - [ ] engine: 80+ categorised presets with tags, search helpers, per-preset tests
