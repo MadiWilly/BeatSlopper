@@ -19,6 +19,7 @@ pub mod piano_keys;
 pub mod segmented;
 pub mod shadow;
 pub mod slider;
+pub mod step_cell;
 pub mod stepper;
 pub mod text;
 pub mod theme;
@@ -44,3 +45,5 @@ pub use slider::{
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, display, label, title, value};
 pub use theme::{ShadowPair, Theme, ThemeMode};
+
+pub use step_cell::{STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, playhead_dot, step_cell};

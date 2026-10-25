@@ -26,6 +26,7 @@ pub mod dsp;
 pub mod engine;
 pub mod fx;
 pub mod params;
+pub mod pattern;
 pub mod presets;
 pub mod project;
 pub mod synth;
@@ -37,3 +38,7 @@ pub use params::{Adsr, AdsrStage, ParamId, Smoother};
 pub use presets::Preset;
 pub use synth::{LfoTarget, Wave};
 pub use voice::{MAX_VOICES, SynthParams, VoicePool};
+
+pub use drums::DrumRow;
+pub use engine::Position;
+pub use pattern::{DrumStep, Pattern, STEPS, SynthStep};

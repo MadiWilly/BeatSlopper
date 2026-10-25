@@ -23,6 +23,7 @@ egui.workspace = true
 eframe.workspace = true
 cpal.workspace = true
 serde.workspace = true
+rfd.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true

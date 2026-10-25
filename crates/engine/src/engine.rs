@@ -11,12 +11,18 @@
 //! `render` never allocates, locks, does I/O, logs or panics; it tolerates `out` buffers that
 //! are shorter than `frames * 2` by rendering what fits.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use crate::drums::DrumRow;
 use crate::dsp::db_to_gain;
 use crate::fx::{FxChain, Limiter};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
+use crate::pattern::Pattern;
 use crate::synth::SineOsc;
+use crate::transport::Transport;
 use crate::voice::{SynthParams, VoicePool};
 
 /// Capacity of the UI -> audio message queue.
@@ -59,17 +65,107 @@ pub enum Message {
     SetParam(ParamId, f32),
     /// Tempo in beats per minute (60..=200); used by the BPM-synced delay and the M3 transport.
     SetBpm(f32),
+    /// Start the sequencer from step 0.
+    Play,
+    /// Stop the sequencer, release its notes and rewind to step 0.
+    Stop,
+    /// Swing amount `0.0..=0.75`: odd steps are delayed by that fraction of a step.
+    SetSwing(f32),
+    /// Set one drum step.
+    SetDrumStep {
+        /// Drum row.
+        row: DrumRow,
+        /// Step index `0..16`.
+        step: u8,
+        /// Whether the step fires.
+        on: bool,
+        /// Accented (full velocity).
+        accent: bool,
+    },
+    /// Set one synth-lane step.
+    SetSynthStep {
+        /// Step index `0..16`.
+        step: u8,
+        /// MIDI note, or `None` for a rest.
+        note: Option<u8>,
+        /// Accented (full velocity).
+        accent: bool,
+    },
+    /// Clear one drum row.
+    ClearRow(DrumRow),
+    /// Clear the synth lane.
+    ClearSynth,
+    /// Clear every row and the synth lane.
+    ClearAll,
+    /// Per-row drum volume in dB (-24..=6).
+    SetDrumVolume {
+        /// Drum row.
+        row: DrumRow,
+        /// Volume in dB.
+        db: f32,
+    },
+    /// Per-row drum tune in semitones (-12..=12).
+    SetDrumTune {
+        /// Drum row.
+        row: DrumRow,
+        /// Tune in semitones.
+        semitones: f32,
+    },
+}
+
+/// Where the sequencer is, as last published by the audio thread.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    /// Current step `0..16`.
+    pub step: u8,
+    /// Fraction of the current step already elapsed, `0.0..1.0`.
+    pub frac: f32,
+    /// Whether the transport is running.
+    pub playing: bool,
+}
+
+/// Lock-free playhead state shared between [`Engine`] and [`EngineHandle`].
+#[derive(Debug, Default)]
+pub(crate) struct Shared {
+    step: AtomicU32,
+    /// Fraction of the step in thousandths.
+    frac_milli: AtomicU32,
+    playing: AtomicBool,
+}
+
+impl Shared {
+    pub(crate) fn publish(&self, step: u8, frac: f32, playing: bool) {
+        self.step.store(u32::from(step), Ordering::Relaxed);
+        let milli = (frac.clamp(0.0, 0.999) * 1000.0) as u32;
+        self.frac_milli.store(milli, Ordering::Relaxed);
+        self.playing.store(playing, Ordering::Relaxed);
+    }
+
+    pub(crate) fn read(&self) -> Position {
+        Position {
+            step: (self.step.load(Ordering::Relaxed) % 16) as u8,
+            frac: self.frac_milli.load(Ordering::Relaxed) as f32 / 1000.0,
+            playing: self.playing.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// UI-side handle: sends [`Message`]s to the engine over a lock-free SPSC queue.
 pub struct EngineHandle {
     producer: Producer<Message>,
+    shared: Arc<Shared>,
 }
 
 impl EngineHandle {
     /// Sends a message. Returns `false` if the queue is full (the message is dropped).
     pub fn send(&mut self, msg: Message) -> bool {
         self.producer.push(msg).is_ok()
+    }
+
+    /// The sequencer playhead as last published by the audio thread (lock-free).
+    #[must_use]
+    pub fn position(&self) -> Position {
+        self.shared.read()
     }
 
     /// Number of messages that can still be queued before [`send`](Self::send) starts failing.
@@ -148,6 +244,12 @@ pub struct Engine {
     limiter_on: bool,
     /// Tempo in BPM (60..=200), shared by the delay sync and the M3 transport.
     bpm: f32,
+    /// Transport state (bpm/swing/playing) for the step scheduler.
+    transport: Transport,
+    /// The pattern the scheduler plays.
+    pattern: Pattern,
+    /// Playhead published to the UI.
+    shared: Arc<Shared>,
 }
 
 /// Creates an engine and its UI-side handle.
@@ -156,12 +258,16 @@ pub struct Engine {
 /// allocate afterwards. `sample_rate` is in Hz (tests use 48 000).
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
+    let shared = Arc::new(Shared::default());
     let mut params = [0.0_f32; ParamId::COUNT];
     for id in ParamId::ALL {
         params[id.index()] = id.default_value();
     }
     (
-        EngineHandle { producer },
+        EngineHandle {
+            producer,
+            shared: Arc::clone(&shared),
+        },
         Engine {
             sample_rate,
             consumer,
@@ -177,6 +283,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             limiter: Limiter::new(),
             limiter_on: ParamId::LimiterOn.default_value() >= 0.5,
             bpm: crate::transport::DEFAULT_BPM,
+            transport: Transport::default(),
+            pattern: Pattern::default(),
+            shared,
         },
     )
 }
@@ -279,6 +388,7 @@ impl Engine {
     pub fn set_bpm(&mut self, bpm: f32) {
         if bpm.is_finite() {
             self.bpm = bpm.clamp(60.0, 200.0);
+            self.transport.set_bpm(self.bpm);
             self.fx.set_bpm(self.bpm);
         }
     }
@@ -287,6 +397,67 @@ impl Engine {
     #[must_use]
     pub fn bpm(&self) -> f32 {
         self.bpm
+    }
+
+    /// Starts the sequencer from step 0 (M3 stub: the scheduler lands with the sequencer work).
+    pub fn play(&mut self) {
+        self.transport.set_playing(true);
+        self.shared.publish(0, 0.0, true);
+    }
+
+    /// Stops the sequencer, releases its notes and rewinds to step 0.
+    pub fn stop(&mut self) {
+        self.transport.set_playing(false);
+        self.voices.all_notes_off();
+        self.shared.publish(0, 0.0, false);
+    }
+
+    /// Sets the swing amount (`0.0..=0.75`).
+    pub fn set_swing(&mut self, swing: f32) {
+        self.transport.set_swing(swing);
+    }
+
+    /// The transport (bpm, swing, playing).
+    #[must_use]
+    pub fn transport(&self) -> &Transport {
+        &self.transport
+    }
+
+    /// The pattern the sequencer plays.
+    #[must_use]
+    pub fn pattern(&self) -> &Pattern {
+        &self.pattern
+    }
+
+    /// Replaces the whole pattern (project load; call before the stream starts or accept a
+    /// one-off copy on the audio thread).
+    pub fn set_pattern(&mut self, pattern: &Pattern) {
+        self.pattern = pattern.clone();
+        for row in DrumRow::ALL {
+            let i = row.index();
+            self.set_drum_volume(row, self.pattern.drum_volume[i]);
+            self.set_drum_tune(row, self.pattern.drum_tune[i]);
+        }
+    }
+
+    /// Sets one drum step.
+    pub fn set_drum_step(&mut self, row: DrumRow, step: u8, on: bool, accent: bool) {
+        self.pattern.set_drum_step(row, step, on, accent);
+    }
+
+    /// Sets one synth-lane step.
+    pub fn set_synth_step(&mut self, step: u8, note: Option<u8>, accent: bool) {
+        self.pattern.set_synth_step(step, note, accent);
+    }
+
+    /// Per-row drum volume in dB.
+    pub fn set_drum_volume(&mut self, row: DrumRow, db: f32) {
+        self.pattern.set_drum_volume(row, db);
+    }
+
+    /// Per-row drum tune in semitones.
+    pub fn set_drum_tune(&mut self, row: DrumRow, semitones: f32) {
+        self.pattern.set_drum_tune(row, semitones);
     }
 
     /// Current (clamped) value of parameter `id`.
@@ -325,6 +496,23 @@ impl Engine {
                 Message::AllNotesOff => self.all_notes_off(),
                 Message::SetParam(id, value) => self.set_param(id, value),
                 Message::SetBpm(bpm) => self.set_bpm(bpm),
+                Message::Play => self.play(),
+                Message::Stop => self.stop(),
+                Message::SetSwing(s) => self.set_swing(s),
+                Message::SetDrumStep {
+                    row,
+                    step,
+                    on,
+                    accent,
+                } => self.pattern.set_drum_step(row, step, on, accent),
+                Message::SetSynthStep { step, note, accent } => {
+                    self.pattern.set_synth_step(step, note, accent)
+                }
+                Message::ClearRow(row) => self.pattern.clear_row(row),
+                Message::ClearSynth => self.pattern.clear_synth(),
+                Message::ClearAll => self.pattern.clear_all(),
+                Message::SetDrumVolume { row, db } => self.set_drum_volume(row, db),
+                Message::SetDrumTune { row, semitones } => self.set_drum_tune(row, semitones),
             }
         }
     }
