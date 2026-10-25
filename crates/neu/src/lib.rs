@@ -47,8 +47,8 @@ pub use button::{
     stepper_button, theme_toggle, toggle_button, toggle_button_sized,
 };
 pub use knob::{
-    DIMMED_OPACITY, DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, knob_dimmed, paint_arc,
-    tooltip_text,
+    DIMMED_OPACITY, DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, knob_dimmed, knob_noted,
+    knob_with, paint_arc, tooltip_text,
 };
 pub use meter::{
     METER_FLOOR_DB, METER_HOT_LEVEL, METER_HOT_SEPARATOR, METER_HOT_TOP, METER_TRACK,

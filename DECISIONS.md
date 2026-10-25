@@ -209,3 +209,46 @@ design is done by DSP reasoning and measurable tests since the build machine can
   name as a label.
 - A dimmed knob's value readout (design cleanup) is painted through `ui`, not the dimmed
   painter, so `knob_dimmed` multiplies the readout colour by `DIMMED_OPACITY` itself.
+
+## 2026-10-25: Reverb audit (FX rack REVERB group vs the REVERB plugin window)
+The plugins branch gave the reverb two UI surfaces: the FX rack's SIZE / DAMPING / MIX knobs
+(`ParamId::ReverbSize / ReverbDamping / ReverbMix`) and the pop-out REVERB window
+(`ReverbState`: size, damping, pre-delay, width, low cut, high cut, mix, presets). Audited
+whether they fight; findings and choices:
+- **They do not fight.** On both sides `ReverbState` is the source of truth and the three
+  shared values are written through one path: the engine's `set_param(Reverb*)` writes the
+  state and `set_reverb(Size | Damping | Mix)` goes through `set_param`; the app's `set_param`
+  mirrors into `reverb`, `set_reverb` / `set_reverb_state` mirror into `params`, `apply_preset`
+  copies the three values across, the undo `Snapshot` carries both (they are equal when
+  snapshotted, so a restore keeps them equal), `apply_project` takes the three values from the
+  file's `reverb` (the engine's `from_json` already synced them), `build_project` writes both
+  from the mirrors. Tests now pin every one of these paths (engine `tests/plugins.rs` 13-16,
+  app `tests/plugins_ui.rs` "reverb audit").
+- **One real bug, fixed:** `Engine::set_reverb_state` (project load, and the only reverb path
+  an offline render takes) left the chain's size / damping / mix smoothers and the reverb's
+  own pre-delay / width glides running from the previous room. An export therefore heard the
+  first hit with a pre-delay gliding up from 0 ms (about 80 ms of a 100 ms pre-delay, with a
+  chirp), unlike the live app where the glide had long settled. `set_reverb_state` now snaps
+  those smoothers (`FxChain::snap_reverb`, `Reverb::snap`), like `set_mixer_state` and
+  `set_eq_state` already did; delay lines and the tail are untouched, so a live load does not
+  cut the sound. Other FX smoothers (drive, delay) still glide from their defaults at the start
+  of an export: pre-existing, out of this audit's scope, noted as a follow-up.
+- **Synth presets keep the room's extras.** `Preset::apply` / `AppState::apply_preset` reset
+  every `ParamId` (so size, damping and mix follow the synth preset) but leave pre-delay,
+  width and the cuts where the user put them. A synth preset describes a sound, the extras
+  describe the room; resetting them would surprise anyone who set up a room and then browsed
+  sounds. The REVERB window's MODIFIED lamp shows that the result no longer matches a reverb
+  preset. Documented, tested, kept.
+- **`resend_all` sends the three shared values twice** (as `SetParam` with every param, then
+  inside the seven `SetReverb`), with identical values. Harmless and left alone: the second
+  write is the state's, so it can only ever confirm the first, and the count stays well inside
+  the queue.
+- **Not duplicates, say so.** Mixer REV sends are per-channel amounts *into* the reverb bus;
+  MIX (rack and window) is the bus's return level. The rack's REVERB label, both MIX knobs
+  (tooltip note) and the mixer's DLY / REV legends now say so, and the window's head carries
+  a one-line hint that size, damp and mix are shared with the rack. The rack's REVERB group
+  gained a small MORE pill (lit while the window is open) that opens / closes the window: it is
+  not labelled OPEN because the PROJECT panel's `Open` button already owns that accessible
+  name and the whole-app tests query it by label.
+- `neu::knob_noted` (a knob whose tooltip carries a second line) was added rather than
+  stacking a second `on_hover_text` on the response, so a knob keeps one tooltip.

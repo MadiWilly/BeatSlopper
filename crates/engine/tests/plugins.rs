@@ -464,3 +464,183 @@ fn project_round_trips_plugin_state_and_migrates_v5() {
     let fresh = Project::from_json(&v6.to_string()).unwrap();
     assert_eq!(fresh.param(ParamId::ReverbSize), p.reverb.size);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reverb audit: the FX rack's `ParamId::Reverb*` view and the plugin window's `ReverbState`
+// view must never disagree, whichever side writes, and exports must honour every value.
+
+/// Asserts the three shared values agree between `params` and the state.
+fn assert_reverb_views_agree(engine: &engine::Engine) {
+    let r = engine.reverb();
+    assert_eq!(engine.param(ParamId::ReverbSize), r.size);
+    assert_eq!(engine.param(ParamId::ReverbDamping), r.damping);
+    assert_eq!(engine.param(ParamId::ReverbMix), r.mix);
+}
+
+// (13) Defaults, clamping and alternating writes through both paths keep the views equal.
+#[test]
+fn reverb_param_and_state_views_never_disagree() {
+    for p in [ReverbParam::Size, ReverbParam::Damping, ReverbParam::Mix] {
+        let id = match p {
+            ReverbParam::Size => ParamId::ReverbSize,
+            ReverbParam::Damping => ParamId::ReverbDamping,
+            _ => ParamId::ReverbMix,
+        };
+        assert_eq!(p.default_value(), id.default_value(), "{p:?} default");
+        assert_eq!(p.range(), id.range(), "{p:?} range");
+    }
+    let (_h, mut engine) = engine::new_engine(SR);
+    assert_eq!(engine.reverb(), &ReverbState::DEFAULT);
+    assert_reverb_views_agree(&engine);
+    // Alternate the two paths with in-range, out-of-range and non-finite values.
+    let steps: [(bool, f32); 8] = [
+        (true, 0.9),
+        (false, 0.1),
+        (true, 7.0),
+        (false, -3.0),
+        (true, f32::NAN),
+        (false, f32::INFINITY),
+        (true, 0.33),
+        (false, 0.66),
+    ];
+    for (via_param, value) in steps {
+        for p in [ReverbParam::Size, ReverbParam::Damping, ReverbParam::Mix] {
+            let id = match p {
+                ReverbParam::Size => ParamId::ReverbSize,
+                ReverbParam::Damping => ParamId::ReverbDamping,
+                _ => ParamId::ReverbMix,
+            };
+            if via_param {
+                engine.set_param(id, value);
+            } else {
+                engine.set_reverb(p, value);
+            }
+            assert_reverb_views_agree(&engine);
+            let expected = id.clamp(value);
+            assert_eq!(
+                engine.param(id),
+                expected,
+                "{p:?} <- {value} via_param={via_param}"
+            );
+        }
+    }
+    // The DSP follows the shared view once audio runs.
+    render(&mut engine, ms_to_frames(200.0));
+    assert!((engine.fx().reverb().size() - 0.66).abs() < 1e-3);
+    assert!(
+        (engine.fx().reverb().mix() - 1.0).abs() < 1e-3,
+        "process_bus runs the reverb wet"
+    );
+}
+
+// (14) A synth preset resets the three shared values and leaves pre-delay / width / cuts
+// alone (the window's extra values belong to the room, not to the synth sound).
+#[test]
+fn synth_preset_resets_shared_reverb_values_and_keeps_the_extras() {
+    let (_h, mut engine) = engine::new_engine(SR);
+    engine.set_reverb_state(&reverb::PRESETS[4].state);
+    let before = *engine.reverb();
+    assert_ne!(before.pre_delay_ms, 0.0, "Cathedral has a pre-delay");
+    let preset = engine::presets::ALL[3];
+    preset.apply(&mut engine);
+    let after = *engine.reverb();
+    assert_eq!(after.size, preset.value(ParamId::ReverbSize));
+    assert_eq!(after.damping, preset.value(ParamId::ReverbDamping));
+    assert_eq!(after.mix, preset.value(ParamId::ReverbMix));
+    assert_eq!(after.pre_delay_ms, before.pre_delay_ms);
+    assert_eq!(after.width, before.width);
+    assert_eq!(after.low_cut_hz, before.low_cut_hz);
+    assert_eq!(after.high_cut_hz, before.high_cut_hz);
+    assert_reverb_views_agree(&engine);
+    assert_eq!(engine.fx().reverb().pre_delay_ms(), before.pre_delay_ms);
+}
+
+// (15) Loading: a v5 file builds the state from its params; a v6 file's state wins over its
+// params; both leave the engine's two views equal, and the extras reach the DSP.
+#[test]
+fn project_load_keeps_both_reverb_views_equal() {
+    let mut v5 = serde_json::to_value(Project::default()).unwrap();
+    v5["version"] = serde_json::json!(5);
+    let obj = v5.as_object_mut().unwrap();
+    obj.remove("eq");
+    obj.remove("reverb");
+    v5["params"]["reverb_size"] = serde_json::json!(0.25);
+    v5["params"]["reverb_damping"] = serde_json::json!(0.75);
+    v5["params"]["reverb_mix"] = serde_json::json!(0.5);
+    let old = Project::from_json(&v5.to_string()).expect("v5 loads");
+    assert_eq!(
+        old.reverb,
+        ReverbState::new(0.25, 0.75, 0.0, 1.0, 20.0, 20_000.0, 0.5)
+    );
+    let (_h, mut engine) = engine::new_engine(SR);
+    old.apply_to(&mut engine);
+    assert_eq!(engine.reverb(), &old.reverb);
+    assert_reverb_views_agree(&engine);
+
+    let mut p = Project {
+        reverb: reverb::PRESETS[6].state,
+        ..Project::default()
+    };
+    p.set_param(ParamId::ReverbMix, 0.99);
+    p.set_param(ParamId::ReverbSize, 0.01);
+    let text = p.to_json_pretty();
+    let back = Project::from_json(&text).unwrap();
+    assert_eq!(back.reverb, reverb::PRESETS[6].state);
+    assert_eq!(back.param(ParamId::ReverbMix), reverb::PRESETS[6].state.mix);
+    assert_eq!(
+        back.param(ParamId::ReverbSize),
+        reverb::PRESETS[6].state.size
+    );
+    // Applying an unsynced project still ends with the state winning.
+    let (_h, mut engine) = engine::new_engine(SR);
+    p.apply_to(&mut engine);
+    assert_eq!(engine.reverb(), &reverb::PRESETS[6].state);
+    assert_reverb_views_agree(&engine);
+    assert_eq!(engine.fx().reverb().state(), reverb::PRESETS[6].state);
+    let again = Project::from_engine(&engine, 0, 4, 0.8);
+    assert_eq!(again.reverb, reverb::PRESETS[6].state);
+    assert_eq!(
+        again.param(ParamId::ReverbMix),
+        reverb::PRESETS[6].state.mix
+    );
+}
+
+// (16) Exports honour the pre-delay from the very first hit: the wet onset of a loop rendered
+// with a 100 ms pre-delay sits 100 ms after the onset rendered without one.
+#[test]
+fn export_honours_the_reverb_pre_delay_from_the_first_hit() {
+    use engine::{Channel, ChannelParam, DrumRow, Pattern};
+
+    fn project(pre_delay_ms: f32, mix: f32) -> Project {
+        let mut p = Project::from_pattern(Pattern::empty());
+        p.bank.patterns[0].set_drum_step(DrumRow::Kick, 0, true, false);
+        p.set_param(ParamId::LimiterOn, 0.0);
+        p.set_param(ParamId::DelayMix, 0.0);
+        p.mixer.set(Channel::Kick, ChannelParam::ReverbSend, 1.0);
+        p.mixer.set(Channel::Kick, ChannelParam::DelaySend, 0.0);
+        p.reverb = ReverbState::new(0.5, 0.3, pre_delay_ms, 1.0, 20.0, 20_000.0, mix);
+        p.sync_reverb_params();
+        p
+    }
+    /// The wet signal alone: the render minus the same render with the return at zero (the
+    /// limiter is off, so the master stage is linear).
+    fn wet_onset(pre_delay_ms: f32) -> usize {
+        let full = engine::export::render_loop(&project(pre_delay_ms, 1.0), 1, SR);
+        let dry = engine::export::render_loop(&project(pre_delay_ms, 0.0), 1, SR);
+        let wet: Vec<f32> = left(&full)
+            .iter()
+            .zip(left(&dry))
+            .map(|(a, b)| a - b)
+            .collect();
+        wet.iter()
+            .position(|v| v.abs() > 1e-6)
+            .expect("the reverb produces a tail")
+    }
+    let plain = wet_onset(0.0);
+    let delayed = wet_onset(100.0);
+    let expected = ms_to_frames(100.0);
+    assert!(
+        (delayed as i64 - plain as i64 - expected as i64).abs() <= 2,
+        "plain onset {plain}, delayed onset {delayed}, expected a {expected} frame offset"
+    );
+}

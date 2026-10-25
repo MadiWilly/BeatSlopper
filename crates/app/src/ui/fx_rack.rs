@@ -23,13 +23,25 @@ use engine::ParamId;
 use neu::Theme;
 
 use crate::app::AppState;
+use crate::plugins::PluginKind;
 use crate::ui::controls::{
-    self, GROUP_GAP, KNOB_GAP, Knob, PANEL_HEAD_GAP, fmt_bits, fmt_db, fmt_hz, fmt_ms, fmt_percent,
-    fmt_rate_hz, fmt_rate_x,
+    self, GROUP_GAP, HEAD_GAP, KNOB_GAP, Knob, PANEL_HEAD_GAP, ROW_HEIGHT, fmt_bits, fmt_db,
+    fmt_hz, fmt_ms, fmt_percent, fmt_rate_hz, fmt_rate_x,
 };
 
 /// Width of the rack including its panel padding.
 pub const WIDTH: f32 = 476.0;
+/// Label of the REVERB group's pill that opens the REVERB window (not "Open": the PROJECT
+/// panel's file button owns that accessible name).
+pub const REVERB_MORE_LABEL: &str = "More";
+/// Tooltip of [`REVERB_MORE_LABEL`].
+pub const REVERB_MORE_TOOLTIP: &str = "Open the REVERB window: pre-delay, width, low / high \
+                                       cut and presets. Size, damping and mix are these knobs.";
+/// Tooltip of the REVERB group label: sends go in, MIX is the return level.
+pub const REVERB_TOOLTIP: &str = "Reverb bus. The mixer's REV sends set how much of each \
+                                  channel goes in; MIX is the return level.";
+/// Second tooltip line of the rack's reverb MIX knob (the window's MIX says the same).
+pub const REVERB_MIX_NOTE: &str = "Return level of the reverb bus (the mixer's REV sends feed it)";
 /// Delay division names in `DelayTime` index order.
 pub const DELAY_DIVISIONS: [&str; 4] = ["1/16", "1/8", "1/4", "1/2"];
 
@@ -163,17 +175,33 @@ fn delay_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     );
 }
 
+/// The REVERB group's head: the label (its tooltip tells the return level from the mixer's
+/// sends) and the [`REVERB_MORE_LABEL`] pill that opens the REVERB window, lit while it is
+/// open. The three knobs here and the window edit one `ReverbState`.
 fn reverb_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     section(
         ui,
         state,
-        |ui, _| {
-            controls::group_label(ui, theme, "Reverb");
+        |ui, state| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(ROW_HEIGHT);
+                ui.spacing_mut().item_spacing.x = HEAD_GAP;
+                neu::label(ui, theme, "Reverb").on_hover_text(REVERB_TOOLTIP);
+                let open = state.is_plugin_open(PluginKind::Reverb);
+                if neu::toggle_button(ui, theme, REVERB_MORE_LABEL, open)
+                    .on_hover_text(REVERB_MORE_TOOLTIP)
+                    .clicked()
+                {
+                    state.toggle_plugin(PluginKind::Reverb);
+                }
+            });
         },
         |ui, state| {
             Knob::new(ParamId::ReverbSize, fmt_percent).show(ui, state, theme);
             Knob::new(ParamId::ReverbDamping, fmt_percent).show(ui, state, theme);
-            Knob::new(ParamId::ReverbMix, fmt_percent).show(ui, state, theme);
+            Knob::new(ParamId::ReverbMix, fmt_percent)
+                .note(REVERB_MIX_NOTE)
+                .show(ui, state, theme);
         },
     );
 }

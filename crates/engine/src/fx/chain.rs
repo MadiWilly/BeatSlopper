@@ -293,6 +293,21 @@ impl FxChain {
         self.apply_smoothed();
     }
 
+    /// Snaps the reverb's size / damping / mix smoothers and its pre-delay / width glides to
+    /// their targets, leaving every delay line and tail alone (project load, see
+    /// `Engine::set_reverb_state`). Unlike [`reset`](Self::reset) this never clears audio.
+    pub fn snap_reverb(&mut self) {
+        for s in [
+            &mut self.reverb_size,
+            &mut self.reverb_damping,
+            &mut self.reverb_mix,
+        ] {
+            s.snap(s.target());
+        }
+        self.apply_smoothed();
+        self.reverb.snap();
+    }
+
     /// Pushes the smoothers' current values into the effects.
     #[inline]
     fn apply_smoothed(&mut self) {

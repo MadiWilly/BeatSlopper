@@ -182,6 +182,40 @@ fn dimmed_knob_stays_live_and_names_the_reason_in_its_tooltip() {
 }
 
 #[test]
+fn noted_knob_keeps_one_tooltip_with_the_note_on_a_second_line() {
+    let mut harness = Harness::builder()
+        .with_size(vec2(300.0, 300.0))
+        .with_step_dt(STEP)
+        .build_ui_state(
+            |ui, value: &mut f32| {
+                let theme = Theme::dark();
+                theme.apply(ui.ctx());
+                ui.add_space(60.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(60.0);
+                    neu::knob_noted(ui, &theme, value, &MIX, Some("Return level"));
+                });
+            },
+            50.0,
+        );
+    harness.run();
+    harness.get_by_role_and_label(Role::Slider, "Mix").hover();
+    harness.run_steps(7);
+    harness
+        .get_by_role_and_label(Role::Slider, "Mix")
+        .get_by_role(Role::Tooltip)
+        .get_by_label("Mix: 50 %\nReturn level");
+    assert_eq!(
+        harness
+            .get_by_role_and_label(Role::Slider, "Mix")
+            .get_all_by_role(Role::Tooltip)
+            .count(),
+        1,
+        "one tooltip, not two stacked"
+    );
+}
+
+#[test]
 fn tooltip_text_formats_label_and_value() {
     assert_eq!(neu::tooltip_text("Mix", "50 %"), "Mix: 50 %");
     assert_eq!(neu::tooltip_text("", "50 %"), "50 %");

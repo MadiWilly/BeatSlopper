@@ -64,6 +64,15 @@ pub const CHANNEL_NAMES: [&str; Channel::COUNT] =
     ["Kick", "Snare", "Clap", "Closed hat", "Open hat", "Synth"];
 /// Legends of the three knob rows (master column), top to bottom.
 pub const KNOB_LEGENDS: [&str; 3] = ["Pan", "Dly", "Rev"];
+/// Tooltips of [`KNOB_LEGENDS`]: the sends are per-channel amounts *into* a bus; the bus's
+/// return level is the FX rack's MIX (reverb: also the REVERB window's MIX).
+pub const LEGEND_TOOLTIPS: [&str; 3] = [
+    "Pan: stereo position of the channel",
+    "Delay send: how much of this channel goes into the delay bus. The FX rack's DELAY MIX \
+     is the return level.",
+    "Reverb send: how much of this channel goes into the reverb bus. MIX in the FX rack's \
+     REVERB group (and the REVERB window) is the return level.",
+];
 
 /// One of a strip's stacked knobs: which value it edits, how it reads, and whether its arc
 /// starts at 12 o'clock.
@@ -315,7 +324,7 @@ fn master(ui: &mut Ui, state: &mut AppState, theme: &Theme, origin: Pos2, fader:
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     ui.add_space(theme.space_1);
-                    neu::label(ui, theme, legend);
+                    neu::label(ui, theme, legend).on_hover_text(LEGEND_TOOLTIPS[i]);
                 },
             );
         });

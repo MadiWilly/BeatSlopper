@@ -102,8 +102,20 @@ pub fn knob_edit(
     spec: &neu::KnobSpec<'_>,
     commit: impl FnOnce(f32, bool),
 ) -> Response {
+    knob_edit_noted(ui, theme, value, spec, None, commit)
+}
+
+/// [`knob_edit`] with a second tooltip line (`note`, see [`neu::knob_noted`]).
+pub fn knob_edit_noted(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: f32,
+    spec: &neu::KnobSpec<'_>,
+    note: Option<&str>,
+    commit: impl FnOnce(f32, bool),
+) -> Response {
     let mut v = value;
-    let response = neu::knob(ui, theme, &mut v, spec);
+    let response = neu::knob_noted(ui, theme, &mut v, spec, note);
     if response.changed() || v != value {
         commit(v, response.drag_started());
     }

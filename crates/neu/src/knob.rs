@@ -305,6 +305,31 @@ pub fn knob_dimmed(
     spec: &KnobSpec<'_>,
     dimmed: Option<&str>,
 ) -> Response {
+    knob_with(ui, theme, value, spec, dimmed, None)
+}
+
+/// [`knob`] whose tooltip carries a second line, `note` (e.g. "Return level of the reverb
+/// bus"): one tooltip, `"label: value"` over the note, instead of two stacked hover texts.
+pub fn knob_noted(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: &mut f32,
+    spec: &KnobSpec<'_>,
+    note: Option<&str>,
+) -> Response {
+    knob_with(ui, theme, value, spec, None, note)
+}
+
+/// The general knob: [`knob_dimmed`]'s `dimmed` reason and [`knob_noted`]'s `note` together.
+/// The tooltip reads `"label: value · reason"` on its first line and `note` on a second.
+pub fn knob_with(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: &mut f32,
+    spec: &KnobSpec<'_>,
+    dimmed: Option<&str>,
+    note: Option<&str>,
+) -> Response {
     let size = spec.size;
     let labelled = !spec.label.is_empty();
     let mut painter = ui.painter().clone();
@@ -422,6 +447,10 @@ pub fn knob_dimmed(
     if let Some(reason) = dimmed {
         tooltip.push_str(" · ");
         tooltip.push_str(reason);
+    }
+    if let Some(note) = note {
+        tooltip.push('\n');
+        tooltip.push_str(note);
     }
     response.on_hover_text(tooltip)
 }

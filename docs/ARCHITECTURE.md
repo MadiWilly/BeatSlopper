@@ -599,7 +599,11 @@ and messages.
   set_reverb_state}`. `ReverbState` is the source of truth: `set_reverb(Size | Damping | Mix)`
   goes through `set_param(ParamId::Reverb*)`, and `set_param(ParamId::Reverb*)` writes the
   state, so both views always agree. The pre-delay / width / cuts reach the DSP through
-  `FxChain::reverb_mut()`.
+  `FxChain::reverb_mut()`. `set_reverb_state` (project load) also snaps the chain's size /
+  damping / mix smoothers and the reverb's pre-delay / width glides (`FxChain::snap_reverb`,
+  `Reverb::snap`; delay lines and tail untouched), like `set_mixer_state` / `set_eq_state`, so
+  an offline render honours the loaded room from its first hit. A synth `Preset::apply` resets
+  the three shared values and leaves the extras alone (reverb audit, DECISIONS.md 2026-10-25).
 - Reverb level meter: `FxChain::last_reverb_wet()` (the return after its level) is peak-held
   per block and published through one more atomic; `EngineHandle::reverb_level() -> f32`.
 
@@ -619,7 +623,8 @@ sine = 0 dB, floor -90 dB) and applies attack / 40 dB/s decay smoothing per bin;
 `from_json` builds the reverb from `reverb_size` / `reverb_damping` / `reverb_mix` when a
 file has no `reverb` (version <= 5) and always copies the state's size / damping / mix back
 into `params` (`sync_reverb_params`), so the state wins over a stale param. Exports honour
-both.
+both: `render_project` goes through `apply_to`, whose `set_reverb_state` snaps the room
+(test `export_honours_the_reverb_pre_delay_from_the_first_hit`).
 
 ### app
 - `plugins.rs`: `PluginKind { Eq, Reverb }` (`ALL`, `index`, `title`, `pill_label`,
@@ -659,7 +664,17 @@ both.
   select; hover tooltip), `eq_window.rs` (head with `EQ On`, graph, `BAND n` controls: TYPE
   segmented, ON, FREQ / GAIN / Q knobs, OUTPUT knob; PRESETS column with the MODIFIED lamp and
   a scrollable pill list), `reverb_window.rs` (RT60 readout, the envelope plot on a log dB
-  scale with time ticks and the RT60 marker, the wet meter, the seven knobs, PRESETS column).
+  scale with time ticks and the RT60 marker, the wet meter, the seven knobs, PRESETS column;
+  the head carries the caps hint `SHARED_HINT` "Size · damp · mix shared with the FX rack" and
+  the MIX knob's tooltip a second line, `MIX_NOTE`: mix is the return level, the mixer's REV
+  sends feed the bus).
+- Reverb audit (branch `madi/reverb-audit-087b74`): the FX rack's REVERB group head has a
+  `More` pill (`fx_rack::REVERB_MORE_LABEL`, lit while the window is open, toggles
+  `plugin_open[Reverb]`; not "Open" because the PROJECT panel's file button owns that
+  accessible name), the REVERB label and the rack's MIX knob explain sends vs return level
+  (`REVERB_TOOLTIP`, `REVERB_MIX_NOTE`, via `Knob::note` -> `neu::knob_with`), and the mixer's
+  PAN / DLY / REV legends have `LEGEND_TOOLTIPS`. `neu::knob_noted` / `knob_with` add a second
+  tooltip line to a knob (one tooltip, not two stacked).
 - Tests: `crates/engine/tests/plugins.rs` (12), unit tests in `fx/eq.rs`, `fx/reverb.rs`,
   `spectrum.rs`, `plugins.rs`, `eq_graph.rs`; `crates/app/tests/plugins_ui.rs` (both windows
   render in both themes, preset pills apply through the app state, a node drag moves the band

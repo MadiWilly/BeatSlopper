@@ -999,11 +999,15 @@ impl Engine {
         self.reverb_state.get(param)
     }
 
-    /// Replaces every reverb value (project load).
+    /// Replaces every reverb value (project load). Like [`set_mixer_state`](Self::set_mixer_state)
+    /// and [`set_eq_state`](Self::set_eq_state) the smoothers snap, so an offline render
+    /// honours the pre-delay from its first hit instead of gliding there from the previous
+    /// room; the tail is left alone.
     pub fn set_reverb_state(&mut self, state: &ReverbState) {
         for p in ReverbParam::ALL {
             self.set_reverb(p, state.get(p));
         }
+        self.fx.snap_reverb();
     }
 
     /// The synth parameters currently applied to the voices.
