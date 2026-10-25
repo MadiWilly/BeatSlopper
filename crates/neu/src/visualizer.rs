@@ -52,7 +52,7 @@ pub const WAVE_POINTS: usize = 96;
 /// Sample pairs drawn by [`vector`] (the newest of the window).
 pub const VECTOR_POINTS: usize = 512;
 /// Corner radius of the inset backdrop.
-pub const PANEL_RADIUS: f32 = 12.0;
+pub const PANEL_RADIUS: f32 = 4.0;
 /// Smallest size a visualizer draws at.
 pub const MIN_SIZE: Vec2 = vec2(40.0, 20.0);
 /// Peak-hold caps fall by this fraction of the bar height per second.
@@ -397,12 +397,12 @@ fn allocate(ui: &mut Ui, kind: Visualizer) -> (Rect, Response) {
     (rect, response)
 }
 
-/// The inset-m backdrop with the optional faint grid; returns the painter clipped to it.
+/// The panel-2 well (border-2, radius 4) with the optional grid-beat grid; returns the painter clipped to it.
 fn backdrop(ui: &Ui, theme: &Theme, rect: Rect, style: &VisualStyle) -> Painter {
     let painter = ui.painter().with_clip_rect(rect);
-    paint_soft_rect(&painter, rect, PANEL_RADIUS, Depth::InsetM, theme);
+    crate::flat::paint_control(&painter, rect, PANEL_RADIUS, theme.panel_2, theme.border_2);
     if style.grid {
-        let color = theme.shadow_dark.gamma_multiply(0.45);
+        let color = theme.grid_beat;
         let stroke = Stroke::new(1.0, color);
         let inner = rect.shrink(4.0);
         for i in 1..4 {
@@ -993,10 +993,10 @@ pub fn waves(ui: &mut Ui, theme: &Theme, input: &VisualInput<'_>, style: &Visual
                 (pos2(a.x, base_y), pos2(b.x, base_y))
             };
             let i = fill.vertices.len() as u32;
-            fill.colored_vertex(a, theme.surface);
-            fill.colored_vertex(b, theme.surface);
-            fill.colored_vertex(b2, theme.surface);
-            fill.colored_vertex(a2, theme.surface);
+            fill.colored_vertex(a, theme.panel_2);
+            fill.colored_vertex(b, theme.panel_2);
+            fill.colored_vertex(b2, theme.panel_2);
+            fill.colored_vertex(a2, theme.panel_2);
             fill.add_triangle(i, i + 1, i + 2);
             fill.add_triangle(i, i + 2, i + 3);
         }

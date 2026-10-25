@@ -231,13 +231,33 @@ fn dial_drags_like_a_knob_in_both_sizes() {
                 50.0,
             );
         harness.run();
-        let centre = harness.get_by_label("Mix").rect().center();
+        // Deck's dial is the 40 pt knob: `Lg` puts it right of the text block, `Sm` under the
+        // label. Aim at the knob, not the readout.
+        let rect = harness.get_by_label("Mix").rect();
+        let centre = match size {
+            DialSize::Lg => rect.right_center() - vec2(20.0, 0.0),
+            DialSize::Sm => rect.center(),
+        };
         drag(&mut harness, centre, centre - vec2(0.0, 30.0));
         let v = *harness.state();
         assert!((v - 70.0).abs() < 0.5, "{size:?}: expected ~70, got {v}");
-        harness.get_by_label("Mix").click();
-        harness.get_by_label("Mix").click();
+        harness.hover_at(centre);
         harness.run();
+        for _ in 0..2 {
+            harness.event(egui::Event::PointerButton {
+                pos: centre,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            });
+            harness.event(egui::Event::PointerButton {
+                pos: centre,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+            harness.run();
+        }
         assert_eq!(*harness.state(), 50.0, "{size:?}");
     }
 }
@@ -334,9 +354,13 @@ fn filled_rects(shapes: &[egui::Shape], fill: egui::Color32, out: &mut Vec<egui:
     }
 }
 
-/// Renders one segmented control of `items` with `selected` and returns its track rect and
-/// the chip (the accent-filled rect inside the track), if one was painted.
-fn chip_of(theme: &Theme, selected: usize, items: &[&str]) -> (egui::Rect, Option<egui::Rect>) {
+/// Renders one segmented control of `items` with `selected` and returns its track rect, the
+/// chip (the `panel_4`-filled rect inside the track) and the accent underline, if painted.
+fn chip_of(
+    theme: &Theme,
+    selected: usize,
+    items: &[&str],
+) -> (egui::Rect, Option<egui::Rect>, Option<egui::Rect>) {
     let ctx = egui::Context::default();
     theme.apply(&ctx);
     let mut selected = selected;
@@ -351,35 +375,50 @@ fn chip_of(theme: &Theme, selected: usize, items: &[&str]) -> (egui::Rect, Optio
     // No renderer here: the font atlas upload is acknowledged by dropping it explicitly.
     out.textures_delta.clear();
     let shapes: Vec<egui::Shape> = out.shapes.into_iter().map(|c| c.shape).collect();
-    let mut rects = Vec::new();
-    filled_rects(&shapes, theme.accent, &mut rects);
-    let chip = rects.iter().find(|r| track.contains_rect(**r)).copied();
-    (track, chip)
+    let mut chips = Vec::new();
+    filled_rects(&shapes, neu::chip_colour(theme), &mut chips);
+    let chip = chips
+        .iter()
+        .find(|r| track.contains_rect(**r) && r.height() > 10.0)
+        .copied();
+    let mut lines = Vec::new();
+    filled_rects(&shapes, theme.accent, &mut lines);
+    let underline = lines.iter().find(|r| track.contains_rect(**r)).copied();
+    (track, chip, underline)
 }
 
 #[test]
-fn segmented_paints_an_accent_chip_under_the_selected_item() {
+fn segmented_paints_a_panel_4_chip_with_an_accent_underline_under_the_selected_item() {
     const WAVES: [&str; 4] = ["Sine", "Saw", "Square", "Tri"];
     for theme in [Theme::dark(), Theme::light()] {
-        let (track, first) = chip_of(&theme, 0, &WAVES);
+        let (track, first, line) = chip_of(&theme, 0, &WAVES);
         let first = first.expect("a chip under the first item");
+        let line = line.expect("an underline under the first item");
         assert_eq!(track.height(), neu::SEGMENTED_HEIGHT);
+        assert_eq!(neu::SEGMENTED_HEIGHT, 28.0);
         assert!(
             (first.height() - neu::SEGMENTED_CHIP_HEIGHT).abs() < 0.01,
             "{first:?}"
         );
+        assert_eq!(neu::SEGMENTED_CHIP_HEIGHT, 24.0);
         assert!((first.center().y - track.center().y).abs() < 0.01);
         assert!(first.min.x > track.min.x && first.max.x < track.center().x);
-        let (_, last) = chip_of(&theme, 3, &WAVES);
+        // The underline: 2 px at the chip's bottom, inset 4 each side.
+        assert!((line.height() - 2.0).abs() < 0.01, "{line:?}");
+        assert!((line.max.y - first.max.y).abs() < 0.01);
+        assert!((line.min.x - (first.min.x + 4.0)).abs() < 0.01);
+        assert!((line.max.x - (first.max.x - 4.0)).abs() < 0.01);
+        let (_, last, _) = chip_of(&theme, 3, &WAVES);
         let last = last.expect("a chip under the last item");
         assert!(last.min.x > track.center().x && last.max.x < track.max.x);
         assert!(
             last.min.x > first.max.x,
             "the chip moves with the selection"
         );
-        // One item is no choice: no chip lights up.
-        let (_, none) = chip_of(&theme, 0, &["None"]);
+        // One item is no choice: no chip, no underline.
+        let (_, none, no_line) = chip_of(&theme, 0, &["None"]);
         assert_eq!(none, None, "{:?}", theme.mode);
+        assert_eq!(no_line, None, "{:?}", theme.mode);
     }
 }
 
@@ -556,13 +595,21 @@ fn renders_in_both_themes() {
                 },
             );
         harness.run();
-        // Hover and press paths: a knob, a dial, an item and a slider thumb.
-        for label in ["Detune", "Master", "Square", "S"] {
+        // Hover and press paths: a knob, a dial (aimed at its knob, right of the text), an
+        // item and a slider thumb.
+        for label in ["Detune", "Square", "S"] {
             harness.get_by_label(label).hover();
             harness.run();
             harness.get_by_label(label).click();
             harness.run();
         }
+        let master = harness.get_by_label("Master").rect().right_center() - vec2(20.0, 0.0);
+        harness.hover_at(master);
+        harness.run();
+        harness.drag_at(master);
+        harness.run();
+        harness.drop_at(master);
+        harness.run();
         // Extremes of the bipolar and log knobs, both lamp states.
         harness.state_mut().detune = -50.0;
         harness.state_mut().cutoff = 20000.0;

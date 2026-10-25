@@ -102,13 +102,13 @@ fn release_at(harness: &mut Harness<'_, PianoLog>, pos: Pos2) {
     harness.run();
 }
 
-/// Centre of the lower (unobstructed) part of white key `index`.
+/// Centre of the lower (unobstructed) part of white key `index` (below the 38 pt black keys).
 fn white_key_pos(origin: Pos2, index: usize) -> Pos2 {
     pos2(
         origin.x
             + index as f32 * neu::piano_keys::WHITE_KEY_PITCH
             + neu::piano_keys::WHITE_KEY_WIDTH * 0.5,
-        origin.y + 85.0,
+        origin.y + 55.0,
     )
 }
 
@@ -119,7 +119,7 @@ fn renders_in_both_themes_with_and_without_held_notes() {
         // Hover a white and a black key to exercise the hover colours.
         let origin = keyboard_origin(&harness);
         move_to(&mut harness, white_key_pos(origin, 3));
-        move_to(&mut harness, pos2(origin.x + 81.0, origin.y + 20.0));
+        move_to(&mut harness, pos2(origin.x + 56.0, origin.y + 20.0));
         assert!(harness.state().pressed.is_empty());
 
         // Hold a white and a black key through the model.
@@ -138,6 +138,11 @@ fn white_key_press_and_release_report_the_note() {
     assert_eq!(
         harness.get_by_label("Piano keys").rect().size(),
         neu::keyboard_size(WHITE_KEYS)
+    );
+    assert_eq!(
+        neu::keyboard_size(WHITE_KEYS),
+        vec2(784.0, 64.0),
+        "Deck strip keys"
     );
 
     // White key 0 is C4, key 3 is F4 (C D E F), key 7 is C5.
@@ -163,25 +168,25 @@ fn black_key_wins_where_it_overlaps_a_white_key() {
     let mut harness = piano_harness(ThemeMode::Light);
     let origin = keyboard_origin(&harness);
 
-    // C#4 is centred on the gap between white 0 and 1 (x = 84 - 3 = 81), 44 wide, 62 tall.
-    // x = 70 is inside white key 0 (0..78) and inside the black key (59..103).
-    let on_black = pos2(origin.x + 70.0, origin.y + 30.0);
+    // C#4 is centred on the boundary between white 0 and 1 (x = 56), 32 wide, 38 tall.
+    // x = 50 is inside white key 0 (0..56) and inside the black key (40..72).
+    let on_black = pos2(origin.x + 50.0, origin.y + 20.0);
     press_at(&mut harness, on_black);
     release_at(&mut harness, on_black);
     assert_eq!(harness.state().pressed, vec![61]);
     assert_eq!(harness.state().released, vec![61]);
 
     // The same x below the black key is the white key C4.
-    let below_black = pos2(origin.x + 70.0, origin.y + 85.0);
+    let below_black = pos2(origin.x + 50.0, origin.y + 55.0);
     press_at(&mut harness, below_black);
     release_at(&mut harness, below_black);
     assert_eq!(harness.state().pressed, vec![61, 60]);
 
-    // No black key between E and F: the gap after white key 2 is empty.
-    let e_f_gap = pos2(origin.x + 3.0 * 84.0 - 3.0, origin.y + 30.0);
-    press_at(&mut harness, e_f_gap);
-    release_at(&mut harness, e_f_gap);
-    assert_eq!(harness.state().pressed, vec![61, 60]);
+    // No black key between E and F: the boundary after white key 2 is F4 itself.
+    let e_f = pos2(origin.x + 3.0 * 56.0 + 2.0, origin.y + 20.0);
+    press_at(&mut harness, e_f);
+    release_at(&mut harness, e_f);
+    assert_eq!(harness.state().pressed, vec![61, 60, 65]);
 }
 
 #[test]

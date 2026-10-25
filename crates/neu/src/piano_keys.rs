@@ -1,21 +1,27 @@
-//! On-screen piano keyboard (`.keys` / `.key` in `design/preview-a.html`).
+//! On-screen piano keyboard (`design/round3/WINNER.md` section 5, "KEYBOARD strip").
 //!
-//! Two octaves of soft keys: white keys are 78x100 raised-m surface tiles with radius 12, black
-//! keys are 44x62 `theme.key_black` tiles with radius 10 and raised-s shadows, painted on top
-//! and centred on the 6 pt gap between the two white keys they sit between (standard layout: no
-//! black key between E-F and B-C). Each key carries its computer-key cap (12/500 tracked) and
-//! its note name (11/400, secondary) stacked at the bottom like the mock. A held key is OnGlow
-//! (accent fill, accent glow) with on-accent text.
+//! Two octaves of flat keys: white keys are 56 x 64 (no gap between them: 14 keys = 784),
+//! black keys 32 x 38 centred on the boundary between the two white keys they sit between
+//! (standard layout: no black key between E-F and B-C). A key is a `border_2` outline with
+//! radius 0 0 4 4 over a `panel_3` to `panel_4` gradient; its note name (micro, `text_3`) and
+//! its computer-key keycap (16 h) are stacked at the bottom (gap 2, padding-bottom 4). Black
+//! keys use the black-key gradient, border and keycap colours of the theme. A held key is
+//! `accent` with `accent_press` border and `on_accent` text, its keycap transparent.
 //!
 //! Mouse: the whole keyboard is one `Sense::click_and_drag` widget; the pointer position is hit
 //! tested against the black keys first, then the white keys. A press reports `pressed`, a
 //! release (anywhere) reports `released` for the note that was pressed, and dragging onto
 //! another key while the button is down releases the old note and presses the new one.
 
-use egui::{Align2, Color32, Id, Pos2, Rect, Response, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use egui::epaint::CornerRadiusF32;
+use egui::{
+    Align2, Color32, Id, Pos2, Rect, Response, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo,
+    pos2, vec2,
+};
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_soft_rect, paint_soft_rect_with_fill};
+use crate::chrome::{KEYCAP_HEIGHT, paint_keycap_coloured};
+use crate::flat::vertical_gradient_rect_corners;
 use crate::text::{self, TextKind};
 
 /// What the piano shows: which notes are held and which computer key cap each note carries.
@@ -39,25 +45,28 @@ pub struct PianoOutput {
     pub released: Option<u8>,
 }
 
-/// Width of a white key in points.
-pub const WHITE_KEY_WIDTH: f32 = 78.0;
-/// Height of a white key in points.
-pub const WHITE_KEY_HEIGHT: f32 = 100.0;
-/// Gap between white keys in points.
-pub const KEY_GAP: f32 = 6.0;
-/// Width of a black key in points.
-pub const BLACK_KEY_WIDTH: f32 = 44.0;
-/// Height of a black key in points.
-pub const BLACK_KEY_HEIGHT: f32 = 62.0;
+/// Width of a white key in points (56).
+pub const WHITE_KEY_WIDTH: f32 = 56.0;
+/// Height of a white key in points (64).
+pub const WHITE_KEY_HEIGHT: f32 = 64.0;
+/// Gap between white keys in points (0: Deck keys touch).
+pub const KEY_GAP: f32 = 0.0;
+/// Width of a black key in points (32).
+pub const BLACK_KEY_WIDTH: f32 = 32.0;
+/// Height of a black key in points (38).
+pub const BLACK_KEY_HEIGHT: f32 = 38.0;
 /// Horizontal distance between the left edges of two neighbouring white keys.
 pub const WHITE_KEY_PITCH: f32 = WHITE_KEY_WIDTH + KEY_GAP;
+/// Generic key sizes for other uses (40 x 64 white, 24 x 38 black).
+pub const GENERIC_WHITE_KEY: egui::Vec2 = egui::Vec2::new(40.0, 64.0);
+pub const GENERIC_BLACK_KEY: egui::Vec2 = egui::Vec2::new(24.0, 38.0);
+/// Corner radius of the bottom corners (4).
+pub const KEY_RADIUS: f32 = 4.0;
 
-/// Bottom padding of a white key's text stack (`.key` `padding-bottom`).
-const WHITE_PAD_BOTTOM: f32 = 10.0;
-/// Bottom padding of a black key's text stack (`.key.b` `padding-bottom`).
-const BLACK_PAD_BOTTOM: f32 = 8.0;
-/// Gap between the cap and the note name (`.key` `gap`).
-const TEXT_GAP: f32 = 3.0;
+/// Bottom padding of a key's text stack.
+const PAD_BOTTOM: f32 = 4.0;
+/// Gap between the note name and the keycap.
+const TEXT_GAP: f32 = 2.0;
 
 /// Semitone offsets of the white keys within an octave (C D E F G A B).
 const WHITE_SEMITONES: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
@@ -81,7 +90,7 @@ pub struct PianoKey {
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseHeld(Option<u8>);
 
-/// Total width of a keyboard with `white_keys` white keys (14 -> 1170).
+/// Total width of a keyboard with `white_keys` white keys (14 -> 784).
 pub fn keyboard_width(white_keys: usize) -> f32 {
     (white_keys as f32 * WHITE_KEY_PITCH - KEY_GAP).max(0.0)
 }
@@ -131,7 +140,7 @@ pub fn key_layout(origin: Pos2, base_note: u8, white_keys: usize) -> Vec<PianoKe
         if note > 127 {
             break;
         }
-        // The boundary is the centre of the gap after white key `i`.
+        // The boundary between white key `i` and the next.
         let boundary_x = origin.x + (i + 1) as f32 * WHITE_KEY_PITCH - KEY_GAP * 0.5;
         keys.push(PianoKey {
             note,
@@ -154,7 +163,7 @@ pub fn key_at(keys: &[PianoKey], pos: Pos2) -> Option<u8> {
         .map(|k| k.note)
 }
 
-/// Draws two octaves of soft piano keys. Held keys light up in the accent colour.
+/// Draws two octaves of piano keys. Held keys light up in the accent colour.
 ///
 /// Mouse presses and releases are reported in the returned [`PianoOutput`]; the widget keeps
 /// track of the note the mouse is holding so that the release is reported for that note even
@@ -220,78 +229,89 @@ fn handle_mouse(ui: &Ui, response: &Response, keys: &[PianoKey]) -> PianoOutput 
     out
 }
 
-/// Paints one key with its cap and note name.
+/// Paints one key with its note name and keycap.
 fn paint_key(ui: &Ui, theme: &Theme, model: &PianoModel<'_>, key: &PianoKey, hovered: bool) {
     let painter = ui.painter();
     let held = model.held[usize::from(key.note)];
-    let (cap_color, note_color) = if held {
-        let radius = if key.black {
-            theme.radius_key_black
-        } else {
-            theme.radius_key_white
-        };
-        paint_soft_rect(painter, key.rect, radius, Depth::OnGlow, theme);
-        (theme.on_accent, theme.on_accent)
+    let corners = CornerRadiusF32 {
+        nw: 0.0,
+        ne: 0.0,
+        sw: KEY_RADIUS,
+        se: KEY_RADIUS,
+    };
+    // (top, bottom, border, note colour, keycap face, keycap border, keycap text)
+    let (top, bottom, border, note_colour, cap_face, cap_border, cap_text) = if held {
+        (
+            theme.accent,
+            theme.accent,
+            theme.accent_press,
+            theme.on_accent,
+            Color32::TRANSPARENT,
+            crate::theme::with_alpha(theme.on_accent, 0.5),
+            theme.on_accent,
+        )
     } else if key.black {
-        paint_soft_rect_with_fill(
-            painter,
-            key.rect,
-            theme.radius_key_black,
-            Depth::RaisedS,
-            theme.key_black,
-            theme,
-        );
-        (theme.text_primary, black_key_note_color(theme, hovered))
+        let [cap_face, cap_border, cap_text] = theme.key_black_keycap;
+        (
+            theme.key_black_face[0],
+            theme.key_black_face[1],
+            theme.key_black_border,
+            theme.key_black_text,
+            cap_face,
+            cap_border,
+            cap_text,
+        )
     } else {
-        paint_soft_rect(
-            painter,
-            key.rect,
-            theme.radius_key_white,
-            Depth::RaisedM,
-            theme,
-        );
-        let note_color = if hovered {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-        (theme.text_primary, note_color)
+        (
+            theme.panel_3,
+            theme.panel_4,
+            theme.border_2,
+            if hovered { theme.text_2 } else { theme.text_3 },
+            theme.panel_2,
+            theme.border_2,
+            theme.text_3,
+        )
     };
-
-    // Text stack from the bottom: note name, 3 pt gap, cap.
-    let pad = if key.black {
-        BLACK_PAD_BOTTOM
-    } else {
-        WHITE_PAD_BOTTOM
-    };
-    let cx = key.rect.center().x;
-    let name = note_name(key.note);
-    let note_rect = text::paint_text(
-        painter,
-        pos2(cx, key.rect.max.y - pad),
-        Align2::CENTER_BOTTOM,
-        &name,
-        TextKind::Label,
-        note_color,
+    painter.add(vertical_gradient_rect_corners(
+        key.rect, corners, top, bottom,
+    ));
+    painter.rect_stroke(
+        key.rect,
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: KEY_RADIUS as u8,
+            se: KEY_RADIUS as u8,
+        },
+        Stroke::new(1.0, border),
+        StrokeKind::Inside,
     );
+
+    // Text stack from the bottom: keycap, 2 pt gap, note name.
+    let cx = key.rect.center().x;
+    let mut y = key.rect.max.y - PAD_BOTTOM;
     if let Some(cap) = model.labels[usize::from(key.note)] {
         let mut buf = [0u8; 4];
         let cap = cap.encode_utf8(&mut buf);
-        text::paint_text(
+        let w = crate::chrome::keycap_size(painter, cap).x;
+        paint_keycap_coloured(
             painter,
-            pos2(cx, note_rect.min.y - TEXT_GAP),
-            Align2::CENTER_BOTTOM,
+            pos2(cx - w * 0.5, y - KEYCAP_HEIGHT * 0.5),
             cap,
-            TextKind::Title,
-            cap_color,
+            cap_face,
+            cap_border,
+            cap_text,
         );
+        y -= KEYCAP_HEIGHT + TEXT_GAP;
     }
-}
-
-/// Note-name colour on a black key: always the primary text colour, because the secondary
-/// colour on `key_black` is only 3.0:1 in the light theme (WCAG AA needs 4.5:1 at 11 pt).
-fn black_key_note_color(theme: &Theme, _hovered: bool) -> Color32 {
-    theme.text_primary
+    text::paint_text(
+        painter,
+        pos2(cx, y),
+        Align2::CENTER_BOTTOM,
+        &note_name(key.note),
+        TextKind::Micro,
+        note_colour,
+    );
 }
 
 #[cfg(test)]
@@ -323,16 +343,17 @@ mod tests {
             blacks.iter().map(|k| k.note).collect::<Vec<_>>(),
             [61, 63, 66, 68, 70, 73, 75, 78, 80, 82]
         );
-        assert_eq!(keyboard_width(14), 1170.0);
-        assert_eq!(whites[13].rect.max.x, 1170.0);
+        assert_eq!(keyboard_width(14), 784.0);
+        assert_eq!(whites[13].rect.max.x, 784.0);
     }
 
     #[test]
-    fn black_keys_are_centred_on_the_gap() {
+    fn black_keys_are_centred_on_the_boundary() {
         let keys = key_layout(pos2(10.0, 20.0), 60, 14);
         let c_sharp = keys.iter().find(|k| k.note == 61).unwrap();
-        // Boundary between white 0 and 1: x = 10 + 84 - 3.
-        assert_eq!(c_sharp.rect.center().x, 10.0 + WHITE_KEY_PITCH - 3.0);
+        // Boundary between white 0 and 1: x = 10 + 56.
+        assert_eq!(c_sharp.rect.center().x, 10.0 + WHITE_KEY_PITCH);
+        assert_eq!(c_sharp.rect.min.x, 10.0 + WHITE_KEY_PITCH - 16.0);
         assert_eq!(c_sharp.rect.min.y, 20.0);
         assert_eq!(c_sharp.rect.size(), vec2(BLACK_KEY_WIDTH, BLACK_KEY_HEIGHT));
     }
@@ -340,11 +361,11 @@ mod tests {
     #[test]
     fn hit_test_prefers_black_keys() {
         let keys = key_layout(Pos2::ZERO, 60, 14);
-        // Top of the first white key, where C#4 overlaps D4's and C4's edges.
-        assert_eq!(key_at(&keys, pos2(39.0, 50.0)), Some(60));
-        assert_eq!(key_at(&keys, pos2(81.0, 30.0)), Some(61));
-        assert_eq!(key_at(&keys, pos2(81.0, 90.0)), None); // the gap, below the black key
-        assert_eq!(key_at(&keys, pos2(90.0, 90.0)), Some(62));
+        // Top of the first white key, where C#4 (40..72 wide, 38 tall) overlaps C4 and D4.
+        assert_eq!(key_at(&keys, pos2(20.0, 30.0)), Some(60));
+        assert_eq!(key_at(&keys, pos2(50.0, 30.0)), Some(61));
+        assert_eq!(key_at(&keys, pos2(50.0, 50.0)), Some(60)); // below the black key
+        assert_eq!(key_at(&keys, pos2(60.0, 50.0)), Some(62));
         assert_eq!(key_at(&keys, pos2(-1.0, 50.0)), None);
     }
 

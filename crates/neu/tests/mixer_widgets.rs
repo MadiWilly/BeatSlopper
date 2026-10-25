@@ -47,7 +47,8 @@ fn fader_harness(mode: ThemeMode) -> Harness<'static, f32> {
 fn fader_press_and_drag_set_the_value_proportional_to_position() {
     let mut harness = fader_harness(ThemeMode::Dark);
     let hit = harness.get_by_label("Level").rect();
-    assert_eq!(hit.size(), vec2(neu::SLIDER_WIDTH, neu::FADER_TRACK.y));
+    assert_eq!(hit.size(), vec2(neu::FADER_WIDTH, neu::FADER_TRACK.y));
+    assert_eq!(hit.size(), vec2(24.0, 120.0), "Deck fader: 24 x 120");
     let track = Rect::from_center_size(hit.center(), neu::FADER_TRACK);
     let x = hit.center().x;
     let y_at = |frac_from_top: f32| {
@@ -305,6 +306,7 @@ fn fader_sized_fits_the_track_and_can_drop_its_label() {
         );
         assert_eq!(b.height(), 90.0);
         assert_eq!(c.height(), neu::FADER_MIN_TRACK, "a 1 pt track is clamped");
+        assert_eq!(neu::FADER_MIN_TRACK, 24.0);
         // Both 90 pt faders start their track at the same y (the value row above is the
         // same); the unlabelled one has nothing under it.
         assert_eq!(a.min.y, b.min.y);

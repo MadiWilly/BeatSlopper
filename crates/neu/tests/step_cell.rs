@@ -95,7 +95,7 @@ fn click_is_reported_and_state_is_exposed() {
     assert_eq!(*harness.state(), (false, 0));
 
     let cell = harness.get_by_label("Kick step 1");
-    assert_eq!(cell.rect().size(), vec2(32.0, 32.0));
+    assert_eq!(cell.rect().size(), vec2(24.0, 24.0));
     cell.click();
     harness.run();
     assert_eq!(*harness.state(), (true, 1));
@@ -111,7 +111,43 @@ fn click_is_reported_and_state_is_exposed() {
     assert_eq!(*harness.state(), (false, 2));
 
     // The labelled cell is reachable by its note name.
-    assert_eq!(harness.get_by_label("C2").rect().size(), vec2(32.0, 32.0));
+    assert_eq!(harness.get_by_label("C2").rect().size(), vec2(24.0, 24.0));
+}
+
+/// The full-state cell: every beat tone, the note colour and the playhead ring render in
+/// both themes, and the coloured row names its cells like the plain one.
+#[test]
+fn coloured_cells_and_beat_alternation_render() {
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let mut harness = Harness::builder()
+            .with_size(vec2(600.0, 200.0))
+            .build_ui(move |ui| {
+                let theme = Theme::for_mode(mode);
+                theme.apply(ui.ctx());
+                let specs: Vec<StepCellSpec<'static>> = (0..16)
+                    .map(|i| StepCellSpec {
+                        on: i % 3 == 0,
+                        accent: i % 6 == 0,
+                        current: i == 5,
+                        selected: i == 9,
+                        label: if i % 3 == 0 { Some("C3") } else { None },
+                    })
+                    .collect();
+                neu::step_row_coloured(ui, &theme, "Keys", &specs, Some(theme.track_colour(4)));
+                neu::beat_numbers(ui, &theme, 16);
+                neu::playhead_row(ui, &theme, 16, Some(5));
+            });
+        harness.run();
+        let first = harness.get_by_label("Keys step 1").rect();
+        let last = harness.get_by_label("Keys step 16").rect();
+        assert_eq!(last.max.x - first.min.x, neu::step_row_width(16));
+        assert_eq!(neu::step_row_width(16), 426.0);
+        harness.get_by_label("Keys step 6").hover();
+        harness.run();
+        harness.get_by_label("Keys step 1").hover();
+        harness.run();
+        assert!(neu::is_alt_beat(0) && !neu::is_alt_beat(4));
+    }
 }
 
 #[test]
@@ -155,11 +191,13 @@ fn step_row_reports_the_clicked_index_and_lays_cells_out_with_gaps() {
 fn row_geometry_matches_the_mock() {
     assert_eq!(
         neu::step_row_width(16),
-        16.0 * 32.0 + 12.0 * 8.0 + 3.0 * 20.0
+        16.0 * 24.0 + 12.0 * 2.0 + 3.0 * 6.0
     );
-    assert_eq!(neu::step_row_width(16), 668.0);
-    assert_eq!(neu::step_x_offset(4), 4.0 * 32.0 + 3.0 * 8.0 + 20.0);
-    assert_eq!(neu::step_x_offset(4), 172.0);
+    assert_eq!(neu::step_row_width(16), 426.0);
+    assert_eq!(neu::step_x_offset(4), 4.0 * 24.0 + 3.0 * 2.0 + 6.0);
+    assert_eq!(neu::step_x_offset(4), 108.0);
+    assert_eq!(neu::STEP_CELL, 24.0);
+    assert_eq!(neu::STEP_PITCH, 28.0);
     assert_eq!(
         neu::step_x_offset(15) + neu::STEP_CELL,
         neu::step_row_width(16)

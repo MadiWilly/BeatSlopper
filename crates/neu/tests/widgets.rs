@@ -25,7 +25,7 @@ fn all_widgets(ui: &mut egui::Ui, mode: ThemeMode) {
                 Icon::Plus,
                 Icon::Clear,
             ] {
-                neu::icon_button(ui, &theme, icon, 48.0);
+                neu::icon_button(ui, &theme, icon, 28.0);
                 neu::stepper_button(ui, &theme, icon);
             }
         });
@@ -87,10 +87,11 @@ fn theme_toggle_flips_mode_and_palette() {
 
     let light = Theme::for_mode(ThemeMode::Light);
     let dark = Theme::for_mode(ThemeMode::Dark);
-    assert_ne!(light.surface, dark.surface);
+    assert_ne!(light.panel, dark.panel);
     assert_ne!(light.accent, dark.accent);
-    assert_eq!(dark.surface, egui::Color32::from_rgb(0x26, 0x2A, 0x31));
-    assert_eq!(light.surface, egui::Color32::from_rgb(0xE8, 0xEC, 0xF3));
+    assert_eq!(dark.panel, egui::Color32::from_rgb(0x1B, 0x1E, 0x23));
+    assert_eq!(light.panel, egui::Color32::from_rgb(0xF3, 0xF4, 0xF6));
+    assert_eq!(dark.surface, dark.panel, "the Soft Console alias");
 
     harness.get_by_label("Dark theme").click();
     harness.run();
@@ -131,13 +132,23 @@ fn toggle_and_icon_buttons_report_clicks() {
             if neu::toggle_button(ui, &theme, "Limit", s.limiter).clicked() {
                 s.limiter = !s.limiter;
             }
-            if neu::icon_button(ui, &theme, Icon::Play, 48.0).clicked() {
+            if neu::icon_button(ui, &theme, Icon::Play, 28.0).clicked() {
                 s.plays += 1;
             }
         },
         S::default(),
     );
     harness.run();
+    assert_eq!(
+        harness.get_by_label("Limit").rect().height(),
+        neu::BUTTON_HEIGHT,
+        "buttons are 28 tall"
+    );
+    assert_eq!(
+        harness.get_by_label("Play").rect().size(),
+        vec2(28.0, 28.0),
+        "icon buttons are 28 squares"
+    );
     harness.get_by_label("Limit").click();
     harness.get_by_label("Play").click();
     harness.run();

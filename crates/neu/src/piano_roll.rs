@@ -1,26 +1,30 @@
-//! The piano roll (M7): time on X in steps, pitch on Y, notes as rounded accent bars.
+//! The piano roll (`design/round3/WINNER.md` section 5, "PIANO ROLL window"): time on X in
+//! steps, pitch on Y, notes as bars in the track colour.
 //!
-//! Layout: a [`KEY_COLUMN_WIDTH`] key column on the left (one key per row, see [`key_rect`]:
-//! white keys as lit surface tiles labelled "D3" etc., black keys as shorter `key_black`
-//! stubs; a key in `model.held` paints accent and its grid row gets a faint accent wash),
-//! then `steps` columns of `step_width` by `pitches` rows of `row_height`.
-//! The bottom row is `low_pitch`; pitch rises upwards. With `model.black_keys` off the
-//! black-key rows are left out altogether: every row is a white key, an octave is seven rows
-//! and notes on black keys are off-screen until it is turned back on ([`PianoRollModel`]
-//! maps rows to pitches either way, see [`PianoRollModel::pitch_at_row`]).
-//! The whole widget is one inset-m surface; black-key rows get a faint shadow-dark tint, beat
-//! lines fall every [`BEAT`] steps (1 pt) and bar lines every [`BAR`] steps (2 pt), the
-//! playhead is a 2 pt accent line at a fractional step. Accented notes (velocity >=
-//! [`ACCENT_THRESHOLD`]) carry a [`ACCENT_DOT`] (6 pt) on-accent dot near their left end on
-//! top of the `accent_hover` fill, like the step cell's accent marker, so the state does not
-//! rest on the 1.2:1 accent / accent-hover difference alone. While the roll has keyboard focus
-//! a 1.5 pt accent ring (the shared [`crate::shadow::paint_focus_rect`]) is drawn 1 pt outside
-//! the whole roll.
+//! Layout (top to bottom): a [`RULER_HEIGHT`] (16) `panel_2` ruler with "bar.beat" labels
+//! (micro, `text_2`) and the playhead triangle; the grid, with a [`KEY_COLUMN_WIDTH`] (40)
+//! `panel_2` key column on the left (one key per row of [`PianoRollModel::row_height`] (13):
+//! black-key rows `panel_4` with the right 40 % `panel_2`, C labels in micro `text_2`, a
+//! `border` hairline between rows; a key in `model.held` paints accent and its grid row gets
+//! a faint accent wash) and `steps` columns of `step_width`; then a [`VELOCITY_LANE_HEIGHT`]
+//! (44) `panel_2` velocity lane with a `border` above, "VEL" in its key column, one 3 wide
+//! bar per note (height = velocity; velocity >= [`VELOCITY_MARKER_THRESHOLD`] carries a 7 x 3
+//! `text` marker above; selected notes get a 1 px `text` ring). The bottom grid row is
+//! `low_pitch`; pitch rises upwards. With `model.black_keys` off the black-key rows are left
+//! out altogether ([`PianoRollModel::pitch_at_row`]).
 //!
-//! As-built fill (not in `design/WINNER.md`): while idle, the grid cell under the pointer is
-//! highlighted with a half-strength `shadow_highlight` wash so the draw target reads before
-//! the press. It is a hover-only cue and conveys no state. A note removed with the right
-//! button "pops": its outline grows and fades over [`POP_SECONDS`].
+//! Grid: step lines `grid_beat`, beat and bar lines `grid_bar`, row dividers `grid_beat` (C
+//! rows `grid_bar`), black-key rows `panel_2` @ 60 % ([`black_row_tint`]). Notes: row 13, bar
+//! 12, radius 3, the track colour at alpha 0.5 + 0.5 x velocity, a 1 px outline 60 % towards
+//! black, a 2 pt resize handle (50 % black) inset 2 at the right; selected: a 1 px `text`
+//! outline 1 outside; the playhead a 1 px accent line. [`ACCENT_THRESHOLD`] still decides the
+//! shift-click velocity toggle. While the roll has keyboard focus a 2 px accent ring is drawn
+//! 1 pt outside the whole roll.
+//!
+//! As-built: while idle, the grid cell under the pointer is highlighted with a `panel_3` wash
+//! so the draw target reads before the press. A note removed with the right button "pops":
+//! its outline grows and fades over [`POP_SECONDS`]. A press or drag in the velocity lane sets
+//! the velocity of the note starting in that column (`moved`).
 //!
 //! Ghost notes (M10): [`piano_roll_with_ghosts`] also takes the other instrument tracks' notes
 //! as [`GhostNote`]s, each with its track's colour ([`Theme::track_colour`]). They are painted
@@ -54,52 +58,61 @@ use egui::{
 };
 
 use crate::Theme;
+use crate::flat::{paint_control, paint_focus_ring};
 use crate::piano_keys::note_name;
-use crate::shadow::{Depth, paint_focus_rect, paint_soft_rect, paint_soft_rect_with_fill};
 use crate::text::{self, TextKind};
+use crate::theme::with_alpha;
 
-/// Width of the key column on the left of the grid.
-pub const KEY_COLUMN_WIDTH: f32 = 48.0;
-/// Corner radius of a note bar.
-pub const NOTE_RADIUS: f32 = 6.0;
-/// Vertical inset of a note bar inside its row.
-pub const NOTE_INSET_Y: f32 = 1.0;
+/// Width of the key column on the left of the grid (40).
+pub const KEY_COLUMN_WIDTH: f32 = 40.0;
+/// Height of the ruler above the grid (16).
+pub const RULER_HEIGHT: f32 = 16.0;
+/// Height of the velocity lane under the grid (44, its `border` hairline included).
+pub const VELOCITY_LANE_HEIGHT: f32 = 44.0;
+/// Width of a velocity bar (3) and of the marker above a loud note (7 x 3).
+pub const VELOCITY_BAR_WIDTH: f32 = 3.0;
+pub const VELOCITY_MARKER: Vec2 = vec2(7.0, 3.0);
+/// Velocity at or above which a velocity bar carries the marker.
+pub const VELOCITY_MARKER_THRESHOLD: f32 = 0.85;
+/// Corner radius of a note bar (3).
+pub const NOTE_RADIUS: f32 = 3.0;
+/// Vertical inset of a note bar inside its row (row 13, bar 12).
+pub const NOTE_INSET_Y: f32 = 0.5;
 /// Width, from a note's right edge inwards, of the zone where a press starts a resize.
 pub const RESIZE_HANDLE: f32 = 6.0;
-/// Distance of the painted 1 pt handle line from the note's right edge.
-pub const HANDLE_INSET: f32 = 4.0;
-/// Steps per beat (beat lines, 1 pt).
+/// Distance of the painted 2 pt handle from the note's right edge.
+pub const HANDLE_INSET: f32 = 2.0;
+pub const HANDLE_WIDTH: f32 = 2.0;
+/// Steps per beat (beat lines).
 pub const BEAT: usize = 4;
-/// Steps per bar (bar lines, 2 pt).
+/// Steps per bar (bar lines).
 pub const BAR: usize = 16;
-/// Width of the playhead line.
-pub const PLAYHEAD_WIDTH: f32 = 2.0;
+/// Width of the playhead line (1).
+pub const PLAYHEAD_WIDTH: f32 = 1.0;
 /// Velocity of a freshly drawn note, and the "unaccented" half of the shift-click toggle.
 pub const DEFAULT_VELOCITY: f32 = 0.8;
 /// Velocity of an accented note (the other half of the shift-click toggle).
 pub const ACCENT_VELOCITY: f32 = 1.0;
-/// Notes at or above this velocity paint in `accent_hover` (the grid lane's accent rule).
+/// Notes at or above this velocity count as accented for the shift-click toggle.
 pub const ACCENT_THRESHOLD: f32 = 0.95;
-/// Diameter of the on-accent dot on an accented note (the step cell's accent marker).
-pub const ACCENT_DOT: f32 = 6.0;
-/// Distance from a note's left edge to the centre of its accent dot.
-pub const ACCENT_DOT_INSET: f32 = 8.0;
-/// Corner radius of the roll's inset background.
-pub const ROLL_RADIUS: f32 = 10.0;
-/// How far the surface is lerped towards shadow-dark on black-key rows (6 %).
-pub const BLACK_ROW_TINT: f32 = 0.06;
-/// Size of the "C3" key tile in the key column (the M7 look; kept for layouts that still
-/// measure it).
-pub const KEY_TILE: Vec2 = vec2(40.0, 20.0);
-/// Horizontal inset of a key tile inside the key column.
-pub const KEY_INSET_X: f32 = 3.0;
-/// Vertical inset of a key tile inside its row.
-pub const KEY_INSET_Y: f32 = 0.5;
-/// Width of a black key as a fraction of a white key's width.
+/// Soft Console's accent dot: retired (0), kept for the app.
+pub const ACCENT_DOT: f32 = 0.0;
+pub const ACCENT_DOT_INSET: f32 = 0.0;
+/// Corner radius of the roll (4).
+pub const ROLL_RADIUS: f32 = 4.0;
+/// How far `panel` is lerped towards `panel_2` on black-key rows (60 %).
+pub const BLACK_ROW_TINT: f32 = 0.6;
+/// Size of a key tile in the key column (the full column by one row).
+pub const KEY_TILE: Vec2 = vec2(KEY_COLUMN_WIDTH, 13.0);
+/// Horizontal inset of a key tile inside the key column (0).
+pub const KEY_INSET_X: f32 = 0.0;
+/// Vertical inset of a key tile inside its row (0).
+pub const KEY_INSET_Y: f32 = 0.0;
+/// Width of a black key as a fraction of the column (the left 60 %).
 pub const BLACK_KEY_FRACTION: f32 = 0.6;
-/// How far a white key is lerped from the surface towards shadow-highlight (it reads as lit).
-pub const WHITE_KEY_LIFT: f32 = 0.5;
-/// Distance from a white key's right edge to the end of its note name.
+/// Soft Console's white-key lift: retired (0), kept for the app.
+pub const WHITE_KEY_LIFT: f32 = 0.0;
+/// Distance from the key column's right edge to the end of a C note name.
 pub const KEY_LABEL_INSET: f32 = 4.0;
 /// Opacity of the accent wash across the grid row of a held key.
 pub const HELD_ROW_WASH: f32 = 0.12;
@@ -113,7 +126,7 @@ pub const POP_GROWTH: f32 = 0.6;
 pub const GHOST_OPACITY: f32 = 0.35;
 /// Opacity of a ghost note's 1 pt outline (its track colour).
 pub const GHOST_OUTLINE_OPACITY: f32 = 0.6;
-/// Corner radius of a ghost note bar (half a real note's, so it reads as reference).
+/// Corner radius of a ghost note bar (the note radius).
 pub const GHOST_RADIUS: f32 = 3.0;
 /// Number of white keys in MIDI 0..=127 (C-1 .. G9).
 pub const WHITE_KEYS: usize = 75;
@@ -210,7 +223,7 @@ pub struct PianoRollModel {
 }
 
 impl Default for PianoRollModel {
-    /// 16 steps, three octaves (36 rows) from C2 (36), 24 x 14 cells, no playhead, nothing
+    /// 16 steps, three octaves (36 rows) from C2 (36), 24 x 13 cells, no playhead, nothing
     /// selected, no held keys, black keys shown.
     fn default() -> Self {
         Self {
@@ -218,7 +231,7 @@ impl Default for PianoRollModel {
             low_pitch: 36,
             pitches: 36,
             step_width: 24.0,
-            row_height: 14.0,
+            row_height: 13.0,
             playhead_step: None,
             selected: None,
             selection: Vec::new(),
@@ -229,13 +242,18 @@ impl Default for PianoRollModel {
 }
 
 impl PianoRollModel {
-    /// Size of the widget: the key column plus `steps` x `step_width` by `pitches` x
-    /// `row_height`.
+    /// Size of the widget: the key column plus `steps` x `step_width` wide; the ruler, the
+    /// `pitches` x `row_height` grid and the velocity lane tall.
     pub fn size(&self) -> Vec2 {
         vec2(
             KEY_COLUMN_WIDTH + self.steps as f32 * self.step_width,
-            self.pitches as f32 * self.row_height,
+            RULER_HEIGHT + self.pitches as f32 * self.row_height + VELOCITY_LANE_HEIGHT,
         )
+    }
+
+    /// The height of the grid rows alone.
+    pub fn grid_height(&self) -> f32 {
+        self.pitches as f32 * self.row_height
     }
 
     /// Index of the highest row-able pitch: 127 with the black keys, the last white key
@@ -417,9 +435,39 @@ pub fn white_pitch(index: usize) -> u8 {
     (octave * 12 + WHITE_SEMITONES[index % OCTAVE_WHITE_ROWS]).min(127)
 }
 
-/// The grid part of a roll allocated in `outer`: everything right of the key column.
+/// The grid part of a roll allocated in `outer`: right of the key column, under the ruler,
+/// above the velocity lane.
 pub fn grid_rect(outer: Rect) -> Rect {
-    Rect::from_min_max(pos2(outer.min.x + KEY_COLUMN_WIDTH, outer.min.y), outer.max)
+    Rect::from_min_max(
+        pos2(outer.min.x + KEY_COLUMN_WIDTH, outer.min.y + RULER_HEIGHT),
+        pos2(
+            outer.max.x,
+            (outer.max.y - VELOCITY_LANE_HEIGHT).max(outer.min.y + RULER_HEIGHT),
+        ),
+    )
+}
+
+/// The ruler strip across the top of a roll allocated in `outer` (the key column included).
+pub fn ruler_rect(outer: Rect) -> Rect {
+    Rect::from_min_size(outer.min, vec2(outer.width(), RULER_HEIGHT))
+}
+
+/// The velocity lane across the bottom of a roll allocated in `outer` (the key column part
+/// carries the "VEL" label; the bars sit over the grid columns).
+pub fn velocity_rect(outer: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(
+            outer.min.x,
+            (outer.max.y - VELOCITY_LANE_HEIGHT).max(outer.min.y),
+        ),
+        outer.max,
+    )
+}
+
+/// The key column of a roll allocated in `outer` (beside the grid rows).
+pub fn key_column_rect(outer: Rect) -> Rect {
+    let grid = grid_rect(outer);
+    Rect::from_min_max(pos2(outer.min.x, grid.min.y), pos2(grid.min.x, grid.max.y))
 }
 
 /// The `(step, pitch)` cell under `pos`, or `None` outside the grid (or above the top of
@@ -463,9 +511,9 @@ pub fn row_rect(model: &PianoRollModel, grid: Rect, pitch: u8) -> Rect {
     )
 }
 
-/// The key tile painted for `pitch` in the key column of a roll allocated in `outer`: its row
-/// inset [`KEY_INSET_Y`] vertically and [`KEY_INSET_X`] horizontally; a black key is only
-/// [`BLACK_KEY_FRACTION`] of that width, against the left edge. Not clipped to `outer`.
+/// The key tile painted for `pitch` in the key column of a roll allocated in `outer`: the
+/// full column by its row; a black key is only [`BLACK_KEY_FRACTION`] of that width, against
+/// the left edge. Not clipped to `outer`.
 pub fn key_rect(model: &PianoRollModel, outer: Rect, pitch: u8) -> Rect {
     let row = row_rect(model, grid_rect(outer), pitch);
     let full = KEY_COLUMN_WIDTH - 2.0 * KEY_INSET_X;
@@ -497,11 +545,42 @@ pub fn is_black_key(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-/// The surface tinted [`BLACK_ROW_TINT`] towards shadow-dark: the black-key row fill.
+/// `panel` lerped [`BLACK_ROW_TINT`] (60 %) towards `panel_2`: the black-key row fill.
 pub fn black_row_tint(theme: &Theme) -> Color32 {
-    theme
-        .surface
-        .lerp_to_gamma(theme.shadow_dark, BLACK_ROW_TINT)
+    theme.panel.lerp_to_gamma(theme.panel_2, BLACK_ROW_TINT)
+}
+
+/// A note bar's fill: `colour` at alpha 0.5 + 0.5 x velocity.
+pub fn note_fill(colour: Color32, velocity: f32) -> Color32 {
+    let v = if velocity.is_nan() {
+        0.0
+    } else {
+        velocity.clamp(0.0, 1.0)
+    };
+    with_alpha(colour, 0.5 + 0.5 * v)
+}
+
+/// The velocity bar of `note` in the velocity `lane` of a roll whose grid is `grid`: 3 wide
+/// at the note's left edge, `velocity` of the lane's height tall from the bottom.
+pub fn velocity_bar_rect(model: &PianoRollModel, grid: Rect, lane: Rect, note: &RollNote) -> Rect {
+    let x = grid.min.x + f32::from(note.start) * model.step_width + 2.0;
+    let usable = (lane.height() - 1.0 - 4.0).max(0.0);
+    let v = if note.velocity.is_nan() {
+        0.0
+    } else {
+        note.velocity.clamp(0.0, 1.0)
+    };
+    let h = (v * usable).max(1.0);
+    Rect::from_min_max(
+        pos2(x, lane.max.y - 2.0 - h),
+        pos2(x + VELOCITY_BAR_WIDTH, lane.max.y - 2.0),
+    )
+}
+
+/// The velocity (0..=1) a pointer at `y` in the velocity `lane` selects.
+pub fn velocity_at(lane: Rect, y: f32) -> f32 {
+    let usable = (lane.height() - 1.0 - 4.0).max(f32::EPSILON);
+    ((lane.max.y - 2.0 - y) / usable).clamp(0.0, 1.0)
 }
 
 /// A ghost note's fill: its track `colour` at [`GHOST_OPACITY`] (alpha, so it sits on whatever
@@ -840,7 +919,7 @@ struct Pop {
 ///
 /// At most one kind of edit is reported per frame.
 ///
-/// This is [`piano_roll_with_ghosts`] with no ghosts.
+/// This is [`piano_roll_with_ghosts`] with no ghosts, the notes in the accent colour.
 pub fn piano_roll(
     ui: &mut Ui,
     theme: &Theme,
@@ -848,6 +927,19 @@ pub fn piano_roll(
     notes: &[RollNote],
 ) -> PianoRollOutput {
     piano_roll_with_ghosts(ui, theme, model, notes, &[])
+}
+
+/// [`piano_roll_with_ghosts`] with the notes in `colour` (the edit track's colour); the
+/// velocity bars share it.
+pub fn piano_roll_coloured(
+    ui: &mut Ui,
+    theme: &Theme,
+    model: &mut PianoRollModel,
+    notes: &[RollNote],
+    ghosts: &[GhostNote],
+    colour: Color32,
+) -> PianoRollOutput {
+    roll_impl(ui, theme, model, notes, ghosts, colour)
 }
 
 /// [`piano_roll`] that also draws the other instrument tracks' notes as `ghosts` (M10): dimmed
@@ -863,11 +955,51 @@ pub fn piano_roll_with_ghosts(
     notes: &[RollNote],
     ghosts: &[GhostNote],
 ) -> PianoRollOutput {
+    roll_impl(ui, theme, model, notes, ghosts, theme.accent)
+}
+
+fn roll_impl(
+    ui: &mut Ui,
+    theme: &Theme,
+    model: &mut PianoRollModel,
+    notes: &[RollNote],
+    ghosts: &[GhostNote],
+    colour: Color32,
+) -> PianoRollOutput {
     model.normalise(notes.len());
     let (outer, response) = ui.allocate_exact_size(model.size(), Sense::click_and_drag());
     let grid = grid_rect(outer);
+    let lane = velocity_rect(outer);
     let mut out = PianoRollOutput::default();
     let usable = model.steps > 0 && model.pitches > 0;
+
+    // Velocity lane: a press or drag over a column sets the velocity of the note starting
+    // there (the topmost one). Reported as `moved`; it takes the pointer before the grid.
+    let mut in_lane = false;
+    if usable
+        && (response.is_pointer_button_down_on() || response.clicked())
+        && let Some(p) = response.interact_pointer_pos()
+        && lane.contains(p)
+        && p.x >= grid.min.x
+    {
+        in_lane = true;
+        let col = ((p.x - grid.min.x) / model.step_width).floor().max(0.0) as usize;
+        if let Some((i, n)) = notes
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, n)| usize::from(n.start) == col && model.is_visible(n.pitch))
+        {
+            let v = velocity_at(lane, p.y);
+            if (v - n.velocity).abs() > 1e-4 {
+                let mut moved = *n;
+                moved.velocity = v;
+                out.moved = Some((i, moved));
+            }
+            model.set_selection(vec![i]);
+            response.request_focus();
+        }
+    }
     // The arrow keys nudge notes while the roll has focus; keep egui's focus navigation off
     // them.
     if response.has_focus() {
@@ -894,7 +1026,7 @@ pub fn piano_roll_with_ghosts(
     let now = ui.input(|i| i.time);
 
     // Pointer gestures (primary button).
-    if usable {
+    if usable && !in_lane {
         let pos = response.interact_pointer_pos();
         let (primary_down, ctrl, shift) = ui.input(|i| {
             (
@@ -925,7 +1057,7 @@ pub fn piano_roll_with_ghosts(
                 drag = None;
             }
         }
-    } else {
+    } else if !usable {
         drag = None;
     }
 
@@ -989,6 +1121,7 @@ pub fn piano_roll_with_ghosts(
             model,
             notes,
             ghosts,
+            colour,
             outer,
             grid,
             &response,
@@ -1122,8 +1255,8 @@ fn finish(
     }
 }
 
-/// Paints the roll: background, rows, lines, track ghosts, key column, notes, drag ghosts,
-/// marquee, pops, playhead and the focus ring.
+/// Paints the roll: frame, ruler, rows, lines, track ghosts, key column, notes, drag ghosts,
+/// marquee, pops, playhead, velocity lane and the focus ring.
 #[allow(clippy::too_many_arguments)]
 fn paint(
     ui: &Ui,
@@ -1131,6 +1264,7 @@ fn paint(
     model: &PianoRollModel,
     notes: &[RollNote],
     ghosts: &[GhostNote],
+    colour: Color32,
     outer: Rect,
     grid: Rect,
     response: &Response,
@@ -1139,58 +1273,83 @@ fn paint(
     now: f64,
 ) {
     // The ring sits outside `outer`, so it uses the unclipped painter.
-    if response.has_focus() {
-        paint_focus_rect(ui.painter(), outer, ROLL_RADIUS, theme);
+    if response.has_focus() && !response.is_pointer_button_down_on() {
+        paint_focus_ring(ui.painter(), outer, ROLL_RADIUS, theme);
     }
     let painter = ui.painter().with_clip_rect(outer.intersect(ui.clip_rect()));
-    paint_soft_rect(&painter, outer, ROLL_RADIUS, Depth::InsetM, theme);
+    paint_control(&painter, outer, ROLL_RADIUS, theme.panel, theme.border);
     if model.steps == 0 || model.pitches == 0 {
         return;
     }
+    let ruler = ruler_rect(outer);
+    let lane = velocity_rect(outer);
+    let keys = key_column_rect(outer);
 
-    // Rows: black-key tint across the whole width, faint separators in the grid.
+    // Ruler: panel-2, "bar.beat" labels every beat, a hairline under it.
+    painter.rect_filled(ruler.shrink2(vec2(1.0, 0.0)), 0.0, theme.panel_2);
+    painter.hline(
+        ruler.x_range(),
+        ruler.max.y - 0.5,
+        Stroke::new(1.0, theme.border),
+    );
+    for s in (0..model.steps).step_by(BEAT) {
+        let x = grid.min.x + s as f32 * model.step_width;
+        let label = format!("{}.{}", s / BAR + 1, (s % BAR) / BEAT + 1);
+        text::paint_text(
+            &painter,
+            pos2(x + 4.0, ruler.center().y),
+            Align2::LEFT_CENTER,
+            &label,
+            TextKind::Micro,
+            theme.text_2,
+        );
+    }
+
+    // Key column: panel-2 with black-key rows panel-4 (right 40 % panel-2).
+    painter.rect_filled(keys, 0.0, theme.panel_2);
+
+    // Rows: black-key tint in the grid, dividers (C rows grid-bar).
     let tint = black_row_tint(theme);
-    let separator = Stroke::new(1.0, theme.shadow_dark.gamma_multiply(0.25));
     for row in 0..model.pitches {
         let Some(pitch) = model.pitch_at_row(row) else {
             break;
         };
         let r = row_rect(model, grid, pitch);
         if is_black_key(pitch) {
-            let full = Rect::from_min_max(pos2(outer.min.x, r.min.y), r.max);
-            painter.rect_filled(full, 0.0, tint);
+            painter.rect_filled(r, 0.0, tint);
         }
         if model.held[usize::from(pitch)] {
             painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(HELD_ROW_WASH));
         }
         if row > 0 {
-            painter.hline(grid.x_range(), r.max.y, separator);
+            let divider = if pitch % 12 == 11 || pitch % 12 == 4 {
+                theme.grid_bar
+            } else {
+                theme.grid_beat
+            };
+            painter.hline(grid.x_range(), r.max.y, Stroke::new(1.0, divider));
         }
     }
 
-    // Beat and bar lines.
+    // Step, beat and bar lines.
     for s in 1..model.steps {
-        if s % BEAT != 0 {
-            continue;
-        }
         let x = grid.min.x + s as f32 * model.step_width;
-        let w = if s % BAR == 0 { 2.0 } else { 1.0 };
-        painter.vline(x, grid.y_range(), Stroke::new(w, theme.shadow_dark));
+        let colour = if s % BEAT == 0 {
+            theme.grid_bar
+        } else {
+            theme.grid_beat
+        };
+        painter.vline(x, grid.y_range(), Stroke::new(1.0, colour));
     }
-    painter.vline(
-        grid.min.x,
-        grid.y_range(),
-        Stroke::new(1.0, theme.shadow_dark),
-    );
+    painter.vline(grid.min.x, grid.y_range(), Stroke::new(1.0, theme.border));
 
-    // Track ghosts (the other tracks' notes): dimmed, small-radius, thinly outlined bars in
-    // their track colour, under the hover cue and the real notes. Reference only.
-    for (r, colour) in ghost_rects(model, grid, ghosts) {
-        painter.rect_filled(r, GHOST_RADIUS, ghost_fill(colour));
+    // Track ghosts (the other tracks' notes): 35 % fill, 60 % outline, under the real notes.
+    for (r, c) in ghost_rects(model, grid, ghosts) {
+        painter.rect_filled(r, GHOST_RADIUS, ghost_fill(c));
         painter.rect_stroke(
             r,
             GHOST_RADIUS,
-            Stroke::new(1.0, ghost_outline(colour)),
+            Stroke::new(1.0, ghost_outline(c)),
             egui::StrokeKind::Inside,
         );
     }
@@ -1205,14 +1364,17 @@ fn paint(
             let x = grid.min.x + step as f32 * model.step_width;
             let cell =
                 Rect::from_min_size(pos2(x, row.min.y), vec2(model.step_width, model.row_height));
-            painter.rect_filled(cell, 0.0, theme.shadow_highlight.gamma_multiply(0.5));
+            painter.rect_filled(cell, 0.0, theme.panel_3);
         }
         if hit_note(model, grid, notes, p).is_some_and(|(_, edge)| edge) {
             ui.output_mut(|o| o.cursor_icon = CursorIcon::ResizeHorizontal);
         }
     }
 
-    // Notes.
+    // Notes: the track colour by velocity, a 60 % black outline, a 2 pt handle, a text ring
+    // when selected.
+    let outline = Theme::note_outline(colour);
+    let handle = Theme::note_handle(colour);
     for (i, n) in notes.iter().enumerate() {
         if !model.is_visible(n.pitch) || usize::from(n.start) >= model.steps {
             continue;
@@ -1221,40 +1383,33 @@ fn paint(
         if r.width() <= 0.0 {
             continue;
         }
-        let accented = n.velocity >= ACCENT_THRESHOLD;
-        let fill = if accented {
-            theme.accent_hover
-        } else {
-            theme.accent
-        };
-        if n.selected || model.is_selected(i) {
-            paint_soft_rect_with_fill(&painter, r, NOTE_RADIUS, Depth::OnGlow, fill, theme);
-        } else {
-            painter.rect_filled(r, NOTE_RADIUS, fill);
-        }
-        // Accent marker: a 6 pt on-accent dot near the left end, kept inside the bar (a
-        // length-1 note at the default 24 pt step is wide enough; clipped stubs skip it).
-        if accented && r.width() >= ACCENT_DOT_INSET * 2.0 {
-            let radius = (ACCENT_DOT * 0.5).min(r.height() * 0.5);
-            painter.circle_filled(
-                pos2(r.min.x + ACCENT_DOT_INSET, r.center().y),
-                radius,
-                theme.on_accent,
+        painter.rect_filled(r, NOTE_RADIUS, note_fill(colour, n.velocity));
+        painter.rect_stroke(
+            r,
+            NOTE_RADIUS,
+            Stroke::new(1.0, outline),
+            egui::StrokeKind::Inside,
+        );
+        if r.width() > HANDLE_INSET * 2.0 + HANDLE_WIDTH {
+            let h = Rect::from_min_max(
+                pos2(r.max.x - HANDLE_INSET - HANDLE_WIDTH, r.min.y + 2.0),
+                pos2(r.max.x - HANDLE_INSET, r.max.y - 2.0),
             );
+            painter.rect_filled(h, 1.0, handle);
         }
-        if r.width() > HANDLE_INSET * 2.0 {
-            let x = r.max.x - HANDLE_INSET;
-            painter.vline(
-                x,
-                (r.min.y + 3.0)..=(r.max.y - 3.0),
-                Stroke::new(1.0, theme.on_accent),
+        if n.selected || model.is_selected(i) {
+            painter.rect_stroke(
+                r.expand(1.0),
+                NOTE_RADIUS + 1.0,
+                Stroke::new(1.0, theme.text),
+                egui::StrokeKind::Inside,
             );
         }
     }
 
     // Drag ghosts: the note(s) as they would be committed, or the marquee.
     if let Some(d) = drag {
-        let ghost_fill = theme.accent.gamma_multiply(0.45);
+        let ghost_fill = with_alpha(colour, 0.45);
         match d.gesture {
             Gesture::Select => {
                 let m = d.marquee().intersect(grid);
@@ -1294,29 +1449,16 @@ fn paint(
         let grow = 1.0 + POP_GROWTH * t;
         let r = Rect::from_center_size(pop.rect.center(), pop.rect.size() * grow);
         let alpha = 1.0 - t;
-        painter.rect_filled(r, NOTE_RADIUS, theme.accent.gamma_multiply(0.35 * alpha));
+        painter.rect_filled(r, NOTE_RADIUS, with_alpha(colour, 0.35 * alpha));
         painter.rect_stroke(
             r,
             NOTE_RADIUS,
-            Stroke::new(1.5, theme.accent_hover.gamma_multiply(alpha)),
+            Stroke::new(1.0, with_alpha(outline, alpha)),
             egui::StrokeKind::Outside,
         );
     }
 
-    // Playhead.
-    if let Some(step) = model.playhead_step {
-        let x = grid.min.x + step * model.step_width;
-        if x >= grid.min.x && x <= grid.max.x {
-            painter.vline(x, grid.y_range(), Stroke::new(PLAYHEAD_WIDTH, theme.accent));
-        }
-    }
-
-    // Key column: one key per row. White keys are surface tiles spanning the column with their
-    // note name; black keys are shorter `key_black` stubs on the left. A held key (the
-    // computer keyboard, the on-screen piano or MIDI) is accent with its name in on-accent.
-    let white = theme
-        .surface
-        .lerp_to_gamma(theme.shadow_highlight, WHITE_KEY_LIFT);
+    // Key column keys: one per row; black keys the left 60 % in panel-4; C labels.
     for row in 0..model.pitches {
         let Some(pitch) = model.pitch_at_row(row) else {
             break;
@@ -1324,31 +1466,87 @@ fn paint(
         let key = key_rect(model, outer, pitch);
         let held = model.held[usize::from(pitch)];
         let black = is_black_key(pitch);
-        let fill = if held {
-            theme.accent
+        if held {
+            painter.rect_filled(key, 0.0, theme.accent);
         } else if black {
-            theme.key_black
-        } else {
-            white
-        };
-        let radius = if black { 3.0 } else { 4.0 };
-        painter.rect_filled(key, radius, fill);
-        if !black {
-            let colour = if held {
-                theme.on_accent
-            } else if pitch % 12 == 0 {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            };
+            painter.rect_filled(key, 0.0, theme.panel_4);
+        }
+        if row > 0 {
+            painter.hline(keys.x_range(), key.max.y, Stroke::new(1.0, theme.border));
+        }
+        if pitch % 12 == 0 || held {
+            let c = if held { theme.on_accent } else { theme.text_2 };
             text::paint_text(
                 &painter,
-                pos2(key.max.x - KEY_LABEL_INSET, key.center().y),
+                pos2(keys.max.x - KEY_LABEL_INSET, key.center().y),
                 Align2::RIGHT_CENTER,
                 &note_name(pitch),
-                TextKind::Label,
-                colour,
+                TextKind::Micro,
+                c,
             );
+        }
+    }
+    painter.vline(keys.max.x, keys.y_range(), Stroke::new(1.0, theme.border));
+
+    // Velocity lane: panel-2, a hairline above, "VEL" in the key column, one bar per note.
+    painter.rect_filled(lane.shrink2(vec2(1.0, 0.0)), 0.0, theme.panel_2);
+    painter.hline(
+        lane.x_range(),
+        lane.min.y + 0.5,
+        Stroke::new(1.0, theme.border),
+    );
+    text::paint_text(
+        &painter,
+        pos2(lane.min.x + 6.0, lane.center().y),
+        Align2::LEFT_CENTER,
+        "VEL",
+        TextKind::Micro,
+        theme.text_3,
+    );
+    for (i, n) in notes.iter().enumerate() {
+        if !model.is_visible(n.pitch) || usize::from(n.start) >= model.steps {
+            continue;
+        }
+        let bar = velocity_bar_rect(model, grid, lane, n);
+        painter.rect_filled(bar, 0.0, colour);
+        if n.velocity >= VELOCITY_MARKER_THRESHOLD {
+            let marker = Rect::from_min_size(
+                pos2(
+                    bar.center().x - VELOCITY_MARKER.x * 0.5,
+                    bar.min.y - 1.0 - VELOCITY_MARKER.y,
+                ),
+                VELOCITY_MARKER,
+            );
+            painter.rect_filled(marker, 1.0, theme.text);
+        }
+        if n.selected || model.is_selected(i) {
+            painter.rect_stroke(
+                bar.expand(1.0),
+                0.0,
+                Stroke::new(1.0, theme.text),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    // Playhead: a 1 px accent line through the ruler and grid, a triangle in the ruler.
+    if let Some(step) = model.playhead_step {
+        let x = grid.min.x + step * model.step_width;
+        if x >= grid.min.x && x <= grid.max.x {
+            painter.vline(
+                x,
+                ruler.min.y..=grid.max.y,
+                Stroke::new(PLAYHEAD_WIDTH, theme.accent),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pos2(x - 4.0, ruler.min.y + 2.0),
+                    pos2(x + 4.0, ruler.min.y + 2.0),
+                    pos2(x, ruler.min.y + 10.0),
+                ],
+                theme.accent,
+                Stroke::NONE,
+            ));
         }
     }
 }
@@ -1376,11 +1574,22 @@ mod tests {
     #[test]
     fn default_size_and_grid() {
         let model = PianoRollModel::default();
-        assert_eq!(model.size(), vec2(48.0 + 16.0 * 24.0, 36.0 * 14.0));
+        assert_eq!(
+            model.size(),
+            vec2(40.0 + 16.0 * 24.0, 16.0 + 36.0 * 13.0 + 44.0)
+        );
         let outer = Rect::from_min_size(pos2(10.0, 20.0), model.size());
         let g = grid_rect(outer);
-        assert_eq!(g.min, pos2(58.0, 20.0));
-        assert_eq!(g.max, outer.max);
+        assert_eq!(g.min, pos2(50.0, 36.0));
+        assert_eq!(g.max, pos2(outer.max.x, outer.max.y - VELOCITY_LANE_HEIGHT));
+        assert_eq!(g.height(), model.grid_height());
+        assert_eq!(ruler_rect(outer).height(), RULER_HEIGHT);
+        assert_eq!(ruler_rect(outer).min, outer.min);
+        assert_eq!(velocity_rect(outer).max, outer.max);
+        assert_eq!(velocity_rect(outer).min.y, g.max.y);
+        let keys = key_column_rect(outer);
+        assert_eq!(keys.width(), KEY_COLUMN_WIDTH);
+        assert_eq!(keys.y_range(), g.y_range());
         assert_eq!(model.max_low_pitch(), 91);
     }
 
@@ -1388,24 +1597,55 @@ mod tests {
     fn key_rects_fill_the_key_column_one_per_row() {
         let model = PianoRollModel::default();
         let outer = Rect::from_min_size(pos2(10.0, 20.0), model.size());
-        // The bottom row is C2 (36): a white key spanning the column minus the insets.
+        let g = grid_rect(outer);
+        // The bottom row is C2 (36): a white key spanning the column.
         let c2 = key_rect(&model, outer, 36);
-        assert_eq!(c2.min.x, 10.0 + KEY_INSET_X);
-        assert_eq!(c2.max.x, 10.0 + KEY_COLUMN_WIDTH - KEY_INSET_X);
-        assert_eq!(c2.max.y, outer.max.y - KEY_INSET_Y);
-        assert_eq!(c2.height(), model.row_height - 2.0 * KEY_INSET_Y);
-        // C#2 sits one row up and is a short stub on the left.
+        assert_eq!(c2.min.x, 10.0);
+        assert_eq!(c2.max.x, 10.0 + KEY_COLUMN_WIDTH);
+        assert_eq!(c2.max.y, g.max.y);
+        assert_eq!(c2.height(), model.row_height);
+        // C#2 sits one row up and is a short stub on the left (60 %).
         let cs2 = key_rect(&model, outer, 37);
         assert_eq!(cs2.min.x, c2.min.x);
         assert_eq!(cs2.width(), c2.width() * BLACK_KEY_FRACTION);
-        assert_eq!(cs2.max.y, c2.min.y - 2.0 * KEY_INSET_Y);
-        // Every visible row has a key inside the column.
+        assert_eq!(cs2.max.y, c2.min.y);
+        // Every visible row has a key inside the column beside the grid.
         for pitch in 36..72u8 {
             let k = key_rect(&model, outer, pitch);
             assert!(outer.contains_rect(k), "{pitch}: {k:?}");
-            assert!(k.max.x < grid_rect(outer).min.x);
+            assert!(k.max.x <= g.min.x);
+            assert!(k.min.y >= g.min.y && k.max.y <= g.max.y);
         }
         assert!(!model.held.iter().any(|h| *h), "nothing held by default");
+    }
+
+    #[test]
+    fn velocity_bars_follow_the_velocity_and_the_pointer_maps_back() {
+        let model = PianoRollModel::default();
+        let outer = Rect::from_min_size(pos2(0.0, 0.0), model.size());
+        let g = grid_rect(outer);
+        let lane = velocity_rect(outer);
+        let loud = RollNote {
+            velocity: 1.0,
+            ..note(2, 1, 48)
+        };
+        let quiet = RollNote {
+            velocity: 0.25,
+            ..note(2, 1, 48)
+        };
+        let a = velocity_bar_rect(&model, g, lane, &loud);
+        let b = velocity_bar_rect(&model, g, lane, &quiet);
+        assert_eq!(a.width(), VELOCITY_BAR_WIDTH);
+        assert_eq!(a.min.x, g.min.x + 2.0 * model.step_width + 2.0);
+        assert_eq!(a.max.y, b.max.y);
+        assert!(a.height() > 3.0 * b.height());
+        assert!(lane.contains_rect(a) && lane.contains_rect(b));
+        assert!((velocity_at(lane, a.min.y) - 1.0).abs() < 1e-5);
+        assert!((velocity_at(lane, b.min.y) - 0.25).abs() < 1e-5);
+        assert_eq!(velocity_at(lane, lane.max.y + 10.0), 0.0);
+        assert_eq!(velocity_at(lane, lane.min.y - 10.0), 1.0);
+        assert_eq!(note_fill(Color32::WHITE, 1.0).a(), 255);
+        assert_eq!(note_fill(Color32::WHITE, 0.0).a(), 128);
     }
 
     #[test]
@@ -1751,8 +1991,8 @@ mod tests {
                 let colour = theme.track_colour(i);
                 let fill = ghost_fill(colour);
                 assert_eq!(fill.a(), (255.0 * GHOST_OPACITY).round() as u8);
-                let composite = theme.surface.lerp_to_gamma(colour, GHOST_OPACITY);
-                let ratio = crate::theme::contrast_ratio(composite, theme.surface);
+                let composite = theme.panel.lerp_to_gamma(colour, GHOST_OPACITY);
+                let ratio = crate::theme::contrast_ratio(composite, theme.panel);
                 assert!(
                     ratio >= 1.2,
                     "{:?}: ghost of track {i} is {ratio:.2}:1 on the surface",
@@ -1763,11 +2003,15 @@ mod tests {
     }
 
     #[test]
-    fn tint_is_a_little_darker_than_the_surface() {
+    fn tint_sits_between_panel_and_panel_2() {
         for theme in [Theme::dark(), Theme::light()] {
             let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
             let t = black_row_tint(&theme);
-            assert!(lum(t) < lum(theme.surface) && lum(t) > lum(theme.shadow_dark));
+            let (lo, hi) = (
+                lum(theme.panel).min(lum(theme.panel_2)),
+                lum(theme.panel).max(lum(theme.panel_2)),
+            );
+            assert!(lum(t) > lo && lum(t) < hi, "{:?}: {t:?}", theme.mode);
         }
     }
 }

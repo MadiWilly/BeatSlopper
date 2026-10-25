@@ -1915,3 +1915,224 @@ origin in the ~303 pt of body the top row leaves at 1280 x 1140; checked by
 - Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace` (863 passed, 2 ignored: app 321 = 207 unit + 1 + 10 + 12 + 6 +
   9 + 76, engine 422, neu 120), `cargo run -p app -- --smoke-test` ok.
+
+## M12 as built (neu: the Deck widget kit)
+
+The kit is restyled to `design/round3/WINNER.md` (direction B "Deck"): flat panel tones, 1 px
+borders, 4 / 3 / 2 pt radii, one amber accent, eight track colours, 28 pt controls on an 8 pt
+rhythm, always-visible scrollbars. Every `pub` name the app used in M11 still exists with its
+signature; only what it draws changed. `crates/app` compiles and passes clippy `-D warnings`
+unchanged; its geometry tests fail where they measured the old sizes (listed under Tests).
+
+### neu: M12 as built
+
+**`theme.rs`.** `Theme` carries the WINNER tokens with their exact hex values: `bg, panel,
+panel_2, panel_3, panel_4, border, border_2, text, text_2, text_3, accent, accent_hover,
+accent_press, on_accent, accent_wash` (accent @ 16 % dark / 14 % light, premultiplied), `rec,
+ok, clip` (= rec), `grid_beat, grid_bar, step_off, step_off_alt, on_track`, `tracks:
+[Color32; 8]`, `shadow: epaint::Shadow { offset: [0, 8], blur: 24, color }` (the one
+floating shadow), `knob_face: [top, bottom]`, `key_black_face`, `key_black_border`,
+`key_black_text`, `key_black_keycap: [face, border, text]`, the radii `radius_control` 4 /
+`radius_small` 3 / `radius_chip` 2, the spacing scale `space_1..space_8` and the rhythm
+`control_height` 28, `row_pitch` 32, `header_height` 28, `toolbar_height` 40,
+`window_toolbar_height` 36, `tab_strip_height` 28, `gutter` 4, `gutter_hit` 8. The Soft
+Console fields stay as aliases so the app compiles: `surface` = panel, `text_primary` = text,
+`text_secondary` = text_2, `shadow_highlight` = border, `shadow_dark` = border_2, `glow` =
+accent_wash, `key_black` = the black key's top colour, `radius_panel` / `radius_key_*` /
+`radius_pill` = 4, `panel_padding` = 8; the `ShadowPair`s are zero (retired in M13).
+Helpers: `track_colour(i)` (the new tables), `Theme::note_outline / note_handle /
+note_step_border` (60 / 50 / 70 % towards black), `led_on_border`, `led_rec_border`,
+`theme::towards_black`, `theme::with_alpha`, `DISABLED_ALPHA` (0.45), `SCROLLBAR_WIDTH` 10 /
+`SCROLLBAR_THUMB` 6, `POPUP_RADIUS` 4. `Theme::apply` sets egui's style per WINNER section 7:
+panel / window fill = panel, `extreme_bg_color` (fields, scroll tracks) = panel_2, widget
+fills per state (inactive panel_3 / hovered panel_4 / active panel_2 / open panel_2, strokes
+border_2 or border, `fg_stroke` text_3 / text_2 / text so the scroll thumb is text-3, hover
+text-2, drag text), selection = accent_wash with an accent stroke, hyperlink = accent, text
+cursor = text, window stroke 1 px border and no window shadow, popup shadow = `shadow`,
+popup / menu corner radius 4, item spacing 8 / 8, button padding 10 / 0, interact size
+28 x 28, `Theme::scroll_style()` (solid, never hidden, bar 10, thumb 6, handle min 24, every
+opacity 1), tooltip delay 0.3, and `Theme::text_styles()` (Small 11, Body 13, Button 12,
+Heading 12, Monospace 13 plus `TextStyle::Name` entries `title label button value body
+display small hint section micro brand`). Deck's "full-length faint thumb when nothing
+scrolls" needs `ScrollBarVisibility::AlwaysVisible` on the area: use `neu::scroll_vertical /
+scroll_horizontal / scroll_both(id_salt)`. The 1 px inner-edge border of the scrollbar track
+is not reproducible through egui's style and is dropped.
+
+**`text.rs`.** `TextKind` is the Deck scale: `Title` 12/600 caps +0.06em, `Label` 12/500 caps
++0.04em, `Button` 12/600 caps +0.04em, `Value` 13, `Body` 13, `Display` 18/600, `Small` 11/500,
+`Hint` 10/600 caps +0.02em, `Section` 11/600 caps +0.06em, `Micro` 10/600, `Brand` = the 13/600
+project name (the wordmark is retired). `weight()`, `faux_offset()` (500 paints twice 0.35
+apart, 600 0.5 apart), `style_name()`, `text_style()`, `colour(theme)`, `ALL`. Widgets:
+`label title value body display small hint section micro brand text_widget`.
+
+**`flat.rs` (new).** `Tone { Bg, Panel, Panel2, Panel3, Panel4 }`, `paint_panel(painter,
+rect, tone, radius, theme)` (fill + 1 px `border`), `paint_control(painter, rect, radius,
+fill, border)`, `flat_rect_shape`, `paint_focus_ring` / `paint_focus_circle` (2 px accent, 1 px
+outside; drawn while a control has focus and is not pointer-pressed), `paint_shadow_floating`
+(the only shadow painter), `is_shadow_shape`, `vertical_gradient_rect / _corners /
+_circle` (tessellated fans for the knob face, thumbs and keys), `paint_gradient_control`,
+`paint_separator` (1 x 20 border_2), `paint_bottom_hairline`. **`shadow.rs`** keeps `Depth`
+and every `paint_soft_*` / `soft_*_shapes` name but draws flat: RaisedL = panel + border,
+RaisedM / S = panel_3 + border_2, InsetM / S = panel_2 + border_2 (Deck wells are panel-2),
+OnGlow = accent + accent_press; `paint_focus_rect / circle` delegate to `flat`. Retired in M13.
+**`panel.rs`**: `panel` is a flat frame (panel, 1 px border, radius 4, padding 8);
+`panel_toned(ui, theme, Tone, ..)`.
+
+**`button.rs`.** `ButtonKind { Secondary, Primary, Ghost, Toggle(bool), Solo(bool), Rec(bool),
+GhostToggle(bool) }`, `ButtonSize { Regular 28, Small 22, Xs 24 }`, `FaceState`,
+`paint_button_face(painter, rect, radius, kind, state, theme) -> text colour` (the state table
+of WINNER section 4; disabled = `control_painter` at 45 % alpha). `button` = secondary 28,
+`primary_button`, `ghost_button`, `small_button`, `toggle_button` = Toggle, `solo_button`,
+`rec_button(ui, theme, on)` (28 square, record glyph), `toggle_button_sized` (radius 4;
+under 24 tall = small type), `button_kind(ui, theme, label, kind, size)`, `button_wide(..,
+width)`, `icon_button(ui, theme, icon, side)` (a square, glyph 16 at 28 / 12 below),
+`icon_button_kind(ui, theme, icon, size, kind)`, `header_button` (24 ghost, glyph 12),
+`rail_button(ui, theme, icon, on, tooltip) -> Response` (28 ghost-toggle, glyph 14, the
+tooltip is its name; the icon's name when empty), `stepper_button` (28 square secondary, 12
+glyph), `toolbar_separator`, `switch(ui, theme, &mut bool, name)` (40 x 22, radius 11) and
+`switch_small` (34 x 20), `theme_toggle` = the "Dark theme" switch. `Icon` gains `Undo Redo
+Menu ChevronDown ChevronUp ChevronLeft ChevronRight Search Link Copy Paste Dots Folder File
+Roll Mixer Synth Song Browser Fullscreen Check`; `paint_icon` draws in a 16-unit box, stroke
+1.5 round caps, play / stop / rec / dots filled. `PILL_HEIGHT` = 28, `TOGGLE_SIZED_RADIUS` = 4.
+
+**`chrome.rs` (new).** `keycap(ui, theme, "F5")` (16 h, padding 0 4, panel_2, border_2,
+radius 3, hint type) + `paint_keycap` / `paint_keycap_coloured` / `keycap_size`; `LedKind { Ok,
+Accent, Rec }`, `led(ui, theme, on, kind)` / `led_named(.., name)` (10 circle, 1 px border;
+check box role) + `paint_led`; `TagKind { Plain, Vinyl, Drone, Colour(c) }`, `tag(ui, theme,
+text, kind)` (16 h, border at 50 % for the coloured kinds); `chip(ui, theme, colour)` 10 x 10;
+`paint_colour_bar`; `number_box(ui, theme, &mut u8, RangeInclusive<u8>) -> Response` /
+`number_box_named` (22 x 22, radius 3, 11/600; vertical drag 4 px per step, wheel, click to
+type; the box is a button named "Insert" whose value is the number, the readout under it is
+"Insert value"); `name_button(ui, theme, text, colour: Option<Color32>, selected) ->
+Response` (76 x 24, 4 px colour bar, text_3 bar when `None`, ellipsised 12/600, selected =
+accent_wash + accent) / `name_button_sized(.., muted, size)`; `ellipsise`;
+`pattern_tile(ui, theme, letter, has_notes, current)` (24 x 24, named "Pattern A");
+`text_field(ui, theme, &mut String, placeholder, icon: Option<Icon>, width) -> Response`
+(28 h, panel_2, border_2, leading 14 icon, placeholder text_3, focus = accent border + 1 px
+accent ring; named by its placeholder).
+
+**`shell.rs` (new).** `window_frame(ui, theme, title, right: FnOnce(&mut Ui), body:
+FnOnce(&mut Ui) -> R) -> R` fills the available rect; `window_frame_sized(ui, theme, size,
+title, sub: Option<&str>, right, body)`: panel fill, 1 px border, radius 4, a 28 h panel_2
+header (title in title type at x 8, sub 12 text_2 after it, `right` laid out right-to-left
+with 4 padding and an 8 gap) with a border hairline, the body clipped under it; a 28 tall
+window is the collapsed header (no hairline, body hidden). `toolbar(ui, theme, |ui| ..)`
+(36 h, panel_2, padding 0 8, gap 8, hairline below) and `app_toolbar` (40 h, panel, border,
+radius 4, padding 0 6, gap 5). `tab_strip(ui, theme, &mut usize, &[(&str, Option<&str>)]) ->
+Response` (28 h panel_2 strip with a hairline, items padding 0 12 in button type, text_2 /
+hover text / active text + a 2 px accent underline inset 6, keycap 6 after the text; click
+and Left / Right select; `changed()`; items are tabs named by their label) /
+`tab_strip_padded(.., padding)`. `hint_bar(ui, theme, &[(key, label)])` (28 h, keycap + 12
+text_2 label pairs, clipped; one label named "Space Play / Stop · Ctrl+L Link").
+`drawer_handle(ui, theme) -> Response` (a full-width 4 pt border bar with an 8 pt drag hit,
+border_2 on hover, accent while dragged; Splitter named "Drawer handle"; read
+`drag_delta()`). `list_row(ui, theme, selected, |ui| ..)` / `list_row_named(.., name, ..)`
+(28 h, padding 0 8 0 12, hover panel_3, selected accent_wash + 2 px accent bar; ListItem).
+`MenuItem { Entry { label, key, enabled }, Separator }` with `item / keyed / disabled`
+constructors; `menu(ui, theme, &[MenuItem]) -> Option<usize>` paints the one menu style
+inline (min 180 w, panel_2, border_2, radius 4, the floating shadow, padding 4 0, 28 h
+items with the keycap right-aligned, hover panel_4, disabled text_3, 9 pt separators) and
+returns the index of the entry clicked; `menu_popup(ui, theme, &anchor, items)` floats it
+under a clicked anchor through `egui::Popup::menu`; `dropdown(ui, theme, name, value,
+&[&str], width, small, colour: Option<Color32>) -> Option<usize>` (28 h / 22 h field with
+the chevron and the optional 3 px track bar; ComboBox named `name` whose value is `value`;
+opens the menu below). `tooltip_with_keycap(response, theme, text, key) -> Response` (panel_4
+face, border_2, 12 text + keycap after 8; the label reads "text (key)"). `scroll_vertical /
+scroll_horizontal / scroll_both(id_salt) -> ScrollArea` (always-visible bars, no auto
+shrink). `group(ui, theme, title, head_right, body)` (the SYNTH & FX group: 24 h head,
+panel, border, padding 6 8 8). `well(ui, theme, size) -> (inner Rect, Response)` (panel_2,
+border_2). `paint_playhead`, `paint_hairline_frame`, `popup_id_of`.
+
+**Value controls.** `knob.rs`: `KnobSize { Md 32, Sm 22, Lg 40 }` with `side()`,
+`arc_radius()` (13 / 8 / 17), `arc_stroke()` (2.5 / 2), `cap()` (face 18 / 8 / 26),
+`pointer_width()` (2 / 1.5), `block_width()` (56, mini 22); the track arc is border_2 with
+butt caps, the value arc accent, the face a gradient circle with a 1 px border_2 ring, the
+pointer a `text` line from max(r - 8, 3) to r; `paint_knob(painter, theme, centre, size,
+spec, v, dimmed)`; `knob_dimmed` = 45 % alpha with a text_2 pointer; `dial` draws the 40 knob
+(`DialSize::Lg` text block left of it, `Sm` label above / value below; `rings()` / `dot()`
+kept). `slider.rs`: `vslider` 28 x 72 (track 6, 4 wide accent fill, 20 x 12 thumb with a
+text_2 line, travel `SLIDER_TRAVEL` 60), `fader` 24 x 120 (`FADER_WIDTH` 24, `FADER_TRACK`
+8 x 120, cap 24 x 12 with a text line 5 from its top, unity mark at 75 %, travel
+`FADER_TRAVEL` 108; the response is the 24 wide column), `fader_sized` (`FADER_MIN_TRACK`
+24), `hslider(ui, theme, value, spec)` 72 x 28 / `hslider_sized(.., size)` (travel 60,
+`hslider_fraction_at`), `lamp` = the ok LED with a label / `lamp_kind(.., LedKind)`;
+`SLIDER_THUMB` is the 12 pt thumb height, the markers are retired (0). `segmented.rs`: 28 h
+panel_2 box with border_2 and radius 4, padding 2, items 24 h; the selected item is a
+panel_4 chip (`chip_colour`) with a 2 px accent underline inset 4; `segmented_small` (22 h,
+18 items, padding 6, 11 pt). `stepper.rs`: 28 square buttons, value 28 h, `STEPPER_GAP` 6.
+`meter.rs`: `METER_TRACK` 5 x 120, `STEREO_METER_SIZE` 12 x 120 (two 5 wide columns, gap 2),
+bands ok 0..70 % / accent 70..88 % / clip 88..100 % (`METER_HOT_LEVEL` 0.70, `METER_HOT_TOP`
+0.12, `band_colour`), panel ticks every 4 pt; `meter_horizontal(ui, theme, (l, r), size)`
+(`METER_HORIZONTAL` 72 x 12), `gr_meter(ui, theme, reduction, height)` (4 wide, fills from the
+top, named "Gain reduction"). `step_cell.rs`: `STEP_CELL` 24, `STEP_GAP` 2, `STEP_GROUP_GAP` 6,
+`STEP_PITCH` 28 (a row of 16 is 426 wide, `step_x_offset(4)` = 108); `step_cell_at(ui, theme,
+spec, name, index, colour: Option<Color32>)` draws the beat alternation (`is_alt_beat`) and
+note cells, `step_row_coloured(.., colour)`, `paint_step_cell`; states off / off-alt / hover
+(text_2 border) / on (accent, accent_press border) / accent (accent_hover, 2 px inset ring,
+2 pt on_accent notch) / playhead (1 px text_2 ring outside) / selected (1 px text ring) /
+note (track colour, border 70 % black, 10/700 on_track label); `playhead_dot` is a 6 x 6
+accent triangle (`paint_playhead_triangle`) or a 2 pt text_3 dot, `beat_numbers` the 16 h
+micro ruler with dots, `playhead_tint` = panel_4. `value_edit.rs`: the inline editor is a
+Deck text field (panel_2, accent border + ring, radius 4) and its text input is named
+"Value editor". `visualizer.rs`: a panel_2 well with border_2 (`PANEL_RADIUS` 4) and a
+grid_beat grid.
+
+**`piano_keys.rs`.** White keys 56 x 64, black 32 x 38 centred on the boundary (`KEY_GAP` 0,
+14 keys = 784), radius 0 0 4 4, border_2 over a panel_3 to panel_4 gradient, the note name
+(micro text_3) above the keycap (16 h) at the bottom (gap 2, padding 4); black keys use the
+theme's black-key colours; held = accent / accent_press / on_accent with a transparent
+keycap. `GENERIC_WHITE_KEY` 40 x 64 / `GENERIC_BLACK_KEY` 24 x 38.
+
+**`piano_roll.rs`.** The roll is ruler 16 (`RULER_HEIGHT`, panel_2, "bar.beat" micro labels,
+playhead triangle) + grid + velocity lane 44 (`VELOCITY_LANE_HEIGHT`, panel_2, hairline
+above, "VEL", 3 wide bars by velocity, a 7 x 3 text marker at velocity >= 0.85, selected =
+text ring): `PianoRollModel::size()` includes both, `grid_rect(outer)` subtracts them,
+`ruler_rect`, `velocity_rect`, `key_column_rect`, `grid_height()`. `KEY_COLUMN_WIDTH` 40, row
+height 13 by default, `NOTE_RADIUS` 3, bar 12 (`NOTE_INSET_Y` 0.5), `PLAYHEAD_WIDTH` 1, a
+2 pt handle inset 2. Key column: panel_2, black-key rows panel_4 on the left 60 %, C labels
+micro text_2, hairlines between rows; grid: step lines grid_beat, beat / bar lines grid_bar,
+row dividers grid_beat (B-C and E-F grid_bar), black-key rows `black_row_tint` (panel 60 %
+towards panel_2). Notes: `note_fill(colour, velocity)` (alpha 0.5 + 0.5 v), outline 60 %
+black, selected 1 px text ring; ghosts 35 % / 60 %. `piano_roll` / `piano_roll_with_ghosts`
+draw the notes in the accent; `piano_roll_coloured(ui, theme, model, notes, ghosts, colour)`
+in the track colour. A press / drag in the velocity lane sets the velocity of the note
+starting in that column (`moved`); `velocity_bar_rect`, `velocity_at`. The accent dot and
+white-key lift constants are retired (0).
+
+**Gallery.** `cargo run -p neu --example gallery [-- --dark|--light|--both] [--exit-after-secs
+N] [--scroll PX]`: the component sheet of WINNER section 8 (buttons, segmented / dropdown /
+switch, text field / LEDs / tags / keycaps / name buttons / pattern tiles, knobs, fader /
+meters / sliders, step cells / note bars / ghosts with a live roll, tabs / list rows /
+tooltip / hint bar, the menu, scrollbars in a window header + the drawer handle, swatches,
+the type scale, keyboard keys / a mixer strip / browser chips with a scope well), dark beside
+light by default.
+
+### Tests
+- `neu`: 146 = 64 unit tests (theme hex values, every AA ratio WINNER lists at a 0.05
+  rounding tolerance, the derived formulas, `Theme::apply`'s style, the flat shapes carrying
+  no blur, the gradient meshes, knob / slider / meter / step / roll geometry) and 82 kittests
+  across `controls` 12, `deck` 16 (new: every button kind, state and size; switches; the
+  window frame, toolbars, tabs and hint bar; rail buttons / LEDs / tags / chips / keycaps /
+  tiles; the number box drag / wheel / typing; name buttons; the drawer handle and list rows;
+  the menu; the dropdown popup; the tooltip with keycap; the text field; sliders / meters /
+  group; the coloured roll's velocity lane; "no shadows except floating" over a sheet of
+  every widget and the menu's single shadow; text on every surface), `mixer_widgets` 7,
+  `piano` 6, `piano_roll` 14, `step_cell` 5, `tooltips` 9, `value_edit` 4, `visualizer` 5,
+  `widgets` 4. Every old assertion was re-pointed at the Deck geometry (fader 24 x 120, cells
+  24 with 426 rows, keys 56 / 32, roll 40 + ruler + lane, segmented chip + underline, popup
+  shadow 0 8 24, radius 4, the project-name `Brand` level).
+- Design finding: light `on_accent` (white) on `accent_hover` `#C9640F` is 3.95:1 (AA UI,
+  not AA text); the WINNER table lists on-accent against accent only. The test checks 3:1
+  there and 5:1 on accent.
+- `crates/app` compiles and passes `cargo clippy -p app --all-targets -- -D warnings`
+  unchanged. `cargo test -p app --no-fail-fast` before the M12 layout rewrite: 26 failures,
+  all geometry: unit tests `ui::mixer::tests::the_docks_fit_the_panel_width`,
+  `ui::sequencer::tests::cell_positions_follow_the_mock_maths`,
+  `ui::tracks::tests::a_row_fits_the_column` (3 of 207); `tests/mixer_panel.rs` 1 of 10
+  (`the_mixer_stays_inside_its_slot_at_the_design_size`); `tests/preset_browser.rs` 1 of 6
+  (`browser_keeps_the_whole_sequencer_visible_at_the_design_size`); `tests/tracks_panel.rs`
+  2 of 9 (`whole_sequencer_is_visible_with_the_tracks_tab_shown`,
+  `tracks_panel_level_knob_edits_the_strip_and_the_row_fits`); `tests/ui_renders.rs` 19 of
+  76 (the roll tests, since the roll grew a 16 ruler and a 44 velocity lane and its key
+  column is 40; the whole-sequencer / mixer / visualizer fit tests, since cells are 24 and
+  faders 24 wide). `tests/plugins_ui.rs` and `main.rs` stay green.

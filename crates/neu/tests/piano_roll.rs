@@ -588,7 +588,7 @@ fn ghosts_past_the_grid_or_off_the_rows_are_not_painted() {
         neu::ghost_fill(ghosts[0].colour).a(),
         (255.0 * neu::GHOST_OPACITY).round() as u8
     );
-    const { assert!(neu::GHOST_RADIUS < neu::NOTE_RADIUS) };
+    const { assert!(neu::GHOST_RADIUS == neu::NOTE_RADIUS) };
 }
 
 #[test]
@@ -597,7 +597,9 @@ fn geometry_helpers_round_trip() {
     let outer = Rect::from_min_size(pos2(100.0, 50.0), model.size());
     let grid = neu::grid_rect(outer);
     assert_eq!(grid.min.x, outer.min.x + neu::KEY_COLUMN_WIDTH);
-    assert_eq!(grid.max, outer.max);
+    assert_eq!(grid.min.y, outer.min.y + neu::RULER_HEIGHT);
+    assert_eq!(grid.max.x, outer.max.x);
+    assert_eq!(grid.max.y, outer.max.y - neu::VELOCITY_LANE_HEIGHT);
 
     for step in [0u8, 1, 7, 15] {
         for pitch in [36u8, 37, 48, 71] {
@@ -614,7 +616,7 @@ fn geometry_helpers_round_trip() {
     let long = note(4, 3, 60);
     let r = neu::note_rect(&model, grid, &long);
     assert_eq!(r.width(), 3.0 * model.step_width);
-    assert_eq!(r.height(), model.row_height - 2.0);
+    assert_eq!(r.height(), model.row_height - 1.0);
     assert_eq!(neu::row_rect(&model, grid, 60).height(), model.row_height);
     assert!(neu::row_rect(&model, grid, 60).contains_rect(r));
 

@@ -1,4 +1,5 @@
-//! Rotary knobs and the concentric-ring dial (`.knob` / `.dial` in `design/preview-a.html`).
+//! Rotary knobs (`design/round3/WINNER.md` section 4, "Knobs") and the former concentric dial,
+//! which Deck draws as the 40 pt large knob.
 //!
 //! Both controls share one value model ([`KnobSpec`]): a linear or logarithmic map between the
 //! value and a fraction `f` in `0..=1`, drawn as an arc that sweeps [`SWEEP_DEG`] (270 degrees)
@@ -15,41 +16,45 @@
 //! QOL pass: the mouse wheel over the control nudges it by [`KEY_STEP`] per notch (shift:
 //! a quarter), and the value can be typed: a click on the value readout under a labelled
 //! knob (or beside a dial), or a right-click anywhere on the control (the only way for the
-//! unlabelled small knobs, where the editor floats over the cap), opens the inline editor of
+//! unlabelled mini knobs, where the editor floats over the face), opens the inline editor of
 //! [`crate::value_edit`]; Enter commits the text parsed back through `spec.fmt`
 //! ([`crate::value_edit::parse_value`]: `70 %`, `2.4k`, `-6 dB`, ...), Escape cancels. The
 //! readout is accessible as a button named `"<label> value"`.
 //!
-//! Geometry per `design/WINNER.md` "Control sizes":
-//!
-//! * knob `Md`: block width 52, arc ring 50 (r 23, stroke 2.5), cap 40 raised-s, pointer 2x9;
-//!   `Sm`: block 34, ring 34, cap 26, pointer 2x6 (the SVG scales with the ring, so the arc
-//!   radius and stroke scale by 34/50).
-//! * dial `Lg`: arc 96 (r 23 and stroke 2 in a 50-unit viewBox, scaled by 96/50), three
-//!   raised-m rings 84 / 64 / 44 and a 6 pt accent dot on the innermost ring; `Sm`: arc 72,
-//!   rings 62 / 46 / 32, dot 5.
+//! Geometry per WINNER.md: size `s` = 32 standard (`Md`), 22 mini (`Sm`), 40 large (`Lg`);
+//! c = s / 2, r = s / 2 - 3 (13 / 8 / 17). Track arc: 270 degrees from 7:30 clockwise to
+//! 4:30, `border_2`, stroke 2.5 (mini 2), butt caps. Value arc: `accent`, same stroke, from
+//! 7:30 to the value (bipolar: from 12 o'clock either way). Face: a circle of radius r - 4
+//! (9 / 4 / 13) with the knob-face gradient and a 1 px `border_2` ring. Pointer: a `text` line
+//! from radius max(r - 8, 3) to r at the value angle, stroke 2 round (mini 1.5). Block: the
+//! label above and the value below with a 3 pt gap, min width 56; mini knobs have neither
+//! (tooltip only). Disabled (`knob_dimmed`): the whole block at 45 % alpha with a `text_2`
+//! pointer. Focus: the 2 px accent ring 1 px outside the knob circle.
 
 use std::f32::consts::TAU;
 
 use egui::epaint::text::{LayoutJob, TextFormat};
 use egui::{
-    Align2, FontId, Id, Key, Modifiers, Pos2, Response, Sense, Stroke, Ui, Vec2, WidgetInfo, pos2,
-    vec2,
+    Align2, Id, Key, Modifiers, Pos2, Response, Sense, Stroke, Ui, Vec2, WidgetInfo, pos2, vec2,
 };
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_focus_circle, paint_soft_circle};
+use crate::flat::{paint_focus_circle, vertical_gradient_circle};
 use crate::text::{self, TextKind};
+use crate::theme::DISABLED_ALPHA;
 use crate::value_edit::{begin_edit, floating_edit, parse_value, readout, wheel_notches};
 
-/// Knob size: `Md` (cap 40, arc 50, block 52) or `Sm` (cap 26, arc 34).
+/// Knob size: `Md` (32, the standard knob), `Sm` (22, the mini knob of the rack rows and
+/// inline readouts) or `Lg` (40, the large knob: filter cutoff, master).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnobSize {
     Md,
     Sm,
+    Lg,
 }
 
-/// Dial size: `Lg` (arc 96, rings 84/64/44) or `Sm` (arc 72, rings 62/46/32).
+/// Dial layout. Deck has no concentric dial: both draw the 40 pt large knob, `Lg` with the
+/// label / value block to its left, `Sm` with the label above and the value below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialSize {
     Lg,
@@ -89,99 +94,99 @@ pub const KEY_STEP: f32 = 1.0 / 50.0;
 pub const START_DEG: f32 = -135.0;
 /// Angular extent of the arc in degrees (7:30 clockwise to 4:30).
 pub const SWEEP_DEG: f32 = 270.0;
-/// Arc radius in the mock's 50-unit viewBox (`r="23"`); scales with the ring diameter.
-const ARC_R_50: f32 = 23.0;
 /// Number of polyline segments for a full 270 degree arc.
 const ARC_SEGMENTS: usize = 48;
-/// Gap between the label, the ring and the value in a `Md` knob (`.knob` `gap`).
-const KNOB_GAP_MD: f32 = 5.0;
-/// Width of the knob pointer (`.ptr` `width`).
-const POINTER_WIDTH: f32 = 2.0;
-/// Gap between the dial's text block and its ring (`.dial` `gap` / `.dial.sm` `gap`).
-const DIAL_GAP_LG: f32 = 14.0;
-const DIAL_GAP_SM: f32 = 6.0;
-/// Gap between the dial's label and value (`.dial .text` `gap`).
-const DIAL_TEXT_GAP: f32 = 4.0;
-/// Minimum width of the large dial's text column (`.dial .text` `min-width`).
-const DIAL_TEXT_MIN_WIDTH: f32 = 58.0;
-/// Value size of the large dial (`.dial .text .val` `font-size`).
-const DIAL_VALUE_SIZE_LG: f32 = 15.0;
+/// Gap between the label, the knob and the value in a labelled block.
+const KNOB_GAP: f32 = 3.0;
+/// Minimum width of a labelled knob block.
+pub const KNOB_BLOCK_MIN_WIDTH: f32 = 56.0;
+/// Gap between the dial's text block and its knob (`Lg`: side by side; `Sm`: stacked).
+const DIAL_GAP_LG: f32 = 10.0;
+const DIAL_GAP_SM: f32 = KNOB_GAP;
+/// Gap between the dial's label and value.
+const DIAL_TEXT_GAP: f32 = 3.0;
+/// Minimum width of the large dial's text column.
+const DIAL_TEXT_MIN_WIDTH: f32 = 56.0;
 
 impl KnobSize {
-    /// Block width (`.knob` / `.knob.sm` `width`).
+    /// The knob's size `s` in points (32 / 22 / 40).
+    pub fn side(self) -> f32 {
+        match self {
+            KnobSize::Md => 32.0,
+            KnobSize::Sm => 22.0,
+            KnobSize::Lg => 40.0,
+        }
+    }
+
+    /// Block width: [`KNOB_BLOCK_MIN_WIDTH`] (56) for labelled knobs, the knob itself (22)
+    /// for the mini.
     pub fn block_width(self) -> f32 {
         match self {
-            KnobSize::Md => 52.0,
-            KnobSize::Sm => 34.0,
+            KnobSize::Sm => self.side(),
+            KnobSize::Md | KnobSize::Lg => KNOB_BLOCK_MIN_WIDTH,
         }
     }
 
-    /// Diameter of the arc ring box (`.ring`).
+    /// Diameter of the knob (the arc's bounding box): `s`.
     pub fn ring(self) -> f32 {
+        self.side()
+    }
+
+    /// Arc radius r = s / 2 - 3 (13 / 8 / 17).
+    pub fn arc_radius(self) -> f32 {
+        self.side() * 0.5 - 3.0
+    }
+
+    /// Arc stroke: 2.5 (mini 2).
+    pub fn arc_stroke(self) -> f32 {
         match self {
-            KnobSize::Md => 50.0,
-            KnobSize::Sm => 34.0,
+            KnobSize::Sm => 2.0,
+            KnobSize::Md | KnobSize::Lg => 2.5,
         }
     }
 
-    /// Diameter of the raised cap (`.cap`).
+    /// Diameter of the face circle: 2 (r - 4) (18 / 8 / 26).
     pub fn cap(self) -> f32 {
-        match self {
-            KnobSize::Md => 40.0,
-            KnobSize::Sm => 26.0,
-        }
+        (self.arc_radius() - 4.0) * 2.0
     }
 
-    /// Radial extent of the pointer, `(inner, outer)` distance from the cap centre. `Md`: the
-    /// 2x9 pointer starts 4 pt inside the cap edge; `Sm`: 2x6 starting 3 pt inside.
+    /// Radial extent of the pointer, `(inner, outer)`: max(r - 8, 3) to r.
     fn pointer_span(self) -> (f32, f32) {
+        let r = self.arc_radius();
+        ((r - 8.0).max(3.0), r)
+    }
+
+    /// Pointer stroke: 2 (mini 1.5).
+    pub fn pointer_width(self) -> f32 {
         match self {
-            KnobSize::Md => (7.0, 16.0),
-            KnobSize::Sm => (4.0, 10.0),
+            KnobSize::Sm => 1.5,
+            KnobSize::Md | KnobSize::Lg => 2.0,
         }
     }
 
-    /// Vertical gap between label, ring and value.
+    /// Vertical gap between label, knob and value.
     fn gap(self) -> f32 {
         match self {
-            KnobSize::Md => KNOB_GAP_MD,
             KnobSize::Sm => 0.0,
+            KnobSize::Md | KnobSize::Lg => KNOB_GAP,
         }
     }
 }
 
 impl DialSize {
-    /// Diameter of the arc ring box (`.dial .ring`).
+    /// Diameter of the knob a dial draws: the 40 pt large knob in both layouts.
     pub fn ring(self) -> f32 {
-        match self {
-            DialSize::Lg => 96.0,
-            DialSize::Sm => 72.0,
-        }
+        KnobSize::Lg.side()
     }
 
-    /// Diameters of the three raised-m rings, outermost first.
+    /// Soft Console's three ring diameters; Deck draws one 40 knob (kept for the app).
     pub fn rings(self) -> [f32; 3] {
-        match self {
-            DialSize::Lg => [84.0, 64.0, 44.0],
-            DialSize::Sm => [62.0, 46.0, 32.0],
-        }
+        [40.0, 26.0, 26.0]
     }
 
-    /// Diameter of the accent pointer dot.
+    /// Diameter of the pointer dot; Deck draws a 2 pt pointer line (kept for the app).
     pub fn dot(self) -> f32 {
-        match self {
-            DialSize::Lg => 6.0,
-            DialSize::Sm => 5.0,
-        }
-    }
-
-    /// Distance of the dot centre from the dial centre (`.dot` `top` + half its size, measured
-    /// from the innermost ring's top edge).
-    fn dot_radius(self) -> f32 {
-        match self {
-            DialSize::Lg => 22.0 - 8.0,
-            DialSize::Sm => 16.0 - 6.5,
-        }
+        2.0
     }
 }
 
@@ -258,8 +263,8 @@ pub fn tooltip_text(label: &str, value: &str) -> String {
     }
 }
 
-/// Opacity of a dimmed knob (see [`knob_dimmed`]).
-pub const DIMMED_OPACITY: f32 = 0.5;
+/// Opacity of a dimmed (disabled) knob (see [`knob_dimmed`]): 45 %.
+pub const DIMMED_OPACITY: f32 = DISABLED_ALPHA;
 /// Accessible name of the value readout of a control labelled `label`: `"Cutoff value"`.
 pub fn readout_name(label: &str) -> String {
     format!("{label} value")
@@ -285,19 +290,19 @@ fn apply_typed(value: &mut f32, spec: &KnobSpec<'_>, typed: Option<String>) -> b
 
 /// A rotary knob bound to `value`. `changed()` when the value moved; double-click resets.
 ///
-/// Block: the caps label above, the arc ring with its raised cap and accent pointer, the
+/// Block: the caps label above, the knob (track arc, value arc, gradient face, pointer), the
 /// formatted value below. Hovering shows a [`tooltip_text`] tooltip (styled by
 /// [`Theme::apply`]). A `Sm` knob with an empty label shows neither label nor value in the
-/// block and relies on the tooltip alone (the sequencer row knobs). While the knob has
-/// keyboard focus its cap wears the kit's 1.5 pt accent focus ring.
+/// block and relies on the tooltip alone (the rack row knobs). While the knob has keyboard
+/// focus it wears the kit's 2 px accent focus ring.
 pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) -> Response {
     knob_dimmed(ui, theme, value, spec, None)
 }
 
-/// [`knob`] that can be shown *dimmed*: with `dimmed` set to a reason (e.g. "Square wave
-/// only"), the whole block is painted at [`DIMMED_OPACITY`] with the pointer in the secondary
-/// text colour instead of the accent, and the tooltip reads `"label: value · reason"`. The
-/// knob stays fully interactive; dimming only says the parameter has no effect right now.
+/// [`knob`] that can be shown *dimmed* (disabled look): with `dimmed` set to a reason (e.g.
+/// "Square wave only"), the whole block is painted at [`DIMMED_OPACITY`] with the pointer in
+/// `text_2` instead of `text`, and the tooltip reads `"label: value · reason"`. The knob
+/// stays fully interactive; dimming only says the parameter has no effect right now.
 pub fn knob_dimmed(
     ui: &mut Ui,
     theme: &Theme,
@@ -333,17 +338,17 @@ pub fn knob_with(
     let size = spec.size;
     let labelled = !spec.label.is_empty();
     let mut painter = ui.painter().clone();
-    if dimmed.is_some() {
+    if dimmed.is_some() || !ui.is_enabled() {
         painter.multiply_opacity(DIMMED_OPACITY);
     }
     let label_galley =
-        labelled.then(|| text::layout(&painter, spec.label, TextKind::Label, theme.text_secondary));
+        labelled.then(|| text::layout(&painter, spec.label, TextKind::Label, theme.text_2));
     let value_height = if labelled {
         text::layout(
             &painter,
             &spec.format(spec.clamp(*value)),
             TextKind::Value,
-            theme.text_primary,
+            theme.text,
         )
         .size()
         .y
@@ -353,9 +358,14 @@ pub fn knob_with(
     let label_height = label_galley.as_ref().map_or(0.0, |g| g.size().y);
     let gap = if labelled { size.gap() } else { 0.0 };
     let height = label_height + gap + size.ring() + gap + value_height;
+    let width = if labelled {
+        size.block_width()
+            .max(label_galley.as_ref().map_or(0.0, |g| g.size().x))
+    } else {
+        size.block_width()
+    };
 
-    let (rect, mut response) =
-        ui.allocate_exact_size(vec2(size.block_width(), height), Sense::click_and_drag());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     let changed = rotary_interact(ui, &response, value, spec);
     if changed {
         response.mark_changed();
@@ -371,35 +381,9 @@ pub fn knob_with(
     }
 
     if ui.is_rect_visible(rect) {
-        let hovered = response.hovered() || response.dragged();
-        let scale = size.ring() / 50.0;
-        paint_arcs(
-            &painter,
-            theme,
-            centre,
-            ARC_R_50 * scale,
-            2.5 * scale,
-            spec,
-            v,
-        );
-        paint_soft_circle(&painter, centre, size.cap() * 0.5, Depth::RaisedS, theme);
-
-        let (inner, outer) = size.pointer_span();
-        let dir = angle_dir(spec.angle_deg(v));
-        let color = if dimmed.is_some() {
-            theme.text_secondary
-        } else if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent
-        };
-        let a = centre + dir * inner;
-        let b = centre + dir * outer;
-        painter.line_segment([a, b], Stroke::new(POINTER_WIDTH, color));
-        painter.circle_filled(a, POINTER_WIDTH * 0.5, color);
-        painter.circle_filled(b, POINTER_WIDTH * 0.5, color);
-        if response.has_focus() {
-            paint_focus_circle(&painter, centre, size.cap() * 0.5, theme);
+        paint_knob(&painter, theme, centre, size, spec, v, dimmed.is_some());
+        if response.has_focus() && !response.is_pointer_button_down_on() {
+            paint_focus_circle(&painter, centre, size.side() * 0.5, theme);
         }
 
         if let Some(galley) = label_galley {
@@ -409,18 +393,18 @@ pub fn knob_with(
                 Align2::CENTER_TOP,
                 galley,
                 TextKind::Label,
-                theme.text_secondary,
+                theme.text_2,
             );
         }
     }
 
-    // The value readout (labelled knobs) or the floating editor over the cap (unlabelled).
+    // The value readout (labelled knobs) or the floating editor over the face (unlabelled).
     // The readout paints through `ui`, not the dimmed `painter`, so it dims its colour the
     // same way `multiply_opacity` would.
     let value_color = if dimmed.is_some() {
-        theme.text_primary.gamma_multiply(DIMMED_OPACITY)
+        theme.text.gamma_multiply(DIMMED_OPACITY)
     } else {
-        theme.text_primary
+        theme.text
     };
     let typed = if labelled {
         readout(
@@ -455,13 +439,13 @@ pub fn knob_with(
     response.on_hover_text(tooltip)
 }
 
-/// The concentric-ring dial (master volume, filter cutoff). Same interaction and
-/// [`tooltip_text`] hover tooltip as [`knob`]; the focus ring goes around the outermost
-/// raised ring.
+/// The former concentric dial (master volume, filter cutoff): Deck draws the 40 pt large
+/// knob. Same interaction and [`tooltip_text`] hover tooltip as [`knob`]; the focus ring goes
+/// around the knob.
 ///
-/// `Lg` lays the text block (label over a 15 pt value, right-aligned, at least 58 wide) to the
-/// left of the 96 pt ring with a 14 pt gap; `Sm` stacks the centred text above the 72 pt ring
-/// with a 6 pt gap, like `.dial` / `.dial.sm` in the mock.
+/// `Lg` lays the text block (label over the value, right-aligned, at least 56 wide) to the
+/// left of the knob with a 10 pt gap; `Sm` stacks the centred label above and the value below
+/// the knob like a labelled [`knob`].
 pub fn dial(
     ui: &mut Ui,
     theme: &Theme,
@@ -469,18 +453,18 @@ pub fn dial(
     spec: &KnobSpec<'_>,
     size: DialSize,
 ) -> Response {
-    let painter = ui.painter().clone();
-    let label_galley = text::layout(&painter, spec.label, TextKind::Label, theme.text_secondary);
-    let value_font = match size {
-        DialSize::Lg => FontId::proportional(DIAL_VALUE_SIZE_LG),
-        DialSize::Sm => TextKind::Value.font_id(),
-    };
+    let mut painter = ui.painter().clone();
+    if !ui.is_enabled() {
+        painter.multiply_opacity(DIMMED_OPACITY);
+    }
+    let label_galley = text::layout(&painter, spec.label, TextKind::Label, theme.text_2);
+    let value_font = TextKind::Value.font_id();
     let value_galley = |v: f32| {
         painter.layout_job(LayoutJob::single_section(
             spec.format(v),
             TextFormat {
                 font_id: value_font.clone(),
-                color: theme.text_primary,
+                color: theme.text,
                 ..TextFormat::default()
             },
         ))
@@ -494,9 +478,12 @@ pub fn dial(
     let block = match size {
         DialSize::Lg => vec2(
             text_size.x.max(DIAL_TEXT_MIN_WIDTH) + DIAL_GAP_LG + ring,
-            ring,
+            ring.max(text_size.y),
         ),
-        DialSize::Sm => vec2(ring, text_size.y + DIAL_GAP_SM + ring),
+        DialSize::Sm => vec2(
+            text_size.x.max(KNOB_BLOCK_MIN_WIDTH),
+            label_galley.size().y + DIAL_GAP_SM + ring + DIAL_GAP_SM + probe.size().y,
+        ),
     };
 
     let (rect, mut response) = ui.allocate_exact_size(block, Sense::click_and_drag());
@@ -512,7 +499,6 @@ pub fn dial(
 
     let mut typed = None;
     if ui.is_rect_visible(rect) {
-        let hovered = response.hovered() || response.dragged();
         let (centre, label_pos, label_anchor, value_pos, value_anchor) = match size {
             DialSize::Lg => {
                 let centre = pos2(rect.max.x - ring * 0.5, rect.center().y);
@@ -527,42 +513,23 @@ pub fn dial(
                 )
             }
             DialSize::Sm => {
-                let centre = pos2(rect.center().x, rect.max.y - ring * 0.5);
+                let centre = pos2(
+                    rect.center().x,
+                    rect.min.y + label_galley.size().y + DIAL_GAP_SM + ring * 0.5,
+                );
                 (
                     centre,
                     pos2(rect.center().x, rect.min.y),
                     Align2::CENTER_TOP,
-                    pos2(
-                        rect.center().x,
-                        rect.min.y + label_galley.size().y + DIAL_TEXT_GAP,
-                    ),
-                    Align2::CENTER_TOP,
+                    pos2(rect.center().x, rect.max.y),
+                    Align2::CENTER_BOTTOM,
                 )
             }
         };
 
-        let scale = ring / 50.0;
-        paint_arcs(
-            &painter,
-            theme,
-            centre,
-            ARC_R_50 * scale,
-            2.0 * scale,
-            spec,
-            v,
-        );
-        for d in size.rings() {
-            paint_soft_circle(&painter, centre, d * 0.5, Depth::RaisedM, theme);
-        }
-        let dot = centre + angle_dir(spec.angle_deg(v)) * size.dot_radius();
-        let color = if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent
-        };
-        painter.circle_filled(dot, size.dot() * 0.5, color);
-        if response.has_focus() {
-            paint_focus_circle(&painter, centre, size.rings()[0] * 0.5, theme);
+        paint_knob(&painter, theme, centre, KnobSize::Lg, spec, v, false);
+        if response.has_focus() && !response.is_pointer_button_down_on() {
+            paint_focus_circle(&painter, centre, ring * 0.5, theme);
         }
 
         text::paint_galley(
@@ -571,7 +538,7 @@ pub fn dial(
             label_anchor,
             label_galley,
             TextKind::Label,
-            theme.text_secondary,
+            theme.text_2,
         );
         typed = readout(
             ui,
@@ -581,7 +548,7 @@ pub fn dial(
             value_anchor,
             &spec.format(v),
             value_font,
-            theme.text_primary,
+            theme.text,
             &readout_name(spec.label),
         );
     }
@@ -594,8 +561,42 @@ pub fn dial(
     response.on_hover_text(tooltip_text(spec.label, &spec.format(v)))
 }
 
+/// Paints one knob of `size` centred on `centre`: the `border_2` track arc, the accent value
+/// arc, the gradient face with its 1 px ring and the pointer (`text`, or `text_2` when
+/// `dimmed`).
+pub fn paint_knob(
+    painter: &egui::Painter,
+    theme: &Theme,
+    centre: Pos2,
+    size: KnobSize,
+    spec: &KnobSpec<'_>,
+    v: f32,
+    dimmed: bool,
+) {
+    let r = size.arc_radius();
+    paint_arcs(painter, theme, centre, r, size.arc_stroke(), spec, v);
+    let face_r = (r - 4.0).max(1.0);
+    painter.add(vertical_gradient_circle(
+        centre,
+        face_r,
+        theme.knob_face[0],
+        theme.knob_face[1],
+    ));
+    painter.circle_stroke(centre, face_r, Stroke::new(1.0, theme.border_2));
+    let (inner, outer) = size.pointer_span();
+    let dir = angle_dir(spec.angle_deg(v));
+    let color = if dimmed { theme.text_2 } else { theme.text };
+    let width = size.pointer_width();
+    let a = centre + dir * inner;
+    let b = centre + dir * outer;
+    painter.line_segment([a, b], Stroke::new(width, color));
+    painter.circle_filled(a, width * 0.5, color);
+    painter.circle_filled(b, width * 0.5, color);
+}
+
 /// Paints a circular arc of `stroke` from `from_deg` to `to_deg` (degrees clockwise from
-/// 12 o'clock) around `centre`, as a polyline with round caps. A zero-length arc paints a dot.
+/// 12 o'clock) around `centre`, as a polyline with butt caps. A zero-length arc paints
+/// nothing.
 pub fn paint_arc(
     painter: &egui::Painter,
     centre: Pos2,
@@ -609,23 +610,17 @@ pub fn paint_arc(
     }
     let (from, to) = (from_deg.min(to_deg), from_deg.max(to_deg));
     let span = to - from;
-    let segments = ((span / SWEEP_DEG * ARC_SEGMENTS as f32).ceil() as usize).max(1);
-    let cap = stroke.width * 0.5;
     if span < 0.01 {
-        painter.circle_filled(centre + angle_dir(from) * radius, cap, stroke.color);
         return;
     }
+    let segments = ((span / SWEEP_DEG * ARC_SEGMENTS as f32).ceil() as usize).max(1);
     let points: Vec<Pos2> = (0..=segments)
         .map(|i| {
             let a = from + span * i as f32 / segments as f32;
             centre + angle_dir(a) * radius
         })
         .collect();
-    let first = points[0];
-    let last = points[segments];
     painter.add(egui::Shape::line(points, stroke));
-    painter.circle_filled(first, cap, stroke.color);
-    painter.circle_filled(last, cap, stroke.color);
 }
 
 /// Unit vector for an angle in degrees clockwise from 12 o'clock (egui's y axis points down).
@@ -634,7 +629,7 @@ fn angle_dir(deg: f32) -> Vec2 {
     vec2(rad.sin(), -rad.cos())
 }
 
-/// The track arc (shadow-dark, full sweep) and the accent value arc.
+/// The track arc (`border_2`, full sweep) and the accent value arc.
 fn paint_arcs(
     painter: &egui::Painter,
     theme: &Theme,
@@ -650,7 +645,7 @@ fn paint_arcs(
         radius,
         START_DEG,
         START_DEG + SWEEP_DEG,
-        Stroke::new(width, theme.shadow_dark),
+        Stroke::new(width, theme.border_2),
     );
     let (from, to) = spec.value_arc_deg(v);
     paint_arc(
@@ -827,5 +822,27 @@ mod tests {
         assert!(up.x.abs() < 1e-6 && (up.y + 1.0).abs() < 1e-6);
         let right = angle_dir(90.0);
         assert!((right.x - 1.0).abs() < 1e-6 && right.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn sizes_follow_winner() {
+        assert_eq!(KnobSize::Md.side(), 32.0);
+        assert_eq!(KnobSize::Sm.side(), 22.0);
+        assert_eq!(KnobSize::Lg.side(), 40.0);
+        assert_eq!(KnobSize::Md.arc_radius(), 13.0);
+        assert_eq!(KnobSize::Sm.arc_radius(), 8.0);
+        assert_eq!(KnobSize::Lg.arc_radius(), 17.0);
+        assert_eq!(KnobSize::Md.cap(), 18.0);
+        assert_eq!(KnobSize::Sm.cap(), 8.0);
+        assert_eq!(KnobSize::Lg.cap(), 26.0);
+        assert_eq!(KnobSize::Md.arc_stroke(), 2.5);
+        assert_eq!(KnobSize::Sm.arc_stroke(), 2.0);
+        assert_eq!(KnobSize::Md.pointer_span(), (5.0, 13.0));
+        assert_eq!(KnobSize::Sm.pointer_span(), (3.0, 8.0));
+        assert_eq!(KnobSize::Lg.pointer_span(), (9.0, 17.0));
+        assert_eq!(KnobSize::Md.block_width(), 56.0);
+        assert_eq!(KnobSize::Sm.block_width(), 22.0);
+        assert_eq!(DialSize::Lg.ring(), 40.0);
+        assert_eq!(DialSize::Sm.ring(), 40.0);
     }
 }

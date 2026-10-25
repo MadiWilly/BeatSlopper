@@ -228,51 +228,56 @@ fn theme_styles_tooltips_and_sets_the_delay() {
         theme.apply(&ctx);
         let style = ctx.style_of(theme.egui_theme());
         let v = &style.visuals;
-        assert_eq!(v.window_fill, theme.surface);
-        assert_eq!(v.window_stroke, egui::Stroke::NONE);
-        assert_eq!(v.override_text_color, Some(theme.text_primary));
+        assert_eq!(v.window_fill, theme.panel);
+        assert_eq!(v.window_stroke, egui::Stroke::new(1.0, theme.border));
+        assert_eq!(
+            v.window_shadow,
+            egui::epaint::Shadow::NONE,
+            "windows are flat"
+        );
+        assert_eq!(v.override_text_color, Some(theme.text));
         assert_eq!(v.popup_shadow, theme.popup_shadow());
+        assert_eq!(v.popup_shadow, theme.shadow, "the one floating shadow");
         assert_ne!(v.popup_shadow, egui::epaint::Shadow::NONE);
-        assert_eq!(v.popup_shadow.offset, [3, 3]);
-        assert_eq!(v.popup_shadow.blur, 8);
+        assert_eq!(v.popup_shadow.offset, [0, 8]);
+        assert_eq!(v.popup_shadow.blur, 24);
         assert_eq!(v.popup_shadow.spread, 0);
-        assert_eq!(v.popup_shadow.color, theme.shadow_dark);
         assert_eq!(
             v.window_corner_radius,
             egui::CornerRadius::same(POPUP_RADIUS)
         );
         assert_eq!(v.menu_corner_radius, egui::CornerRadius::same(POPUP_RADIUS));
-        assert_eq!(POPUP_RADIUS, 12);
+        assert_eq!(POPUP_RADIUS, 4);
         assert_eq!(style.interaction.tooltip_delay, TOOLTIP_DELAY);
         assert_eq!(TOOLTIP_DELAY, 0.3);
-        // The popup frame egui builds for tooltips picks these up.
+        // The popup frame egui builds for tooltips and menus picks these up.
         let frame = egui::Frame::popup(&style);
-        assert_eq!(frame.fill, theme.surface);
-        assert_eq!(frame.stroke, egui::Stroke::NONE);
+        assert_eq!(frame.fill, theme.panel);
+        assert_eq!(frame.stroke, egui::Stroke::new(1.0, theme.border));
         assert_eq!(frame.shadow, theme.popup_shadow());
         assert_eq!(frame.corner_radius, egui::CornerRadius::same(POPUP_RADIUS));
     }
 }
 
 #[test]
-fn brand_kind_has_the_mock_size_and_tracking() {
+fn brand_kind_is_the_project_name_level() {
+    // Deck has no wordmark: `brand` draws the toolbar's project name, 13 / 600, no caps, no
+    // tracking.
     let kind = TextKind::Brand;
-    assert_eq!(kind.size(), 15.0);
-    assert!(
-        (kind.letter_spacing() - 2.4).abs() < 1e-5,
-        "+0.16em of 15 pt"
-    );
-    assert!(kind.is_caps());
-    assert!(
-        !kind.is_medium(),
-        "the brand is weight 300, never faux-bold"
-    );
-    assert_eq!(kind.display_string("BeatSlopper"), "BEATSLOPPER");
+    assert_eq!(kind.size(), 13.0);
+    assert_eq!(kind.weight(), 600);
+    assert_eq!(kind.letter_spacing(), 0.0);
+    assert!(!kind.is_caps());
+    assert!(kind.is_medium(), "600 paints as a faux semibold");
+    assert_eq!(kind.display_string("BeatSlopper"), "BeatSlopper");
     let format = kind.format(egui::Color32::WHITE);
-    assert_eq!(format.font_id, egui::FontId::proportional(15.0));
-    assert!((format.extra_letter_spacing - 2.4).abs() < 1e-5);
-    // The other caps levels keep +0.12em.
-    assert!((TextKind::Label.letter_spacing() - 1.32).abs() < 1e-5);
+    assert_eq!(format.font_id, egui::FontId::proportional(13.0));
+    assert_eq!(format.extra_letter_spacing, 0.0);
+    // Titles track +0.06em, labels and buttons +0.04em, keycaps +0.02em.
+    assert!((TextKind::Title.letter_spacing() - 0.72).abs() < 1e-5);
+    assert!((TextKind::Label.letter_spacing() - 0.48).abs() < 1e-5);
+    assert!((TextKind::Button.letter_spacing() - 0.48).abs() < 1e-5);
+    assert!((TextKind::Hint.letter_spacing() - 0.2).abs() < 1e-5);
 }
 
 #[test]
@@ -294,11 +299,11 @@ fn brand_renders_in_both_themes() {
         let brand_rect = brand.rect();
         assert!(
             brand_rect.height() > title.rect().height(),
-            "15 pt brand is taller than the 12 pt title ({mode:?})"
+            "13 pt project name is taller than the 12 pt title ({mode:?})"
         );
-        // Eleven tracked 15 pt capitals are far wider than the same text untracked at 12 pt.
+        // Eleven 13 pt letters are wider than 60 pt.
         assert!(
-            brand_rect.width() > 110.0,
+            brand_rect.width() > 60.0,
             "{mode:?}: {}",
             brand_rect.width()
         );

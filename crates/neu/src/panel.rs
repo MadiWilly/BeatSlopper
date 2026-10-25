@@ -1,18 +1,29 @@
-//! Raised panel container.
+//! Flat panel container (Deck: `panel` fill, 1 px `border`, radius 4, padding 8).
 
 use egui::epaint::Shape;
 use egui::{Sense, Ui, UiBuilder};
 
 use crate::Theme;
-use crate::shadow::{Depth, soft_rect_shapes};
+use crate::flat::{Tone, flat_rect_shape};
 
-/// A raised-l panel (radius 24, padding 20) holding `add_contents`.
+/// A flat frame (`panel` fill, 1 px `border` hairline, radius 4, padding 8) holding
+/// `add_contents`: the body of a dock, a group or a window without a header
+/// ([`crate::shell::window_frame`] adds the header).
 ///
-/// The contents are laid out first in a child ui; the panel's fill and two soft shadows are
-/// then inserted at a shape index reserved before the contents, so they end up behind them
-/// and the panel is exactly as big as what it holds (plus padding). The shadows extend about
-/// 18 pt beyond the panel rect, so leave room around panels (the page padding in the mock).
+/// The contents are laid out first in a child ui; the frame is then inserted at a shape index
+/// reserved before the contents, so it ends up behind them and the panel is exactly as big as
+/// what it holds (plus padding). Nothing extends beyond the panel rect.
 pub fn panel<R>(ui: &mut Ui, theme: &Theme, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    panel_toned(ui, theme, Tone::Panel, add_contents)
+}
+
+/// [`panel`] in another tone (`Tone::Panel2` for wells and headers).
+pub fn panel_toned<R>(
+    ui: &mut Ui,
+    theme: &Theme,
+    tone: Tone,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let pad = theme.panel_padding;
     let where_to_put_background = ui.painter().add(Shape::Noop);
 
@@ -26,9 +37,15 @@ pub fn panel<R>(ui: &mut Ui, theme: &Theme, add_contents: impl FnOnce(&mut Ui) -
 
     let outer = content_ui.min_rect().expand(pad);
     if ui.is_rect_visible(outer) {
-        let shapes = soft_rect_shapes(outer, theme.radius_panel, Depth::RaisedL, theme);
-        ui.painter()
-            .set(where_to_put_background, Shape::Vec(shapes));
+        ui.painter().set(
+            where_to_put_background,
+            flat_rect_shape(
+                outer,
+                theme.radius_control,
+                tone.colour(theme),
+                theme.border,
+            ),
+        );
     }
     ui.allocate_rect(outer, Sense::hover());
     inner

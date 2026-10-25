@@ -5,7 +5,7 @@
 //! A numeric readout ([`readout`]) is the formatted value of a knob, dial, slider or stepper
 //! painted as plain text. A click on it (or a right-click anywhere on the control, see the
 //! callers) swaps the text for an inline `egui::TextEdit` styled by the theme: an inset-s pill
-//! in the surface colour, no outline, the value font, an accent caret, the old text selected
+//! an accent border with a 1 px accent ring, radius 4, the value font, the old text selected
 //! so typing replaces it. Enter and focus loss commit, Escape cancels. The editor lives in
 //! `ui.data` under the control's id ([`begin_edit`], [`show_edit`]); a committed string is
 //! handed back for the caller to parse.
@@ -42,13 +42,13 @@ use egui::{
 };
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_soft_rect};
+use crate::flat::flat_rect_shape;
 
 /// Narrowest inline editor (the value column of a stepper is 36 wide; a knob block is 52).
 pub const EDIT_MIN_WIDTH: f32 = 44.0;
-/// Horizontal padding of the editor pill around the text.
+/// Horizontal padding of the editor field around the text.
 pub const EDIT_PAD_X: f32 = 6.0;
-/// Vertical padding of the editor pill around the text.
+/// Vertical padding of the editor field around the text.
 pub const EDIT_PAD_Y: f32 = 2.0;
 /// Points of trackpad scrolling that count as one wheel notch (egui's `points_per_scroll_line`).
 pub const WHEEL_LINE_POINTS: f32 = 50.0;
@@ -149,7 +149,14 @@ pub fn show_edit(
     state.shown_pass = pass;
 
     let pill = editor_rect(rect, align);
-    paint_soft_rect(ui.painter(), pill, theme.radius_pill, Depth::InsetS, theme);
+    ui.painter()
+        .add(flat_rect_shape(pill, 4.0, theme.panel_2, theme.accent));
+    ui.painter().rect_stroke(
+        pill.expand(1.0),
+        5.0,
+        egui::Stroke::new(1.0, theme.accent),
+        egui::StrokeKind::Outside,
+    );
     if pass == state.opened_pass {
         // Opened by a click this very frame: egui takes focus away from a widget created
         // in the frame of a click elsewhere, so the text field starts next frame.
@@ -166,16 +173,16 @@ pub fn show_edit(
                 .layout(Layout::left_to_right(Align::Center)),
             |ui| {
                 let visuals = &mut ui.style_mut().visuals;
-                visuals.text_cursor.stroke.color = theme.accent;
-                visuals.selection.bg_fill = theme.glow;
-                visuals.selection.stroke.color = theme.text_primary;
+                visuals.text_cursor.stroke.color = theme.text;
+                visuals.selection.bg_fill = theme.accent_wash;
+                visuals.selection.stroke.color = theme.text;
                 ui.add(
                     egui::TextEdit::singleline(&mut state.text)
                         .id(widget_id)
                         .frame(Frame::NONE)
                         .margin(Margin::ZERO)
                         .font(font)
-                        .text_color(theme.text_primary)
+                        .text_color(theme.text)
                         .align(Align2([align, Align::Center]))
                         .desired_width(inner.width())
                         .min_size(inner.size())
@@ -184,6 +191,13 @@ pub fn show_edit(
             },
         )
         .inner;
+    // The editor is a text input named "Value editor" (egui gives it none of its own).
+    let typed_now = state.text.clone();
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(Role::TextInput, true, "Value editor");
+        info.current_text_value = Some(typed_now.clone());
+        info
+    });
 
     if response.lost_focus() {
         ui.data_mut(|d| d.remove_temp::<EditState>(sid));
