@@ -379,3 +379,277 @@ fn eq_messages_reach_the_engine_through_the_queue() {
     assert_eq!(engine.reverb(), &reverb::PRESETS[6].state);
     let _ = pos2(0.0, 0.0);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reverb audit: the FX rack's three knobs (`ParamId::Reverb*`) and the REVERB window
+// (`ReverbState`) are two views of one state, on the app side as well as in the engine.
+
+/// Asserts the app's two reverb views agree with each other.
+fn assert_app_views_agree(state: &AppState) {
+    assert_eq!(state.param(ParamId::ReverbSize), state.reverb.size);
+    assert_eq!(state.param(ParamId::ReverbDamping), state.reverb.damping);
+    assert_eq!(state.param(ParamId::ReverbMix), state.reverb.mix);
+}
+
+/// Delivers the app's queued messages and asserts the engine agrees with both views.
+fn assert_engine_follows(state: &mut AppState, engine: &mut engine::Engine) {
+    pump(state, engine);
+    assert_eq!(engine.reverb(), &state.reverb);
+    assert_eq!(
+        engine.param(ParamId::ReverbMix),
+        state.param(ParamId::ReverbMix)
+    );
+    assert_eq!(
+        engine.param(ParamId::ReverbSize),
+        state.param(ParamId::ReverbSize)
+    );
+    assert_eq!(
+        engine.param(ParamId::ReverbDamping),
+        state.param(ParamId::ReverbDamping)
+    );
+}
+
+/// Queues `edit` as the REVERB window would and runs one main frame.
+fn push(harness: &mut Harness<'_, BeatSlopperApp>, edit: PluginEdit) {
+    harness.state_mut().plugins_mut().lock().push_edit(edit);
+    harness.step();
+}
+
+#[test]
+fn rack_knob_and_window_knob_drive_one_reverb_state() {
+    let (app, mut engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1280.0, 1080.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    harness.run_steps(3);
+
+    // FX rack MIX knob -> the window's mirror follows on the next tick.
+    harness
+        .state_mut()
+        .state_mut()
+        .edit_param(ParamId::ReverbMix, 0.75, true);
+    harness.step();
+    assert_eq!(harness.state().state().reverb.mix, 0.75);
+    assert_eq!(harness.state().plugins().lock().reverb.mix, 0.75);
+    assert_app_views_agree(harness.state().state());
+
+    // Window MIX knob -> the rack's param follows.
+    push(
+        &mut harness,
+        PluginEdit::Reverb {
+            param: ReverbParam::Mix,
+            value: 0.35,
+            drag_started: true,
+        },
+    );
+    assert_eq!(harness.state().state().param(ParamId::ReverbMix), 0.35);
+    assert_eq!(harness.state().plugins().lock().reverb.mix, 0.35);
+    assert_app_views_agree(harness.state().state());
+    push(
+        &mut harness,
+        PluginEdit::Reverb {
+            param: ReverbParam::PreDelay,
+            value: 40.0,
+            drag_started: true,
+        },
+    );
+    assert_eq!(harness.state().state().reverb.pre_delay_ms, 40.0);
+    let steps_before_preset = harness.state().state().undo.len();
+
+    // A synth preset writes size / damping / mix: the window follows, the extras stay.
+    let synth = app::presets::ALL[4];
+    harness.state_mut().state_mut().apply_preset(4);
+    harness.step();
+    {
+        let shared = harness.state().plugins().lock();
+        assert_eq!(shared.reverb.size, synth.value(ParamId::ReverbSize));
+        assert_eq!(shared.reverb.damping, synth.value(ParamId::ReverbDamping));
+        assert_eq!(shared.reverb.mix, synth.value(ParamId::ReverbMix));
+        assert_eq!(
+            shared.reverb.pre_delay_ms, 40.0,
+            "the room's extras survive"
+        );
+    }
+    assert_app_views_agree(harness.state().state());
+    assert_eq!(harness.state().state().undo.len(), steps_before_preset + 1);
+
+    // A reverb preset from the window moves the rack knobs.
+    push(&mut harness, PluginEdit::ReverbPreset(4));
+    let cathedral = reverb::PRESETS[4].state;
+    assert_eq!(harness.state().state().reverb, cathedral);
+    assert_eq!(
+        harness.state().state().param(ParamId::ReverbSize),
+        cathedral.size
+    );
+    assert_eq!(
+        harness.state().state().param(ParamId::ReverbMix),
+        cathedral.mix
+    );
+    assert_eq!(harness.state().state().reverb_preset, Some(4));
+
+    // One undo step restores both views (and the extras) together.
+    assert!(harness.state_mut().state_mut().undo());
+    harness.step();
+    {
+        let state = harness.state().state();
+        assert_app_views_agree(state);
+        assert_eq!(state.reverb.pre_delay_ms, 40.0);
+        assert_eq!(state.reverb.size, synth.value(ParamId::ReverbSize));
+        assert_eq!(
+            state.param(ParamId::ReverbMix),
+            synth.value(ParamId::ReverbMix)
+        );
+        assert_eq!(harness.state().plugins().lock().reverb, state.reverb);
+    }
+    assert!(harness.state_mut().state_mut().undo());
+    {
+        let state = harness.state().state();
+        assert_app_views_agree(state);
+        assert_eq!(state.reverb.mix, 0.35);
+        assert_eq!(state.reverb.pre_delay_ms, 40.0);
+    }
+    while harness.state_mut().state_mut().undo() {}
+    assert_eq!(harness.state().state().reverb, ReverbState::DEFAULT);
+    assert_app_views_agree(harness.state().state());
+
+    // The engine saw every step and ends where the views are.
+    assert_engine_follows(harness.state_mut().state_mut(), &mut engine);
+    // Redo lands on the same agreement.
+    assert!(harness.state_mut().state_mut().redo());
+    assert_app_views_agree(harness.state().state());
+    assert_engine_follows(harness.state_mut().state_mut(), &mut engine);
+}
+
+#[test]
+fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
+    let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+    // The window's extras first, then the rack's knobs last.
+    state.set_reverb(ReverbParam::PreDelay, 60.0, true);
+    state.set_reverb(ReverbParam::Width, 0.5, true);
+    state.set_reverb(ReverbParam::LowCut, 150.0, true);
+    state.set_reverb(ReverbParam::HighCut, 9000.0, true);
+    state.set_param(ParamId::ReverbSize, 0.77);
+    state.set_param(ParamId::ReverbMix, 0.42);
+    assert_app_views_agree(&state);
+    assert_engine_follows(&mut state, &mut engine);
+    let heard = *engine.reverb();
+    assert_eq!(heard.pre_delay_ms, 60.0);
+    assert_eq!(heard.mix, 0.42);
+
+    // The app builds the file from its mirrors; the engine would build the same one.
+    let project = state.build_project();
+    let from_engine = engine::Project::from_engine(&engine, 0, 4, 0.8);
+    assert_eq!(project.reverb, from_engine.reverb);
+    assert_eq!(project.params, from_engine.params);
+    assert_eq!(project.reverb, heard);
+    assert_eq!(project.param(ParamId::ReverbMix), 0.42);
+    let back = engine::Project::from_json(&project.to_json_pretty()).expect("round trip");
+    assert_eq!(back, project);
+
+    // Loading sends the full state exactly once and reproduces what was heard.
+    let (mut loaded, mut other) = AppState::headless(ThemeMode::Light);
+    let free_before = loaded.engine.free_slots();
+    loaded.apply_project(&back);
+    let expected = ParamId::COUNT
+        + 2
+        + app::app::mixer_messages(&loaded.mixer).len()
+        + app::app::eq_messages(&loaded.eq).len()
+        + app::app::reverb_messages(&loaded.reverb).len()
+        + app::app::bank_messages(&loaded.bank, None).len();
+    assert_eq!(
+        free_before - loaded.engine.free_slots() + loaded.outbox.len(),
+        expected,
+        "one full resend, no second reverb write"
+    );
+    assert_eq!(loaded.reverb, heard);
+    assert_app_views_agree(&loaded);
+    assert_engine_follows(&mut loaded, &mut other);
+    assert_eq!(other.reverb(), &heard);
+    // The DSP follows once audio runs (size / damping arrive through the chain's smoothers;
+    // the chain drives the reverb's own mix at 1.0 and applies the return level itself).
+    let mut buf = vec![0.0_f32; 9600 * 2];
+    other.render(&mut buf, 9600);
+    let dsp = other.fx().reverb().state();
+    assert!((dsp.size - heard.size).abs() < 1e-3, "size {}", dsp.size);
+    assert!((dsp.damping - heard.damping).abs() < 1e-3);
+    assert_eq!(dsp.pre_delay_ms, heard.pre_delay_ms);
+    assert_eq!(dsp.width, heard.width);
+    assert_eq!(dsp.low_cut_hz, heard.low_cut_hz);
+    assert_eq!(dsp.high_cut_hz, heard.high_cut_hz);
+
+    // Undoing the load brings the previous project back in both views.
+    assert!(loaded.undo());
+    assert_eq!(loaded.reverb, ReverbState::DEFAULT);
+    assert_app_views_agree(&loaded);
+
+    // A version-5 file has no reverb state: it is built from the params on both sides.
+    let mut v5 = serde_json::to_value(engine::Project::default()).unwrap();
+    v5["version"] = serde_json::json!(5);
+    let obj = v5.as_object_mut().unwrap();
+    obj.remove("eq");
+    obj.remove("reverb");
+    v5["params"]["reverb_size"] = serde_json::json!(0.33);
+    v5["params"]["reverb_damping"] = serde_json::json!(0.66);
+    v5["params"]["reverb_mix"] = serde_json::json!(0.55);
+    let old = engine::Project::from_json(&v5.to_string()).expect("v5 loads");
+    loaded.apply_project(&old);
+    assert_eq!(
+        loaded.reverb,
+        ReverbState::new(0.33, 0.66, 0.0, 1.0, 20.0, 20_000.0, 0.55)
+    );
+    assert_app_views_agree(&loaded);
+    assert_engine_follows(&mut loaded, &mut other);
+
+    // A hand-edited version-6 file whose params disagree with its state: the state wins
+    // everywhere (file, app mirrors, engine).
+    let mut v6 = serde_json::to_value(&project).unwrap();
+    v6["params"]["reverb_mix"] = serde_json::json!(0.99);
+    let fixed = engine::Project::from_json(&v6.to_string()).unwrap();
+    assert_eq!(fixed.param(ParamId::ReverbMix), 0.42);
+    loaded.apply_project(&fixed);
+    assert_eq!(loaded.param(ParamId::ReverbMix), 0.42);
+    assert_app_views_agree(&loaded);
+    assert_engine_follows(&mut loaded, &mut other);
+}
+
+#[test]
+fn the_racks_more_pill_opens_the_reverb_window_and_the_window_hint_renders() {
+    let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1280.0, 1080.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    harness.run_steps(3);
+    assert!(!harness.state().state().is_plugin_open(PluginKind::Reverb));
+    harness
+        .get_by_label(app::ui::fx_rack::REVERB_MORE_LABEL)
+        .click();
+    harness.step();
+    assert!(harness.state().state().is_plugin_open(PluginKind::Reverb));
+    // Not an edit: nothing dirty, no undo step, no parameter moved.
+    assert!(!harness.state().state().dirty);
+    assert!(harness.state().state().undo.is_empty());
+    assert_eq!(harness.state().state().reverb, ReverbState::DEFAULT);
+    harness
+        .get_by_label(app::ui::fx_rack::REVERB_MORE_LABEL)
+        .click();
+    harness.step();
+    assert!(!harness.state().state().is_plugin_open(PluginKind::Reverb));
+
+    // The window body says the three values are shared with the rack.
+    let mut window = reverb_harness(ThemeMode::Light);
+    window.run_steps(2);
+    window.get_by_label(reverb_window::SHARED_HINT);
+    assert!(window.state().edits.is_empty(), "rendering must not edit");
+}

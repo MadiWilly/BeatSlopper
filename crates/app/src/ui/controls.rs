@@ -151,6 +151,9 @@ pub struct Knob {
     /// Shown dimmed (still interactive) with this reason in the tooltip, when the parameter
     /// has no effect in the current setting (e.g. PULSE with a non-square wave).
     pub dimmed: Option<&'static str>,
+    /// A second tooltip line explaining what the value is (e.g. "Return level of the reverb
+    /// bus"), see [`neu::knob_noted`].
+    pub note: Option<&'static str>,
 }
 
 impl Knob {
@@ -165,6 +168,7 @@ impl Knob {
             size: KnobSize::Md,
             fmt,
             dimmed: None,
+            note: None,
         }
     }
 
@@ -173,6 +177,13 @@ impl Knob {
     #[must_use]
     pub fn dimmed_when(mut self, condition: bool, reason: &'static str) -> Self {
         self.dimmed = condition.then_some(reason);
+        self
+    }
+
+    /// Adds a second tooltip line (see [`neu::knob_noted`]).
+    #[must_use]
+    pub fn note(mut self, note: &'static str) -> Self {
+        self.note = Some(note);
         self
     }
 
@@ -224,7 +235,7 @@ impl Knob {
     pub fn show(self, ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Response {
         let before = state.param(self.id);
         let mut value = before;
-        let response = neu::knob_dimmed(ui, theme, &mut value, &self.spec(), self.dimmed);
+        let response = neu::knob_with(ui, theme, &mut value, &self.spec(), self.dimmed, self.note);
         commit(state, self.id, before, value, &response);
         response
     }

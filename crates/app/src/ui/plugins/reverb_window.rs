@@ -11,7 +11,7 @@ use neu::{Depth, KnobSize, KnobSpec, Theme, paint_soft_rect};
 use super::eq_graph::{GRAPH_RADIUS, PLOT_INSET, SPECTRUM_ALPHA};
 use super::{
     COLUMN_GAP, KNOB_BLOCK_HEIGHT, PRESET_COLUMN_WIDTH, SECTION_GAP, fmt_ms_plain, fmt_seconds,
-    knob_edit, preset_list,
+    knob_edit_noted, preset_list,
 };
 use crate::plugins::{EnvelopeCache, PluginEdit, PluginShared, envelope_seconds};
 use crate::ui::controls::{
@@ -72,10 +72,18 @@ pub fn show(ui: &mut Ui, shared: &mut PluginShared) {
     });
 }
 
+/// One-line caps hint in the head: the three shared values are the FX rack's knobs.
+pub const SHARED_HINT: &str = "Size · damp · mix shared with the FX rack";
+/// Tooltip of the hint and second tooltip line of the MIX knob.
+pub const MIX_NOTE: &str = "Mix is the return level of the reverb bus; the mixer's REV sends \
+                            set how much of each channel goes in";
+
 fn head(ui: &mut Ui, theme: &Theme, shared: &PluginShared) {
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
         neu::title(ui, theme, "Reverb");
+        ui.add_space(KNOB_GAP);
+        neu::label(ui, theme, SHARED_HINT).on_hover_text(MIX_NOTE);
         controls::right_aligned(ui, "reverb_head_right", |ui| {
             ui.spacing_mut().item_spacing.x = KNOB_GAP;
             neu::label(ui, theme, "RT60");
@@ -265,7 +273,8 @@ fn knobs(ui: &mut Ui, theme: &Theme, shared: &mut PluginShared) {
                 fmt,
             };
             let value = shared.reverb.get(param);
-            knob_edit(ui, theme, value, &spec, |v, drag| {
+            let note = (param == ReverbParam::Mix).then_some(MIX_NOTE);
+            knob_edit_noted(ui, theme, value, &spec, note, |v, drag| {
                 shared.push_edit(PluginEdit::Reverb {
                     param,
                     value: v,
