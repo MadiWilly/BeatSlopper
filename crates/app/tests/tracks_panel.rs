@@ -410,3 +410,75 @@ fn whole_sequencer_is_visible_with_the_tracks_tab_shown() {
     harness.run_steps(2);
     assert_eq!(harness.state().state().active_track_count(), 8);
 }
+
+/// M10 review: every row carries the brief's small LEVEL knob after `S`, bound to the
+/// track's strip (the mixer's fader shows the same value), and the row with the knob still
+/// sits inside the column at the design size.
+#[test]
+fn tracks_panel_level_knob_edits_the_strip_and_the_row_fits() {
+    let mut harness = tracks_app_harness(1);
+    harness
+        .state_mut()
+        .state_mut()
+        .rename_track(1, "Sixteen chars ok");
+    harness.run_steps(2);
+    for (index, name) in ["Synth", "Sixteen chars ok"].into_iter().enumerate() {
+        let level = tracks::level_name(name);
+        let knob = harness.get_by_label(&level);
+        assert_eq!(knob.accesskit_node().role(), egui::accesskit::Role::Slider);
+        assert_eq!(knob.accesskit_node().numeric_value(), Some(0.0));
+        let knob = knob.rect();
+        let solo = harness.get_by_label(&tracks::solo_name(name)).rect();
+        let roll = harness.get_by_label(&tracks::roll_name(name)).rect();
+        let row = harness.get_by_label(&tracks::row_name(index, name)).rect();
+        assert!(
+            solo.max.x <= knob.min.x && knob.max.x <= roll.min.x,
+            "S | LEVEL | Roll"
+        );
+        assert!(
+            row.max.x <= knob.min.x,
+            "the name block ends before the controls"
+        );
+        assert!(
+            row.width() >= 48.0,
+            "the name keeps a usable column: {row:?}"
+        );
+        // The right column is 260 pt at the page's right edge, 20 pt of padding inside.
+        let top_row = harness.state().state().top_row_rect.expect("measured");
+        assert!(
+            roll.max.x <= top_row.max.x - 20.0,
+            "{roll:?} vs {top_row:?}"
+        );
+        assert!(knob.height() <= tracks::ROW_HEIGHT);
+    }
+
+    // The knob reads the strip and edits it: a mixer change shows, the keyboard moves it.
+    let channel = engine::Channel::from_track(1);
+    harness
+        .state_mut()
+        .state_mut()
+        .set_mixer(channel, engine::ChannelParam::Level, -6.0);
+    harness.run_steps(2);
+    let level = tracks::level_name("Sixteen chars ok");
+    let knob = harness.get_by_label(&level);
+    assert_eq!(knob.accesskit_node().numeric_value(), Some(-6.0));
+    knob.focus();
+    harness.run_steps(2);
+    harness.key_press(Key::ArrowRight);
+    harness.run_steps(2);
+    let level = harness
+        .state()
+        .state()
+        .mixer
+        .get(channel, engine::ChannelParam::Level);
+    assert!(level > -6.0, "the arrow key raised the level: {level}");
+    assert!(
+        harness.state().state().undo.len() >= 2,
+        "set_mixer and the key press are undo steps"
+    );
+    assert_eq!(
+        harness.state().state().edit_track,
+        1,
+        "editing the level does not change the selection"
+    );
+}

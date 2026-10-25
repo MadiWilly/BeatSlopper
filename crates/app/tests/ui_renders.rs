@@ -3250,3 +3250,123 @@ fn whole_sequencer_is_visible_with_three_tracks_in_the_mixer() {
         "{synth_level:?} vs {seq:?}"
     );
 }
+
+/// M10 review: at the design size the sequencer head shows the edit track's chip *and* its
+/// name in both lane views, between the `GRID | ROLL` tab and the right group, without
+/// pushing the right group past the panel; on the very first frame (no measured right
+/// group yet, the seed stands in) nothing overflows either.
+#[test]
+fn sequencer_head_shows_the_chip_and_the_name_at_the_design_size() {
+    for view in [app::app::LaneView::Grid, app::app::LaneView::Roll] {
+        let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+        app.state_mut().add_track();
+        app.state_mut().rename_track(1, "Sixteen chars ok");
+        app.state_mut().set_lane_view(view);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1280.0, 1140.0))
+            .build_ui_state(
+                |ui, app: &mut BeatSlopperApp| {
+                    app.tick(ui.ctx());
+                    app.show(ui);
+                },
+                app,
+            );
+        let check = |harness: &Harness<'_, BeatSlopperApp>, frame: &str| {
+            let top_row = harness.state().state().top_row_rect.expect("measured");
+            // The SEQUENCER panel ends where the right column's slot starts.
+            let panel_right =
+                top_row.max.x - ui::RIGHT_COLUMN_WIDTH - f32::from(ui::PAGE_GAP) - 20.0;
+            let seq = harness.get_by_label("Sequencer").rect();
+            let in_head =
+                |r: egui::Rect| r.min.y >= seq.min.y - 10.0 && r.max.y <= seq.max.y + 10.0;
+            let chip = harness
+                .get_all_by_label("Sixteen chars ok colour")
+                .map(|n| n.rect())
+                .find(|r| in_head(*r))
+                .expect("the head's chip");
+            let name = harness
+                .get_by_label(&ui::sequencer::tag_name("Sixteen chars ok"))
+                .rect();
+            let roll_tab = radio(harness, "Roll").rect();
+            let halve = harness.get_by_label(ui::sequencer::HALVE_LABEL).rect();
+            let rec = harness.get_by_label("Rec").rect();
+            assert!(in_head(name), "{frame} {view:?}: {name:?}");
+            assert!(roll_tab.max.x <= chip.min.x, "{frame} {view:?}");
+            assert!(
+                chip.max.x < name.min.x && name.max.x < halve.min.x,
+                "{frame} {view:?}"
+            );
+            assert!(
+                name.width() >= 40.0,
+                "{frame} {view:?}: a readable name, {name:?}"
+            );
+            assert!(
+                rec.max.x <= panel_right + 0.5,
+                "{frame} {view:?}: the right group stays inside the panel ({rec:?} vs \
+                 {panel_right})"
+            );
+            (halve, rec)
+        };
+        harness.step();
+        check(&harness, "first frame");
+        harness.run_steps(3);
+        let (halve, rec) = check(&harness, "settled");
+        let right_group = rec.max.x - halve.min.x;
+        assert!(
+            ui::sequencer::HEAD_RIGHT_GROUP_SEED >= right_group
+                && ui::sequencer::HEAD_RIGHT_GROUP_SEED < right_group + 16.0,
+            "the seed covers the measured right group ({right_group})"
+        );
+    }
+}
+
+/// M10 review: the MASTER column is pinned at the mixer's right edge, outside the strips'
+/// scroll area: with eight tracks the strips scroll while MASTER keeps its place inside the
+/// panel.
+#[test]
+fn mixer_master_stays_pinned_with_eight_tracks() {
+    let master_at = |extra: usize| {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        for _ in 0..extra {
+            state.add_track();
+        }
+        let theme = Theme::for_mode(ThemeMode::Dark);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(ui::mixer::WIDTH + 40.0, 420.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::mixer::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(4);
+        let master = harness.get_by_label("Master").rect();
+        let limit = harness.get_by_label("Limit").rect();
+        let meter = harness.get_by_label("Stereo level").rect();
+        let panel_right = ui::mixer::WIDTH + 40.0 - 20.0;
+        for rect in [master, limit, meter] {
+            assert!(
+                rect.max.x <= panel_right + 0.5,
+                "{extra} extra tracks: {rect:?} inside the panel ({panel_right})"
+            );
+        }
+        let last = format!("{} level", if extra == 0 { "Synth" } else { "Track 8" });
+        let last = harness.get_by_label(&last).rect();
+        (master, last)
+    };
+    let (master_one, last_one) = master_at(0);
+    let (master_eight, last_eight) = master_at(7);
+    assert_eq!(master_one.min.x, master_eight.min.x, "MASTER does not move");
+    assert!(
+        last_one.max.x <= master_one.min.x,
+        "one track: every strip before MASTER"
+    );
+    assert!(
+        last_eight.min.x > master_eight.min.x,
+        "eight tracks: the last strip is scrolled out past MASTER ({last_eight:?} vs \
+         {master_eight:?})"
+    );
+    assert!(
+        ui::mixer::strips_width(DrumRow::COUNT + 8, ui::mixer::STRIP_WIDTH)
+            > ui::mixer::WIDTH - 40.0,
+        "thirteen strips plus the master are wider than the panel"
+    );
+}

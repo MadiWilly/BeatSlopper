@@ -399,23 +399,42 @@ fn browser_keeps_the_whole_sequencer_visible_at_the_design_size() {
     check(&harness);
     let top_row = harness.state().state().top_row_rect.expect("measured");
     let head_before = harness.get_by_label(MODIFIED_LABEL).rect();
+    // The closed panel's first row, the LFO column at its right end included, is inside
+    // the SYNTH panel's padding (M10 review).
+    let synth_inner_right = top_row.max.x - ui::fx_rack::WIDTH - 10.0 - 20.0;
+    for label in ["Depth value", "Rate value", "Glide value"] {
+        let readout = harness
+            .get_all_by_label(label)
+            .map(|n| n.rect())
+            .filter(|r| top_row.contains_rect(*r) && r.min.x < synth_inner_right)
+            .max_by(|a, b| a.max.x.total_cmp(&b.max.x))
+            .unwrap_or_else(|| panic!("{label} in the SYNTH panel"));
+        assert!(
+            readout.max.x <= synth_inner_right + 0.01,
+            "{label} at {readout:?} overhangs the SYNTH panel (inner right {synth_inner_right})"
+        );
+    }
 
     harness.get_by_label(BROWSE_LABEL).click();
     harness.run_steps(3);
     assert!(harness.state().state().preset_browser_open);
     check(&harness);
-    // The row keeps its height and gets no wider (on `main` the closed panel's LFO DEPTH
-    // readout already overhangs the FX rack by a few points, an M8 layout artefact the
-    // browser does not add to).
+    // The row keeps its height and its width exactly (M10 review: the closed panel's LFO
+    // column, DEPTH readout included, sits inside the SYNTH panel since the first row's
+    // column gap compresses to the scale's 4; before that it overhung by 5 pt and pushed
+    // the FX rack with it).
     let open_row = harness.state().state().top_row_rect.expect("measured");
-    assert_eq!(open_row.min, top_row.min, "the top row did not move");
-    assert_eq!(open_row.max.y, top_row.max.y, "the top row kept its height");
-    assert!(
-        open_row.max.x <= top_row.max.x,
-        "the browser must not widen the top row: {open_row:?} vs {top_row:?}"
+    assert_eq!(
+        open_row, top_row,
+        "the browser does not move or resize the top row"
     );
     assert_eq!(harness.get_by_label(MODIFIED_LABEL).rect(), head_before);
     let synth_right = open_row.max.x - ui::fx_rack::WIDTH - 10.0;
+    assert_eq!(
+        top_row.max.x,
+        1280.0 - 20.0 - 8.0,
+        "the top row ends at the page's edge (20 pt padding, egui's 8 pt scroll gutter)"
+    );
     for label in CATEGORY_LABELS {
         let rect = radio(&harness, label).rect();
         assert!(

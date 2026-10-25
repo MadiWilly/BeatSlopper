@@ -1091,7 +1091,8 @@ part 2 and is not here. Everything below lives in `crates/app`.
     first unused slot as `"<name> copy"` (cut to 16 chars), colour = slot, `SetTrackActive`
     on + `CopyTrack`, selected; notes are not cloned. `None` for an unused source or no room.
   - `remove_track(slot) -> bool`: refuses the last active track (status line); clears the
-    slot's notes in every pattern mirror and the clipboard, resets its params, sends
+    slot's notes in every pattern mirror and the clipboard, resets its params and (M10 review)
+    its mixer strip on both sides (`Strip::for_channel` + six `SetMixer`s), sends
     `SetTrackActive` off; if it was the edit track the nearest active slot is selected.
   - `rename_track(slot, &str) -> bool` (trimmed, <= 16 chars; empty / same / unused = no
     edit), `set_track_colour(slot, colour) -> bool` (wraps mod 8).
@@ -1120,8 +1121,8 @@ part 2 and is not here. Everything below lives in `crates/app`.
   slot (preset found by name, else by matching the parameters against the presets, else 0;
   `modified` = the per-track ids differ from that preset's), switches unlisted slots off
   (and drops their notes from the bank mirror), keeps one active track at least, and selects
-  the first active slot. The persisted `preset_index` (eframe storage) is still re-applied at
-  startup, to track 0.
+  the first active slot. The eframe-persisted preset (`preset_index`, then the M9 name) is
+  no longer re-applied at startup (M10 review): the project carries one preset per track.
 - Shortcuts (`shortcuts.rs`): `Shortcut::AddTrack` (Ctrl+T), `DuplicateTrack`
   (Ctrl+Shift+D), `PrevTrack` (Alt+Up), `NextTrack` (Alt+Down); `BeatSlopperApp::run_shortcut`
   dispatches them to `add_track`, `duplicate_track(edit_track)`, `select_adjacent_track`.
@@ -1387,10 +1388,10 @@ puts a preset strip in the panel head and a browser over the panel body. Everyth
   (a one-shot focus request the search field consumes). `handle_keyboard` closes the
   browser on Escape when no text field has the keyboard (the browser itself closes on
   Escape from inside the search field, see below).
-- Persistence: `PRESET_NAME_KEY` (`"preset_name"`) stores the edit track's preset name;
-  at start-up the name is re-applied to track 0, falling back to the old
-  `PRESET_INDEX_KEY` index when no name is stored (the classics' order is unchanged), and
-  an unknown name is ignored. `PRESET_INDEX_KEY` is never written any more.
+- Persistence: none for the preset since the M10 review (the `PRESET_NAME_KEY` /
+  `PRESET_INDEX_KEY` start-up re-apply to track 0 is gone, with the keys: the project file
+  carries the preset per track and a fresh launch starts from preset 0; the browser's
+  category and search text were never persisted).
 - `project.rs`: `track_ui_from_state` finds the preset by name in the unified list
   (case-insensitive), else by matching the per-track parameters against every preset,
   else 0 with `modified` set, as before. `TrackState.preset` already carried the name, so
@@ -1474,3 +1475,60 @@ field is the panel's only `TextInput`; every list entry is a button named after 
   `cargo test --workspace` (app 183 unit + 1 + 12 plugins + 6 browser + 8 tracks + 74
   renders; engine 185 + 1 ignored and its integration suites; neu 55 + 37), `--smoke-test`
   ok.
+
+## M10 review fixes (app, 2026-10-25)
+
+The app-side items of PROGRESS.md "M10 review follow-ups"; the engine is untouched (its
+items wait for the M11 mixer merge).
+
+- Track operations (`app.rs`): `put_strip(channel, Option<Strip>)` stores a strip in the
+  mirror and sends its six `SetMixer`s; `remove_track` resets the slot's strip to
+  `Strip::for_channel` (the engine keeps a strip across `SetTrackActive`, so a deleted
+  soloed track used to keep every other channel silent), `add_track` starts from the
+  default strip, `duplicate_track` copies the source's whole strip (level, pan, sends, mute,
+  solo: a duplicate is the track as it was, notes aside). `prune_clipboard` drops the
+  clipboard's notes on unused slots; `restore` (undo / redo) and `apply_project` call it, so
+  a paste after a load or an undo never writes notes to an inactive track.
+- The eframe `preset_name` / `preset_index` start-up re-apply is gone with its keys: the
+  project carries one preset per track and nothing else read the stored name.
+- TRACKS row (`ui/tracks.rs`), left to right: 8 pt padding (the selected row's 3 x 16 pt
+  on-glow accent bar sits in it, 2 pt from the edge, on the straight part of the well's
+  8 pt-radius inset-m well), chip, name block (52 pt: `"Track 8"` fits, longer names get the
+  ellipsis and the tooltip), pencil, 20 pt `M` / `S`, the `Sm` LEVEL knob (34 pt,
+  unlabelled, `ChannelParam::Level` through `edit_mixer`, accessible as `level_name` =
+  `"Level track <name>"`, a slider), the 32 pt `Roll` pill, 4 pt padding: 168 pt of fixed
+  width in the 220 pt column. The `TextKind` / `Align2` import-suppression lines are gone.
+- SEQUENCER head (`ui/sequencer.rs`): the chip *and* the name show at 1280 in both views
+  (`tag_name` = `"Track: <name>"`, a label): the head gap is 8 (`HEAD_ITEM_GAP`), the A..H
+  tabs use `neu::segmented_padded` with `PATTERN_TAB_PADDING` 6 (a kit addition: the
+  regular `segmented` on a 6 pt padding), and LENGTH is `(-) 1 bar (+)` on the kit's 28 pt
+  `stepper_button`s (accessible as `HALVE_LABEL` / `DOUBLE_LABEL` = `"Halve length"` /
+  `"Double length"`), which freed 68 pt; the tag's name gets about 82 pt beside the chip
+  (`"SIXTEEN CHARS…"`). `HEAD_RIGHT_GROUP_SEED` (416) stands in for the right group's width
+  on the first frame. The row CLEAR pills (73 pt) are the kit's 28 pt `Icon::Clear` circles
+  (still "Clear" / "Clear pattern"): the grid rows were 947 pt in a 914 pt slot, which
+  pushed the right-hand column 33 pt past the page at 1280 x 1140 (the ROLL view did not,
+  so the column jumped between views); the rows are 902 pt now and the page's right edge is
+  exactly 1252 (= 1280 - 20 - egui's 8 pt scroll gutter) in every state the tests cover.
+- FX rack tags (`controls::track_tag`): the name sits in a fixed `TRACK_TAG_NAME_WIDTH`
+  (96) slot (`caps_label_truncated`, ellipsis, full name in the tooltip). The rack's right
+  column is pushed to the edge with the width it had *last* frame (`right_aligned`), so a
+  head that grew with a longer track name overflowed the rack for one frame, which widened
+  the page's scroll content for the next frame and moved everything below by the growth (a
+  kittest click on a pill measured on that frame missed it).
+- MIXER (`ui/mixer.rs`): the master column is pinned at the panel's right edge outside the
+  strips' horizontal `ScrollArea` (which takes the width left of it); the strips scroll
+  under the master once wider than that room.
+- SYNTH panel: `COL_GAP_MIN` is 4 (was 8): the first row's four columns are 679 pt since
+  the design cleanup's 12 pt A D S R gap and need 6.2 pt gaps to sit inside the panel's 698
+  pt at 1280; the 8 pt minimum put the LFO column (its DEPTH readout) 5 pt past the panel
+  and the FX rack with it. The browser layout test now asserts the top row's edge exactly.
+- Tests: `app.rs` (strip reset frees a deleted solo, measured on the master meter through
+  the offline engine; ADD / DUP strips; MIDI overdub into track 2; paste carries every
+  track's notes; the clipboard after move / remove / load / undo; the export of a two-track
+  project equals the live render of the same state sample for sample, see DECISIONS.md for
+  why the test keeps the smoothed settings at their defaults); `tests/tracks_panel.rs` (the
+  LEVEL knob per row, keyboard edit, row inside the column); `tests/ui_renders.rs` (chip +
+  name in both views, first frame included, the seed; MASTER pinned with eight tracks);
+  `tests/preset_browser.rs` (top row equality, the LFO readouts inside the panel);
+  `neu/tests/controls.rs` (`segmented_padded`).

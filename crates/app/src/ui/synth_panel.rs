@@ -26,7 +26,7 @@
 //!    VELOCITY: label, VEL>AMP (%) and VEL>CUT (%) knobs.
 //!
 //! Each row's column gap is the mock's 26 pt when the panel is wide enough and shrinks (down
-//! to 8) using the columns' total width from the previous frame, so the panel never spills
+//! to 4) using the columns' total width from the previous frame, so the panel never spills
 //! over the FX rack at the minimum window width.
 
 use egui::{Align, Layout, ScrollArea, Ui, vec2};
@@ -56,8 +56,11 @@ pub const FILTER_TYPES: [&str; 3] = ["LP", "BP", "HP"];
 
 /// Largest gap between the synth columns (`.synth-body{gap:26px}`).
 pub const COL_GAP_MAX: f32 = 26.0;
-/// Smallest gap the columns compress to when the panel is narrow.
-pub const COL_GAP_MIN: f32 = 8.0;
+/// Smallest gap the columns compress to when the panel is narrow (4, the scale's smallest
+/// step: at 1280 x 1140 the first row's four columns, 679 pt since the design cleanup's 12 pt
+/// A D S R gap, need 6.2 pt gaps to sit inside the panel's 698 pt; an 8 pt minimum put the
+/// LFO column 5 pt past the panel and pushed the FX rack with it).
+pub const COL_GAP_MIN: f32 = 4.0;
 /// Gap between the A D S R sliders: the mock's 8 widened to 12 so the 13 pt values
 /// ("600 ms") of neighbouring 36 pt columns never touch.
 pub const SLIDER_GAP: f32 = 12.0;

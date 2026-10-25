@@ -139,3 +139,19 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
   the mixer. A muted row label is text-secondary at 45 % alpha, a soloed one carries a 6 pt
   accent dot. The PROJECT panel's RECENT button is a 28 pt stepper-style circle with a clock
   glyph; the RECENT view lists rows in the value type with an accent dot on the open project.
+
+## As-built tweaks (M10 review, 2026-10-25)
+
+- TRACKS row: the selected row is an inset-m well (radius 8) with a 3 x 16 pt on-glow accent
+  bar 2 pt inside its left edge (the design-cleanup rule: a selection reads as an accent
+  cue). Paddings 8 left / 4 right; `M` / `S` are 20 pt squares, the `Roll` pill 32 pt, and a
+  26-cap small knob (LEVEL) sits between `S` and `Roll`.
+- Sequencer head: item gap 8 (not 12); the A..H pattern tabs use a 6 pt item padding (the
+  kit's 8 on single letters was a third of the track); LENGTH is `(-) 1 bar (+)` on the
+  28 pt stepper circles like the BPM display, so the edit track's chip *and* name fit at
+  1280. The row / pattern CLEAR pills are 28 pt stepper circles with the `x` glyph (the
+  pills made the grid rows 33 pt wider than their slot at 1280, pushing the right-hand
+  column past the page).
+- Mixer: the MASTER column is pinned at the panel's right edge; the strips scroll under it.
+- Synth panel: the first row's column gap compresses down to 4 (not 8) so the LFO column
+  stays inside the panel at 1280 after the 12 pt A D S R gap.

@@ -66,7 +66,10 @@ pub use piano_roll::{
     ghost_outline, ghost_rects, grid_rect, is_black_key, note_rect, piano_roll,
     piano_roll_with_ghosts, row_rect,
 };
-pub use segmented::{SEGMENTED_CHIP_HEIGHT, SEGMENTED_HEIGHT, chip_rect, segmented};
+pub use segmented::{
+    SEGMENTED_CHIP_HEIGHT, SEGMENTED_HEIGHT, SEGMENTED_ITEM_PADDING, chip_rect, segmented,
+    segmented_padded,
+};
 pub use shadow::{
     Depth, FOCUS_RING, FOCUS_RING_GAP, paint_focus_circle, paint_focus_rect, paint_soft_circle,
     paint_soft_circle_with_fill, paint_soft_rect, paint_soft_rect_with_fill, soft_circle_shapes,

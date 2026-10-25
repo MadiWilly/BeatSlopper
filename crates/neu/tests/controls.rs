@@ -288,6 +288,41 @@ fn segmented_click_selects_and_reports_one_change() {
     assert_eq!(*harness.state(), (3, 4));
 }
 
+/// `segmented_padded` is the same control on a narrower item padding: the track shrinks by
+/// twice the padding difference per item, items keep their names and a click still selects.
+#[test]
+fn segmented_padded_narrows_the_track_and_still_selects() {
+    const LETTERS: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+    let mut harness = Harness::builder().build_ui_state(
+        |ui, s: &mut (usize, egui::Rect, egui::Rect)| {
+            let theme = Theme::dark();
+            theme.apply(ui.ctx());
+            ui.horizontal(|ui| {
+                let mut regular = 0;
+                s.1 = neu::segmented(ui, &theme, &mut regular, &LETTERS).rect;
+                s.2 = neu::segmented_padded(ui, &theme, &mut s.0, &LETTERS, 6.0).rect;
+            });
+        },
+        (0, egui::Rect::NOTHING, egui::Rect::NOTHING),
+    );
+    harness.run();
+    let (_, regular, compact) = *harness.state();
+    let expected = regular.width() - 8.0 * 2.0 * (neu::SEGMENTED_ITEM_PADDING - 6.0);
+    assert!(
+        (compact.width() - expected).abs() < 0.01,
+        "{} vs {expected}",
+        compact.width()
+    );
+    assert_eq!(compact.height(), regular.height());
+    let compact_h = harness
+        .get_all_by_label("H")
+        .find(|n| compact.contains_rect(n.rect()))
+        .expect("the compact track's H");
+    compact_h.click();
+    harness.run();
+    assert_eq!(harness.state().0, 7);
+}
+
 /// Every rect shape painted in `fill` (recursing into `Shape::Vec`).
 fn filled_rects(shapes: &[egui::Shape], fill: egui::Color32, out: &mut Vec<egui::Rect>) {
     for shape in shapes {

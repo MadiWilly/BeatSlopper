@@ -14,8 +14,8 @@
 //! edits it through [`AppState::set_param`], which clamps, stores and sends
 //! `Message::SetParam`; [`AppState::apply_preset`] resets to defaults, overlays a preset and
 //! sends every value. After the audio stream starts, every parameter and the tempo are sent
-//! once so the engine matches the UI. The chosen preset's *name* is persisted next to the
-//! theme override ([`PRESET_NAME_KEY`], M9) and re-applied to track 0 on the next launch.
+//! once so the engine matches the UI. The preset is not persisted on its own: the project
+//! file carries one per track (M10), and a fresh launch starts from preset 0.
 //!
 //! Sequencer (M3/M5): [`AppState::bank`] is the UI's source of truth for the eight patterns,
 //! the song chain, the play mode and the selected (edit) pattern; [`AppState::pattern`] is
@@ -109,7 +109,7 @@ use engine::track::{COLOUR_COUNT, MAX_NAME_LEN, default_name, track_index};
 use engine::{
     Bank, ChainEntry, Channel, ChannelParam, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, MAX_NOTES,
     MAX_TRACKS, Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern,
-    PatternLength, PlayMode, Position, STEPS, TrackId,
+    PatternLength, PlayMode, Position, STEPS, Strip, TrackId,
 };
 use engine::{EqParam, EqState, ReverbParam, ReverbState};
 use neu::{Theme, ThemeMode};
@@ -135,14 +135,6 @@ use neu::{VisualInput, VisualPreset};
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
-
-/// eframe storage key for the selected preset *name* (M9: the edit track's preset; on the
-/// next launch it is re-applied to track 0). Replaces [`PRESET_INDEX_KEY`].
-pub const PRESET_NAME_KEY: &str = "preset_name";
-
-/// eframe storage key of the pre-M9 preset index (the classics' order, which the unified
-/// list keeps); still read as a fallback when no name is stored, never written.
-pub const PRESET_INDEX_KEY: &str = "preset_index";
 
 /// eframe storage key for the last project path.
 pub const PROJECT_PATH_KEY: &str = "project_path";
@@ -2280,10 +2272,10 @@ impl AppState {
         (0..MAX_TRACKS as TrackId).find(|&slot| !self.tracks[usize::from(slot)].active)
     }
 
-    /// ADD: puts a fresh track (default name `"Track N"`, colour = slot, preset 0 applied)
-    /// into the first unused slot, tells the engine (`SetTrackActive` on, then its
-    /// parameters) and selects it. One undo step. `None` (with a status line) when all eight
-    /// slots are in use.
+    /// ADD: puts a fresh track (default name `"Track N"`, colour = slot, preset 0 applied, a
+    /// default mixer strip) into the first unused slot, tells the engine (`SetTrackActive`
+    /// on, then its parameters and strip) and selects it. One undo step. `None` (with a
+    /// status line) when all eight slots are in use.
     pub fn add_track(&mut self) -> Option<TrackId> {
         let Some(slot) = self.free_track_slot() else {
             self.set_status(format!("All {MAX_TRACKS} tracks are in use"));
@@ -2298,14 +2290,45 @@ impl AppState {
             on: true,
         });
         self.resend_track_params(slot);
+        self.put_strip(Channel::from_track(slot), None);
         self.select_track(slot);
         Some(slot)
     }
 
-    /// DUP: clones track `from`'s settings (parameters, preset, modified marker; not its
-    /// notes, like FL's clone) into the first unused slot as `"<name> copy"` with the slot's
-    /// own colour, tells the engine (`SetTrackActive` on, `CopyTrack`) and selects the copy.
-    /// One undo step. `None` when `from` is unused or every slot is taken.
+    /// Stores `strip` (or the channel's default strip for `None`) as `channel`'s mixer strip
+    /// and sends every value (`SetMixer` x 6). Not an undo step of its own: the track
+    /// operations call it inside theirs.
+    fn put_strip(&mut self, channel: Channel, strip: Option<Strip>) {
+        let strip = strip.unwrap_or_else(|| Strip::for_channel(channel));
+        *self.mixer.strip_mut(channel) = strip;
+        for param in ChannelParam::ALL {
+            self.send(Message::SetMixer {
+                channel,
+                param,
+                value: strip.get(param),
+            });
+        }
+    }
+
+    /// Drops the clipboard's notes on every unused slot (a load or an undo may have switched
+    /// a slot off since the copy), so a later paste never writes notes to an inactive
+    /// track. The lane is rebuilt by the callers' `rebuild_lanes`.
+    pub(crate) fn prune_clipboard(&mut self) {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        for slot in 0..MAX_TRACKS {
+            if !self.tracks[slot].active {
+                clipboard.clear_notes(slot as TrackId);
+            }
+        }
+    }
+
+    /// DUP: clones track `from`'s settings (parameters, preset, modified marker and its mixer
+    /// strip: level, pan, sends, mute and solo; not its notes, like FL's clone) into the
+    /// first unused slot as `"<name> copy"` with the slot's own colour, tells the engine
+    /// (`SetTrackActive` on, `CopyTrack`, the strip's `SetMixer`s) and selects the copy. One
+    /// undo step. `None` when `from` is unused or every slot is taken.
     pub fn duplicate_track(&mut self, from: TrackId) -> Option<TrackId> {
         if !self.track_active(from) {
             return None;
@@ -2334,14 +2357,18 @@ impl AppState {
             from: f as TrackId,
             to: slot,
         });
+        let source_strip = *self.mixer.strip(Channel::from_track(from));
+        self.put_strip(Channel::from_track(slot), Some(source_strip));
         self.select_track(slot);
         Some(slot)
     }
 
     /// DEL: switches slot `slot` off: its notes leave every pattern (the engine does the same
     /// on `SetTrackActive` off), its parameters go back to the defaults and its mixer strip
-    /// is kept. The last active track cannot be removed (`false`, status line). If it was the
-    /// edit track the nearest active slot is selected. One undo step.
+    /// to the track defaults on both sides (the engine keeps a strip across `SetTrackActive`,
+    /// so a deleted soloed track would otherwise keep every other channel silent). The last
+    /// active track cannot be removed (`false`, status line). If it was the edit track the
+    /// nearest active slot is selected. One undo step.
     pub fn remove_track(&mut self, slot: TrackId) -> bool {
         let t = track_index(slot);
         if !self.tracks[t].active {
@@ -2364,6 +2391,7 @@ impl AppState {
             track: t as TrackId,
             on: false,
         });
+        self.put_strip(Channel::from_track(t as TrackId), None);
         if track_index(self.edit_track) == t {
             let nearest = self.nearest_active_track(t as TrackId).unwrap_or(0);
             self.select_track(nearest);
@@ -2636,6 +2664,9 @@ impl AppState {
         } else {
             self.active_tracks().next().unwrap_or(0)
         };
+        // The clipboard is not part of the snapshot: notes it holds on slots the snapshot
+        // switched off are dropped.
+        self.prune_clipboard();
         self.rebuild_lanes();
         self.clamp_shown_bar();
         self.clamp_song_selected();
@@ -3311,12 +3342,6 @@ impl BeatSlopperApp {
             .flatten()
             .map(ThemeMode::from);
         let mode = resolve_theme_mode(theme_override, cc.egui_ctx.system_theme());
-        let preset_name: Option<String> = cc
-            .storage
-            .and_then(|s| eframe::get_value::<String>(s, PRESET_NAME_KEY));
-        let preset_index: Option<usize> = cc
-            .storage
-            .and_then(|s| eframe::get_value::<usize>(s, PRESET_INDEX_KEY));
         let project_path: Option<PathBuf> = cc
             .storage
             .and_then(|s| eframe::get_value::<Option<PathBuf>>(s, PROJECT_PATH_KEY))
@@ -3369,16 +3394,8 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<f32>(s, ROLL_EXTRA_WIDTH_KEY));
         state.set_roll_extra_width(roll_extra_width.unwrap_or(0.0));
-        // Re-apply the remembered preset so the sound matches the shown name: by name (M9),
-        // else by the pre-M9 index (the classics' order, which the unified list keeps). An
-        // unknown name is ignored.
-        let remembered = preset_name
-            .as_deref()
-            .and_then(presets::index_of)
-            .or(preset_index);
-        if let Some(index) = remembered {
-            state.apply_preset(index);
-        }
+        // The preset is not remembered across launches (M10 review): the project file
+        // carries one per track, and a fresh launch starts every track from preset 0.
         state.project_path = project_path;
         if let Some(repeats) = export_repeats.filter(|r| EXPORT_REPEATS.contains(r)) {
             state.export_repeats = repeats;
@@ -3695,11 +3712,6 @@ impl App for BeatSlopperApp {
     fn save(&mut self, storage: &mut dyn Storage) {
         let stored: Option<StoredThemeMode> = self.state.theme_override.map(Into::into);
         eframe::set_value(storage, THEME_OVERRIDE_KEY, &stored);
-        eframe::set_value(
-            storage,
-            PRESET_NAME_KEY,
-            &self.state.preset_name().to_owned(),
-        );
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
@@ -6336,6 +6348,288 @@ mod tests {
         assert_eq!(state.edit_track, 0);
         sync(&mut state, &mut engine);
         assert!(!engine.track_active(1));
+    }
+
+    /// Renders one bar of the loop through `engine` in 512-frame blocks and returns the
+    /// loudest master peak (the engine's meters are per block; the channel meters sit
+    /// before the mute / solo stage, so the master is where a solo shows).
+    fn master_peak_over_a_bar(engine: &mut engine::Engine) -> f32 {
+        let bar = engine::export::bar_frames(DEFAULT_BPM, 48_000.0);
+        let mut out = vec![0.0f32; 512 * 2];
+        let mut peak: f32 = 0.0;
+        let mut rendered = 0;
+        while rendered < bar {
+            engine.render(&mut out, 512);
+            peak = peak.max(engine.meters().master_peak());
+            rendered += 512;
+        }
+        peak
+    }
+
+    /// M10 review: a deleted soloed track must not keep the rest silent. The engine keeps a
+    /// slot's strip across `SetTrackActive`, so the app resets it on both sides.
+    #[test]
+    fn remove_track_resets_its_mixer_strip_so_a_deleted_solo_frees_the_rest() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.resend_all();
+        // Only track 1 sounds: no drums, one note of its own, nothing on track 2.
+        state.clear_pattern();
+        state.add_note(Note::new(0, 8, 48, 0.9));
+        let slot = state.add_track().unwrap();
+        let channel = Channel::from_track(slot);
+        state.toggle_solo(channel);
+        state.set_mixer(channel, ChannelParam::Level, -12.0);
+        state.set_mixer(channel, ChannelParam::Pan, 0.5);
+        sync(&mut state, &mut engine);
+        assert!(engine.mixer().strip(channel).solo);
+        // The stream runs between the click and PLAY: let the gain smoothers settle.
+        let mut silence = vec![0.0f32; 512 * 2];
+        for _ in 0..50 {
+            engine.render(&mut silence, 512);
+        }
+        state.play();
+        sync(&mut state, &mut engine);
+        assert_eq!(
+            master_peak_over_a_bar(&mut engine),
+            0.0,
+            "the solo on track 2 silences track 1"
+        );
+
+        assert!(state.remove_track(slot));
+        assert_eq!(
+            *state.mixer.strip(channel),
+            Strip::for_channel(channel),
+            "the slot's strip is back to the track defaults"
+        );
+        sync(&mut state, &mut engine);
+        assert_eq!(*engine.mixer().strip(channel), Strip::for_channel(channel));
+        assert!(!engine.mixer().any_solo());
+        assert!(
+            master_peak_over_a_bar(&mut engine) > 0.0,
+            "track 1 sounds again"
+        );
+        // Undo brings the strip (and the solo) back with the track.
+        assert!(state.undo());
+        assert!(state.mixer.strip(channel).solo);
+        assert_eq!(state.mixer.strip(channel).level_db, -12.0);
+    }
+
+    #[test]
+    fn add_starts_from_a_default_strip_and_dup_copies_the_source_strip() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.resend_all();
+        sync(&mut state, &mut engine);
+        // A stale strip on an unused slot (as a pre-fix file could leave) is reset by ADD.
+        let channel = Channel::from_track(1);
+        state.mixer.set(channel, ChannelParam::Mute, 1.0);
+        state.mixer.set(channel, ChannelParam::Level, -20.0);
+        assert_eq!(state.add_track(), Some(1));
+        assert_eq!(*state.mixer.strip(channel), Strip::for_channel(channel));
+        sync(&mut state, &mut engine);
+        assert_eq!(*engine.mixer().strip(channel), Strip::for_channel(channel));
+
+        state.set_mixer(channel, ChannelParam::Level, -6.0);
+        state.set_mixer(channel, ChannelParam::Pan, -0.25);
+        state.set_mixer(channel, ChannelParam::DelaySend, 0.4);
+        state.toggle_mute(channel);
+        let source = *state.mixer.strip(channel);
+        assert_eq!(state.duplicate_track(1), Some(2));
+        let copy = Channel::from_track(2);
+        assert_eq!(*state.mixer.strip(copy), source, "DUP copies the strip");
+        sync(&mut state, &mut engine);
+        assert_eq!(*engine.mixer().strip(copy), source);
+    }
+
+    #[test]
+    fn midi_overdub_writes_into_the_edit_track() {
+        let (mut state, _engine, tx) = midi_state();
+        let demo = state.track_notes(0).to_vec();
+        assert!(!demo.is_empty());
+        assert_eq!(state.add_track(), Some(1));
+        assert_eq!(state.edit_track, 1);
+        state.clear_synth();
+        state.play();
+        state.toggle_arm();
+        state.playhead = at(2, 0.6);
+        tx.try_send(NoteEvent::On {
+            note: 62,
+            velocity: 1.0,
+        })
+        .unwrap();
+        tx.try_send(NoteEvent::Off { note: 62 }).unwrap();
+        assert_eq!(state.poll_midi(), 2);
+        assert_eq!(
+            state.track_notes(1),
+            &[Note::new(3, 1, 62, 1.0)],
+            "the overdub lands on track 2"
+        );
+        assert_eq!(
+            state.track_notes(0),
+            demo.as_slice(),
+            "track 1 is untouched"
+        );
+        assert_eq!(
+            state.pattern().synth[3],
+            SynthStep {
+                note: Some(62),
+                accent: true
+            },
+            "the lane shows the edit track"
+        );
+    }
+
+    #[test]
+    fn paste_carries_every_tracks_notes() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.resend_all();
+        let demo = state.track_notes(0).to_vec();
+        state.add_track();
+        let second = Note::new(0, 2, 48, 0.8);
+        state.add_note(second);
+        state.copy_pattern();
+        state.select_pattern(2);
+        assert!(state.paste_pattern());
+        assert_eq!(state.bank.patterns[2].notes(0), demo.as_slice());
+        assert_eq!(state.bank.patterns[2].notes(1), &[second]);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank().patterns[2], state.bank.patterns[2]);
+    }
+
+    #[test]
+    fn clipboard_follows_remove_and_move() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        let demo = state.track_notes(0).to_vec();
+        state.add_track();
+        let second = Note::new(0, 2, 48, 0.8);
+        state.add_note(second);
+        state.copy_pattern();
+
+        // Moving a track swaps its notes in the clipboard too.
+        assert!(state.move_track(0, false));
+        let clipboard = state.clipboard.as_ref().unwrap();
+        assert_eq!(clipboard.notes(1), demo.as_slice());
+        assert_eq!(clipboard.notes(0), &[second]);
+        assert!(state.move_track(1, true));
+        let clipboard = state.clipboard.as_ref().unwrap();
+        assert_eq!(clipboard.notes(0), demo.as_slice());
+        assert_eq!(clipboard.notes(1), &[second]);
+
+        // Removing a track drops its notes from the clipboard; undo does not bring them
+        // back (the clipboard is not part of the snapshot), so a paste never resurrects a
+        // deleted track's notes.
+        assert!(state.remove_track(1));
+        let clipboard = state.clipboard.as_ref().unwrap();
+        assert!(clipboard.notes(1).is_empty());
+        assert_eq!(clipboard.notes(0), demo.as_slice());
+        assert!(state.undo());
+        assert!(state.track_active(1));
+        assert!(state.clipboard.as_ref().unwrap().notes(1).is_empty());
+    }
+
+    /// M10 review: notes the clipboard holds on a slot that a load or an undo switched off
+    /// are dropped, so a paste writes nothing to an inactive track.
+    #[test]
+    fn clipboard_is_reconciled_on_load_and_undo() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.resend_all();
+        for _ in 0..3 {
+            state.add_track();
+        }
+        assert_eq!(state.edit_track, 3);
+        let note = Note::new(4, 2, 60, 0.9);
+        state.add_note(note);
+        state.copy_pattern();
+        assert_eq!(state.clipboard.as_ref().unwrap().notes(3), &[note]);
+
+        // A project with track 0 only.
+        let project = AppState::headless(ThemeMode::Dark).0.build_project();
+        state.apply_project(&project);
+        assert!(!state.track_active(3));
+        assert!(state.clipboard.as_ref().unwrap().notes(3).is_empty());
+        state.select_pattern(1);
+        assert!(state.paste_pattern());
+        assert!(state.pattern().notes(3).is_empty());
+        let messages = pattern_messages(state.pattern(), state.bank.current);
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, Message::SetNote { track: 3, .. })),
+            "no SetNote for the inactive slot"
+        );
+        sync(&mut state, &mut engine);
+        assert!(engine.bank().patterns[1].notes(3).is_empty());
+
+        // The same through undo: the clipboard holds notes on a track the undo removes.
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.add_track();
+        state.add_note(note);
+        state.copy_pattern();
+        assert!(state.undo(), "the note");
+        assert!(state.undo(), "the track");
+        assert!(!state.track_active(1));
+        assert!(state.clipboard.as_ref().unwrap().notes(1).is_empty());
+    }
+
+    /// M10 review: an export of a two-track project is the same audio the live engine plays
+    /// from the same state (the first bar, sample for sample).
+    ///
+    /// The settings stay at their defaults on purpose: the engine smooths parameter changes
+    /// (mixer gains, reverb, the globals a preset carries) over some ms, where the offline
+    /// render starts from the snapped values, so a live engine only matches an export once
+    /// its smoothers have settled; pre-rolling it, though, advances the drums' free-running
+    /// noise generators and desynchronises the hits instead. Everything else that makes a
+    /// two-track project (the slots, their notes, the routing) is exercised here.
+    #[test]
+    fn export_matches_the_live_render_of_a_two_track_project() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.add_track();
+        state.add_note(Note::new(0, 4, 55, 0.9));
+        state.add_note(Note::new(8, 2, 62, 0.7));
+        let project = state.build_project();
+        assert_eq!(project.tracks.len(), 2);
+
+        let sample_rate = 48_000.0;
+        let export = engine::export::render_loop(&project, 1, sample_rate);
+        let bar = engine::export::bar_frames(DEFAULT_BPM, sample_rate);
+        assert!(export.len() >= bar * 2);
+
+        state.resend_all();
+        sync(&mut state, &mut engine);
+        // The engine state the export renders from is the live engine's state.
+        let (_handle, mut offline) = engine::new_engine(sample_rate);
+        project.apply_to(&mut offline);
+        for &id in ParamId::ALL {
+            if id.is_global() {
+                assert_eq!(engine.param(id), offline.param(id), "{id:?}");
+            }
+        }
+        for slot in 0..MAX_TRACKS as TrackId {
+            assert_eq!(engine.track_active(slot), offline.track_active(slot));
+            assert_eq!(
+                engine.track_params(slot),
+                offline.track_params(slot),
+                "slot {slot}"
+            );
+        }
+        assert_eq!(engine.mixer(), offline.mixer());
+        assert_eq!(engine.bank(), offline.bank());
+        assert_eq!(engine.bpm(), offline.bpm());
+        assert_eq!(engine.eq(), offline.eq());
+        assert_eq!(engine.reverb(), offline.reverb());
+        state.play();
+        sync(&mut state, &mut engine);
+        let mut live = vec![0.0f32; bar * 2];
+        for block in live.chunks_mut(512 * 2) {
+            engine.render(block, block.len() / 2);
+        }
+        let loudest = live.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(loudest > 0.01, "the bar is not silent ({loudest})");
+        let worst = live
+            .iter()
+            .zip(&export[..bar * 2])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst <= 1e-5, "live and export differ by {worst}");
     }
 
     #[test]

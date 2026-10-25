@@ -12,10 +12,10 @@
 //! - **Beat numbers** over the first cell of each group of four (numbered through the
 //!   pattern: bar 2 shows 5..8).
 //! - One row per [`DrumRow::ALL`] (caps name, small VOL and TUNE knobs, 16 `neu::step_cell`s
-//!   in groups of four, a CLEAR pill) and the BASS lane (note names in the cells, no knobs).
+//!   in groups of four, a CLEAR circle) and the BASS lane (note names in the cells, no knobs).
 //! - **Bottom row:** the BAR selector (`neu::segmented` 1..bars, shown for patterns longer
 //!   than one bar) under the name column, the playhead dots under the grid and the pattern's
-//!   CLEAR pill (accessible name "Clear pattern") under the row CLEAR pills.
+//!   CLEAR circle (accessible name "Clear pattern") under the row CLEAR circles.
 //!
 //! The grid shows bar [`AppState::shown_bar`] of the edit pattern: cell `i` edits the
 //! absolute step `shown_bar * 16 + i` and the playhead column lights only when the playing
@@ -35,8 +35,8 @@
 //! its click-to-select entry;
 //! Ctrl-click flips the accent like shift-click. A double-click on a row label mutes the
 //! row's mixer channel (shift + double-click: solo); muted labels dim, soloed ones carry an
-//! accent dot. The head gains `x2` / `/2` pills beside LENGTH ([`DOUBLE_LABEL`],
-//! [`HALVE_LABEL`]), the beat-number row shows VOL / TUNE over the row knobs, and the hat rows
+//! accent dot. The head gains `-` / `+` length steppers around the LENGTH read-out ([`HALVE_LABEL`],
+//! [`DOUBLE_LABEL`]), the beat-number row shows VOL / TUNE over the row knobs, and the hat rows
 //! read `C.Hat` / `O.Hat` like the mixer strips ([`row_label`]).
 //!
 //! Piano roll (M7): the head's `GRID | ROLL` tab ([`LANE_VIEW_TABS`], [`AppState::lane_view`])
@@ -67,8 +67,8 @@ use egui::{
 use engine::pattern::pattern_letter;
 use engine::{DrumRow, Note, PATTERN_COUNT, PatternLength, STEPS};
 use neu::{
-    GhostNote, KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput, RollNote,
-    STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
+    GhostNote, Icon, KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput,
+    RollNote, STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
 };
 
 use crate::app::{AppState, EditKey, LaneView, queued_blink_visible};
@@ -78,7 +78,7 @@ use crate::ui::controls;
 
 /// Width of the row-name column (`.seq-row .name`).
 pub const NAME_WIDTH: f32 = 64.0;
-/// Gap between the name column, the knobs, the grid and the clear pill (`.seq-row{gap}`).
+/// Gap between the name column, the knobs, the grid and the CLEAR circle (`.seq-row{gap}`).
 pub const COLUMN_GAP: f32 = 14.0;
 /// Gap between the VOL and TUNE knobs.
 pub const KNOB_GAP: f32 = 8.0;
@@ -98,12 +98,18 @@ pub const GRID_WIDTH: f32 = 16.0 * STEP_CELL + 15.0 * STEP_GAP + 3.0 * STEP_GROU
 pub const GRID_LEFT: f32 = NAME_WIDTH + COLUMN_GAP + CONTROLS_WIDTH + COLUMN_GAP;
 /// Caps name of the bass lane.
 pub const BASS_NAME: &str = "Bass";
-/// Height of the bottom row: the BAR selector, the playhead dots and the pattern CLEAR pill
+/// Height of the bottom row: the BAR selector, the playhead dots and the pattern CLEAR circle
 /// (a `segmented` / pill is 30 tall).
 pub const BOTTOM_ROW: f32 = 30.0;
-/// Gap between items of the head row.
-const HEAD_ITEM_GAP: f32 = 12.0;
-/// Accessible name of the pattern CLEAR pill (the row pills are "Clear").
+/// Gap between items of the head row (8, the scale's step under the 12 the rest of the
+/// heads use: the head holds nine items at 1280 wide and the track tag's name needs the room).
+const HEAD_ITEM_GAP: f32 = 8.0;
+/// The head's right group (LENGTH, FOLLOW, COPY, PASTE, REC) as measured at 1280 x 1140 in
+/// GRID view, used for the track tag's room on the first frame, before
+/// [`controls::right_aligned`] has measured the group (a tag laid out into the whole head
+/// would overflow it for one frame). At least the measured width (a test checks).
+pub const HEAD_RIGHT_GROUP_SEED: f32 = 416.0;
+/// Accessible name of the pattern CLEAR circle (the row circles are "Clear").
 pub const CLEAR_PATTERN_LABEL: &str = "Clear pattern";
 /// Caps label beside the bar selector.
 pub const BAR_LABEL: &str = "Bar";
@@ -111,13 +117,17 @@ pub const BAR_LABEL: &str = "Bar";
 pub const PATTERN_TABS: [&str; PATTERN_COUNT] = ["A", "B", "C", "D", "E", "F", "G", "H"];
 /// Items of the `GRID | ROLL` view tab, in [`LaneView`] order.
 pub const LANE_VIEW_TABS: [&str; 2] = ["Grid", "Roll"];
-/// Label of the pill that doubles the pattern length (QOL).
-pub const DOUBLE_LABEL: &str = "x2";
-/// Label of the pill that halves the pattern length (QOL).
-pub const HALVE_LABEL: &str = "/2";
+/// Accessible name of the stepper that doubles the pattern length (QOL; a `+` stepper
+/// circle since the M10 review, so the head has room for the track tag).
+pub const DOUBLE_LABEL: &str = "Double length";
+/// Accessible name of the stepper that halves the pattern length (QOL).
+pub const HALVE_LABEL: &str = "Halve length";
+/// Item padding of the A..H pattern tabs (the kit's 8 on single letters made the track a
+/// third padding; 6 keeps the chips wider than tall and gives the track tag 32 pt).
+pub const PATTERN_TAB_PADDING: f32 = 6.0;
 /// Legends over the row knobs (QOL).
 pub const KNOB_LEGENDS: [&str; 2] = ["Vol", "Tune"];
-/// Narrowest length read-out between the `/2` and `x2` pills (QOL).
+/// Narrowest length read-out between the `-` and `+` steppers (QOL).
 pub const LENGTH_TEXT_MIN_WIDTH: f32 = 44.0;
 /// Diameter of the solo dot beside a row label (QOL).
 pub const SOLO_DOT: f32 = 6.0;
@@ -832,16 +842,17 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 const TAG_NAME_MIN_WIDTH: f32 = 24.0;
 
 /// The edit track's tag in the head (M10): the colour chip (`controls::track_chip`,
-/// accessible as `"<name> colour"`), then the name as a caps label only as far as the room
-/// beside the right group allows, cut with an ellipsis; with the whole head at 1280 wide the
-/// chip alone fits and the name is its tooltip (it is also in the SYNTH head and the TRACKS
-/// panel). The right group's width is what [`controls::right_aligned`] measured last frame
-/// under `"sequencer_head"`, so the head never grows past the panel and pushes the right-hand
-/// column off the window.
+/// accessible as `"<name> colour"`), then the name as a caps label into the room beside the
+/// right group, cut with an ellipsis (the full name is the tooltip; it is also in the SYNTH
+/// head and the TRACKS panel); below [`TAG_NAME_MIN_WIDTH`] of room only the chip shows. The
+/// right group's width is what [`controls::right_aligned`] measured last frame under
+/// `"sequencer_head"` ([`HEAD_RIGHT_GROUP_SEED`] on the first frame), so the head never
+/// grows past the panel and pushes the right-hand column off the window. At 1280 x 1140 the
+/// name has about 82 pt in either view (`"SIXTEEN CHARS…"`).
 fn head_track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) {
     let right_width: f32 = ui
         .data(|d| d.get_temp(ui.scope_id().with("sequencer_head")))
-        .unwrap_or(0.0);
+        .unwrap_or(HEAD_RIGHT_GROUP_SEED);
     let gap = ui.spacing().item_spacing.x;
     let room = ui.available_width() - right_width - gap;
     let name_room = room - controls::TRACK_CHIP - controls::TRACK_CHIP_GAP;
@@ -850,27 +861,38 @@ fn head_track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) {
         "Edits track {} (Alt+Up / Alt+Down select another track)",
         track.name
     );
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = controls::TRACK_CHIP_GAP;
-        controls::track_chip(ui, theme, track.colour, &track.name).on_hover_text(&tooltip);
-        if name_room < TAG_NAME_MIN_WIDTH {
-            return;
-        }
-        let mut job = LayoutJob::single_section(
-            TextKind::Label.display_string(&track.name),
-            TextKind::Label.format(theme.text_secondary),
-        );
-        job.wrap.max_width = name_room;
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        job.wrap.overflow_character = Some('…');
-        let galley = ui.painter().layout_job(job);
-        let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
-        if ui.is_rect_visible(rect) {
-            ui.painter().galley(rect.min, galley, theme.text_secondary);
-        }
-        response.on_hover_text(tooltip);
-    });
+    // The chip and the name are laid straight into the head (no nested `horizontal`: a
+    // nested row keeps the previous frame's width for one frame when the name changes,
+    // which pushed the right group past the panel on that frame), the kit's chip gap
+    // between them.
+    controls::track_chip(ui, theme, track.colour, &track.name).on_hover_text(&tooltip);
+    if name_room < TAG_NAME_MIN_WIDTH {
+        return;
+    }
+    ui.add_space(controls::TRACK_CHIP_GAP - gap);
+    let mut job = LayoutJob::single_section(
+        TextKind::Label.display_string(&track.name),
+        TextKind::Label.format(theme.text_secondary),
+    );
+    job.wrap.max_width = name_room;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.painter().layout_job(job);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().galley(rect.min, galley, theme.text_secondary);
+    }
+    let name = tag_name(&track.name);
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &name));
+    response.on_hover_text(tooltip);
+}
+
+/// Accessible name of the head's track-tag name label: `"Track: Synth"` (the chip beside
+/// it is `"Synth colour"`).
+#[must_use]
+pub fn tag_name(name: &str) -> String {
+    format!("Track: {name}")
 }
 
 /// The A..H tabs: the selected item is the edit pattern; a click selects (and, while playing
@@ -878,7 +900,7 @@ fn head_track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) {
 fn pattern_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let before = usize::from(state.current()) % PATTERN_COUNT;
     let mut selected = before;
-    neu::segmented(ui, theme, &mut selected, &PATTERN_TABS)
+    neu::segmented_padded(ui, theme, &mut selected, &PATTERN_TABS, PATTERN_TAB_PADDING)
         .on_hover_text("Pattern (switches at the next bar while playing)");
     if selected != before {
         state.select_pattern(selected as u8);
@@ -935,17 +957,23 @@ fn queued_indicator(ui: &mut Ui, state: &AppState, theme: &Theme) {
         .request_repaint_after(std::time::Duration::from_millis(50));
 }
 
-/// LENGTH: the `/2` pill, the length read-out (`1 bar`, `2 bars`, `4 bars`: the labels of
-/// [`length_items`]) and the `x2` pill. `x2` doubles the edit pattern (copying the loop into
-/// the empty new half), `/2` halves it (hidden steps are kept); they grey out at 64 and 16
-/// steps. The M5 three-item segmented did not fit the head beside the pills at 1280 wide, so
-/// the pills *are* the length control (two clicks of `x2` reach 4 bars).
+/// LENGTH: a `-` stepper, the length read-out (`1 bar`, `2 bars`, `4 bars`: the labels of
+/// [`length_items`]) and a `+` stepper, the transport's `(-) 120 (+)` shape. `+` doubles the
+/// edit pattern (copying the loop into the new half), `-` halves it (hidden steps are kept);
+/// they grey out at 64 and 16 steps. The M5 three-item segmented did not fit the head at
+/// 1280 wide, nor (M10 review) did the QOL `/2` / `x2` pills beside the track tag's name, so
+/// the 28 pt kit steppers *are* the length control (two clicks of `+` reach 4 bars).
+/// Accessible as [`HALVE_LABEL`] / [`DOUBLE_LABEL`] (the transport's steppers keep the
+/// kit's "Decrease" / "Increase").
 fn length_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let len = state.pattern().len();
     ui.spacing_mut().item_spacing.x = KNOB_GAP;
     let halve = ui
         .add_enabled_ui(len > STEPS, |ui| {
-            neu::button(ui, theme, HALVE_LABEL)
+            let response = neu::stepper_button(ui, theme, Icon::Minus);
+            response
+                .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), HALVE_LABEL));
+            response
                 .on_hover_text("Halve the pattern length (the hidden steps are kept)")
                 .clicked()
         })
@@ -973,11 +1001,14 @@ fn length_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         );
     }
     response
-        .on_hover_text("Pattern length: /2 and x2 change it")
+        .on_hover_text("Pattern length: - halves it, + doubles it")
         .widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
     let double = ui
         .add_enabled_ui(len < engine::MAX_STEPS, |ui| {
-            neu::button(ui, theme, DOUBLE_LABEL)
+            let response = neu::stepper_button(ui, theme, Icon::Plus);
+            response
+                .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), DOUBLE_LABEL));
+            response
                 .on_hover_text("Double the pattern length (the loop is copied into the new half)")
                 .clicked()
         })
@@ -1267,7 +1298,7 @@ fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 
 /// The bottom row: BAR selector (patterns longer than a bar) under the name column, the
 /// playhead dots under the grid (accent dot on the current column while this bar plays) and
-/// the pattern CLEAR pill under the row CLEAR pills.
+/// the pattern CLEAR circle under the row CLEAR circles.
 fn bottom_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     grid_row(ui, BOTTOM_ROW, |ui| {
         let left = ui.cursor().min.x;
@@ -1326,8 +1357,12 @@ fn is_current(state: &AppState, column: usize) -> bool {
         && usize::from(pos.step) == column
 }
 
+/// The CLEAR control of a row and of the pattern: the kit's 28 pt stepper circle with the
+/// `x` glyph (accessible as "Clear"). The QOL "Clear" pill (73 pt) made the grid rows 947 pt,
+/// 33 more than the sequencer's slot at 1280 x 1140, which pushed the right-hand column 33 pt
+/// past the page (M10 review); the rows are 902 pt with the circle.
 fn clear_pill(ui: &mut Ui, theme: &Theme) -> Response {
-    neu::button(ui, theme, "Clear")
+    neu::stepper_button(ui, theme, Icon::Clear)
 }
 
 #[cfg(test)]

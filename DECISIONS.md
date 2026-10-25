@@ -340,3 +340,44 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
 - Category chips use short labels (`Lo Keys · Lo Gtr · Lo Pads · Leads · Bass · Plucks ·
   EDM Pads · Risers`) so nine fit the panel at the minimum width; "FX" was avoided because
   the FX rack's tab is a radio item named "FX".
+
+## 2026-10-25: M10 review fixes (app)
+- DUP copies the source track's whole mixer strip (level, pan, sends, mute and solo), not
+  just its synth settings: a duplicate is the track as it sounds, notes aside (Ableton's
+  duplicate; FL's clone keeps the channel settings too). ADD starts from the default strip
+  and DEL resets the slot's strip on both sides, since the engine keeps a strip across
+  `SetTrackActive` and a deleted soloed track kept everything else silent.
+- The clipboard is reconciled (notes on unused slots dropped) on load and on undo / redo,
+  and is not restored by undo: undoing a DEL does not bring the deleted track's notes back
+  into the clipboard. Clearing notes in `set_track_active(on)` was left to the engine list.
+- The preset is no longer remembered across launches (the `preset_name` / `preset_index`
+  storage keys and the track-0 re-apply are gone): the project file carries a preset per
+  track, nothing else read the stored name, and re-applying it to track 0 silently changed a
+  fresh project's sound.
+- Sequencer head room (the chip *and* the name at 1280): rather than a second head row
+  (the 1140 pt window has 27 pt to spare under the sequencer) or dropping FOLLOW from the
+  ROLL view (a head that changes width between views), the head gap went from 12 to 8, the
+  A..H pattern tabs use a 6 pt item padding (`neu::segmented_padded`, the kit's 8 on
+  single letters was a third of the track) and the `/2` / `x2` length pills became the
+  kit's 28 pt `(-)` / `(+)` steppers around the read-out, the transport's `(-) 120 (+)`
+  shape. Together 68 pt; the name gets about 82 pt in both views.
+- The grid rows' QOL "Clear" pills (73 pt) are the kit's 28 pt `Icon::Clear` circles: the
+  rows were 947 pt in a 914 pt slot at 1280 x 1140, so the right-hand column hung 33 pt past
+  the page in GRID view (and jumped 33 pt when switching to ROLL); the existing tests only
+  checked the vertical fit and a `<= 1260` on the TRACKS Roll pill that passed by 1 pt.
+- The FX rack's track tags get a fixed 96 pt name slot: `right_aligned` pushes a group to
+  the edge with *last* frame's width, so a head that grows with a longer name overflows for
+  one frame, and because the page's vertical scroll area then widens for the next frame,
+  everything below shifts by the growth for a frame (that is how the TRACKS DEL test missed
+  its pill). A fixed slot keeps the heads' width constant across names.
+- Live render vs export (the reviewer's test): the engine smooths parameter changes
+  (mixer gains, reverb, the globals a preset carries, ~10-50 ms) where `render_loop` starts
+  from `Project::apply_to`'s snapped values, so a live engine only matches the export once
+  its smoothers have settled, and pre-rolling it to settle them desynchronises the drums'
+  free-running noise generators (a 0.4 difference at the first hit). The test therefore
+  compares a state whose smoothed settings are at their defaults (two tracks, notes,
+  routing), bit-exact within 1e-5; a "snap" message would let the app match exactly after
+  a load, and is an engine-side item.
+- SYNTH panel column gap minimum 8 -> 4 (the scale's step): the design cleanup's 12 pt
+  A D S R gap had made the first row 5.3 pt wider than the panel at 1280, which the top row
+  tests only bounded with `<=`; they assert equality now.

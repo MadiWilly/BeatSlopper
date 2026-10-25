@@ -481,20 +481,54 @@ pub fn track_chip(ui: &mut Ui, theme: &Theme, colour: u8, name: &str) -> Respons
     response
 }
 
-/// The edit track's tag (M10): its colour chip and its name as a caps label, with a tooltip
-/// saying that the group beside it edits that track. Used by the FX rack's per-track groups
-/// and the SEQUENCER head.
+/// Width of the name slot of [`track_tag`]: room for about thirteen 11 pt caps characters
+/// (longer names end in an ellipsis; the full name is the tooltip). Fixed, so a group head
+/// carrying the tag keeps its width when the edit track changes: the FX rack's right column
+/// is pushed to the rack's edge with the width it had last frame ([`right_aligned`]), and a
+/// head that grew with a longer name overflowed the rack for that frame (M10 review).
+pub const TRACK_TAG_NAME_WIDTH: f32 = 96.0;
+
+/// The edit track's tag (M10): its colour chip and its name as a caps label in a
+/// [`TRACK_TAG_NAME_WIDTH`] slot, with a tooltip saying that the group beside it edits that
+/// track. Used by the FX rack's per-track groups (the SEQUENCER head lays its own tag into
+/// the room its head leaves).
 pub fn track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) -> Response {
     let track = state.edit_track_ui();
+    let tooltip = format!(
+        "Edits track {} (Alt+Up / Alt+Down select another track)",
+        track.name
+    );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = TRACK_CHIP_GAP;
-        track_chip(ui, theme, track.colour, &track.name);
-        neu::label(ui, theme, &track.name).on_hover_text(format!(
-            "Edits track {} (Alt+Up / Alt+Down select another track)",
-            track.name
-        ))
+        track_chip(ui, theme, track.colour, &track.name).on_hover_text(&tooltip);
+        caps_label_truncated(ui, theme, &track.name, TRACK_TAG_NAME_WIDTH).on_hover_text(tooltip)
     })
     .inner
+}
+
+/// A label-level (11 pt caps, secondary) text cut to `width` with an ellipsis, left-aligned
+/// in a slot exactly `width` wide (so the row it sits in keeps its width whatever the
+/// text). Accessible as the full `text`.
+pub fn caps_label_truncated(ui: &mut Ui, theme: &Theme, text: &str, width: f32) -> Response {
+    use egui::epaint::text::LayoutJob;
+    use neu::TextKind;
+    let width = width.max(0.0);
+    let mut job = LayoutJob::single_section(
+        TextKind::Label.display_string(text),
+        TextKind::Label.format(theme.text_secondary),
+    );
+    job.wrap.max_width = width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.painter().layout_job(job);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, galley.size().y), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().galley(rect.min, galley, theme.text_secondary);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
+    response
 }
 
 /// Pushes `add`'s contents to the right edge of a horizontal `ui`, using the width they had

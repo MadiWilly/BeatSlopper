@@ -52,6 +52,21 @@ pub fn chip_rect(item_rect: Rect) -> Rect {
 /// An inset pill track with one plain-text item per option; the selected item sits on a
 /// raised accent chip. `changed()` when the selection moved.
 pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str]) -> Response {
+    segmented_padded(ui, theme, selected, items, SEGMENTED_ITEM_PADDING)
+}
+
+/// [`segmented`] with `item_padding` on each side of every item instead of
+/// [`SEGMENTED_ITEM_PADDING`]: for a track of single-letter items (the sequencer's A..H
+/// pattern tabs) where the 8 pt padding alone is a third of the track. Everything else is
+/// the same control.
+pub fn segmented_padded(
+    ui: &mut Ui,
+    theme: &Theme,
+    selected: &mut usize,
+    items: &[&str],
+    item_padding: f32,
+) -> Response {
+    let item_padding = item_padding.max(0.0);
     let painter = ui.painter().clone();
     let font = FontId::proportional(SEGMENTED_TEXT_SIZE);
     let galleys: Vec<_> = items
@@ -69,7 +84,7 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str
         .collect();
     let items_width: f32 = galleys
         .iter()
-        .map(|g| g.size().x + 2.0 * SEGMENTED_ITEM_PADDING)
+        .map(|g| g.size().x + 2.0 * item_padding)
         .sum();
     let gaps = SEGMENTED_ITEM_GAP * items.len().saturating_sub(1) as f32;
     let width = 2.0 * SEGMENTED_TRACK_PADDING + items_width + gaps;
@@ -91,7 +106,7 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, selected: &mut usize, items: &[&str
     let mut item_rects = Vec::with_capacity(items.len());
     let mut x = rect.min.x + SEGMENTED_TRACK_PADDING;
     for galley in &galleys {
-        let w = galley.size().x + 2.0 * SEGMENTED_ITEM_PADDING;
+        let w = galley.size().x + 2.0 * item_padding;
         item_rects.push(Rect::from_min_size(
             pos2(x, rect.min.y),
             vec2(w, SEGMENTED_HEIGHT),

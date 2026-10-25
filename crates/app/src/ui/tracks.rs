@@ -6,10 +6,12 @@
 //! the eight swatches), the name over the preset name (truncated with an ellipsis; the full
 //! text is the tooltip), a pencil that opens the inline rename editor (a double-click on the
 //! row does too; Enter / focus loss commit, Escape cancels, and shortcuts and the piano keys
-//! stay quiet while it has the keyboard, like every text field), the 22 pt `M` / `S` squares
-//! bound to the track's mixer strip and the `Roll` pill that selects the track and shows the
-//! piano roll. A click anywhere else on the row selects the track; the selected row sits on
-//! an inset-s well. The list scrolls when the rows do not fit.
+//! stay quiet while it has the keyboard, like every text field), the [`SQUARE`] `M` / `S`
+//! squares and the small LEVEL knob bound to the track's mixer strip, and the `Roll` pill
+//! that selects the track and shows the piano roll. A click on the name block selects the
+//! track; the selected row sits on an inset-m well with a 3 pt accent bar (on-glow) at its
+//! left edge, the design cleanup's rule that a selection reads as an accent cue, not as
+//! weight alone. The list scrolls when the rows do not fit.
 //!
 //! Below the list: `+ Add` (the primary pill: a new track with the default preset, selected),
 //! `Dup` (clone the selected track's settings, not its notes) and `Del` (an inline
@@ -22,36 +24,54 @@
 //! Accessible names (tests): rows [`row_name`] (`"Track row 1: Synth"`, a selected button),
 //! chips [`swatch_name`] (`"Synth swatch"`), pencils [`rename_name`] (`"Rename Synth"`), the
 //! squares [`mute_name`] / [`solo_name`] (`"Mute track Synth"`, `"Solo track Synth"`), the
-//! roll pills [`roll_name`] (`"Roll: Synth"`), the action pills [`ADD_NAME`], [`DUP_LABEL`],
+//! level knobs [`level_name`] (`"Level track Synth"`, a slider), the roll pills
+//! [`roll_name`] (`"Roll: Synth"`), the action pills [`ADD_NAME`], [`DUP_LABEL`],
 //! [`DEL_LABEL`], [`YES_LABEL`], [`NO_LABEL`], the move buttons [`MOVE_UP_NAME`] /
 //! [`MOVE_DOWN_NAME`], the question [`delete_question`] and the hint [`HINT`].
 
 use egui::epaint::text::{LayoutJob, TextFormat};
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Id, InnerResponse, Layout, Pos2, Rect, Response,
-    RichText, Role, ScrollArea, Sense, Stroke, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Align, Color32, CursorIcon, FontId, Id, InnerResponse, Layout, Pos2, Rect, Response, RichText,
+    Role, ScrollArea, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
-use engine::{Channel, TrackId};
-use neu::{Depth, TextKind, Theme, ValueEditOutput, paint_soft_rect};
+use engine::mixer::{MAX_LEVEL_DB, MIN_LEVEL_DB};
+use engine::{Channel, ChannelParam, TrackId};
+use neu::{Depth, KnobSize, KnobSpec, Theme, ValueEditOutput, paint_soft_rect};
 
 use crate::app::{AppState, LaneView};
 use crate::shortcuts::Shortcut;
-use crate::ui::controls::{self, GROUP_GAP, PANEL_HEAD_GAP, TRACK_CHIP, TRACK_CHIP_GAP};
+use crate::ui::controls::{
+    self, GROUP_GAP, PANEL_HEAD_GAP, TRACK_CHIP, TRACK_CHIP_GAP, fmt_level_db,
+};
 
 /// Height of one track row.
 pub const ROW_HEIGHT: f32 = 34.0;
-/// Corner radius of the selected row's inset well.
-const ROW_RADIUS: f32 = 10.0;
+/// Corner radius of the selected row's inset well (8: the accent bar sits on the well's
+/// straight edge, clear of the corners).
+const ROW_RADIUS: f32 = 8.0;
+/// Padding at the row's left edge (the accent bar sits inside it) and right edge, on the
+/// 4 / 8 / 12 scale.
+const ROW_PAD_LEFT: f32 = 8.0;
+const ROW_PAD_RIGHT: f32 = 4.0;
+/// The selected row's accent bar: its width, height and distance from the row's left edge.
+const ACCENT_BAR: Vec2 = vec2(3.0, 16.0);
+const ACCENT_BAR_INSET: f32 = 2.0;
+// The bar sits inside the left padding, on the well's straight edge (clear of its corners).
+const _: () = assert!(ACCENT_BAR_INSET + ACCENT_BAR.x <= ROW_PAD_LEFT);
+const _: () = assert!(ACCENT_BAR.y <= ROW_HEIGHT - 2.0 * ROW_RADIUS);
 /// Side of the `M` / `S` squares and the height of the `Roll` pill and the move buttons.
-pub const SQUARE: f32 = 22.0;
-/// Width of the `Roll` pill.
-const ROLL_WIDTH: f32 = 40.0;
+pub const SQUARE: f32 = 20.0;
+/// Width of the `Roll` pill (the 12 pt "Roll" is about 21 pt wide).
+const ROLL_WIDTH: f32 = 32.0;
 /// Side of the pencil's hit box.
 const PENCIL: f32 = 14.0;
-/// Gap between the name block and the pencil, and between the pencil and the `M` square.
+/// Width (and height) of the small LEVEL knob's block (`KnobSize::Sm`, the sequencer row
+/// knob; checked by a test).
+const KNOB: f32 = 34.0;
+/// Gap between the name block, the pencil, the `M` / `S` squares and the knob.
 const CELL_GAP: f32 = 4.0;
-/// Gap between the `S` square and the `Roll` pill.
-const ROLL_GAP: f32 = 6.0;
+/// Gap between the knob and the `Roll` pill.
+const ROLL_GAP: f32 = 4.0;
 /// Gap between pills in a row.
 const PILL_GAP: f32 = 8.0;
 /// Height of the `▲` / `▼` + hint row (the hint may wrap to two 11 pt lines).
@@ -115,6 +135,13 @@ pub fn mute_name(name: &str) -> String {
 #[must_use]
 pub fn solo_name(name: &str) -> String {
     format!("Solo track {name}")
+}
+
+/// Accessible name of a track's LEVEL knob: `"Level track Synth"` (a slider; the mixer's
+/// fader is `"Synth level"`).
+#[must_use]
+pub fn level_name(name: &str) -> String {
+    format!("Level track {name}")
 }
 
 /// Accessible name of a track's `Roll` pill: `"Roll: Synth"`.
@@ -214,32 +241,43 @@ fn place<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> InnerRes
     )
 }
 
-/// One track row: chip, name over preset, pencil, `M`, `S`, `Roll`.
+/// One track row: chip, name over preset, pencil, `M`, `S`, LEVEL, `Roll`.
 fn row(ui: &mut Ui, state: &mut AppState, theme: &Theme, index: usize, slot: TrackId) {
     let track = state.track(slot).clone();
     let selected = state.edit_track == slot;
-    // The row itself only paints (the well and the hover tint); its controls sit on top.
+    // The row itself only paints (the well, the accent bar); its controls sit on top.
     let (rect, row) =
         ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let visible = ui.is_rect_visible(rect);
     if visible && selected {
-        paint_soft_rect(ui.painter(), rect, ROW_RADIUS, Depth::InsetS, theme);
+        paint_soft_rect(ui.painter(), rect, ROW_RADIUS, Depth::InsetM, theme);
+        let bar = Rect::from_min_size(
+            pos2(
+                rect.min.x + ACCENT_BAR_INSET,
+                rect.center().y - ACCENT_BAR.y * 0.5,
+            ),
+            ACCENT_BAR,
+        );
+        paint_soft_rect(ui.painter(), bar, ACCENT_BAR.x * 0.5, Depth::OnGlow, theme);
     }
     let row_hovered = row.contains_pointer();
 
-    // Geometry, left to right: chip | name block | pencil | M | S | Roll.
-    let pad = TRACK_CHIP_GAP;
+    // Geometry, left to right: chip | name block | pencil | M | S | LEVEL | Roll.
     let cy = rect.center().y;
     let chip_rect = Rect::from_center_size(
-        pos2(rect.min.x + pad + TRACK_CHIP * 0.5, cy),
+        pos2(rect.min.x + ROW_PAD_LEFT + TRACK_CHIP * 0.5, cy),
         vec2(TRACK_CHIP, TRACK_CHIP),
     );
     let roll_rect = Rect::from_center_size(
-        pos2(rect.max.x - pad - ROLL_WIDTH * 0.5, cy),
+        pos2(rect.max.x - ROW_PAD_RIGHT - ROLL_WIDTH * 0.5, cy),
         vec2(ROLL_WIDTH, SQUARE),
     );
+    let knob_rect = Rect::from_center_size(
+        pos2(roll_rect.min.x - ROLL_GAP - KNOB * 0.5, cy),
+        vec2(KNOB, KNOB),
+    );
     let solo_rect = Rect::from_center_size(
-        pos2(roll_rect.min.x - ROLL_GAP - SQUARE * 0.5, cy),
+        pos2(knob_rect.min.x - CELL_GAP - SQUARE * 0.5, cy),
         vec2(SQUARE, SQUARE),
     );
     let mute_rect = Rect::from_center_size(
@@ -397,6 +435,32 @@ fn row(ui: &mut Ui, state: &mut AppState, theme: &Theme, index: usize, slot: Tra
     let solo_label = solo_name(&track.name);
     response.widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), solo, &solo_label));
     response.on_hover_text(format!("Solo {}", track.name));
+
+    // LEVEL: the strip's fader as a small unlabelled knob (its tooltip shows the value, the
+    // mixer's fader shows the same number).
+    let spec = KnobSpec {
+        label: "",
+        min: MIN_LEVEL_DB,
+        max: MAX_LEVEL_DB,
+        default: ChannelParam::Level.default_value(channel),
+        log: false,
+        bipolar: false,
+        size: KnobSize::Sm,
+        fmt: fmt_level_db,
+    };
+    let before = state.mixer.get(channel, ChannelParam::Level);
+    let mut value = before;
+    let note = format!("Level of {} (double-click resets)", track.name);
+    let response = place(ui, knob_rect, |ui| {
+        neu::knob_noted(ui, theme, &mut value, &spec, Some(&note))
+    })
+    .inner;
+    if response.changed() || value != before {
+        state.edit_mixer(channel, ChannelParam::Level, value, response.drag_started());
+    }
+    let shown = state.mixer.get(channel, ChannelParam::Level);
+    let level_label = level_name(&track.name);
+    response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(shown), &level_label));
 
     // Roll: select the track and show the piano roll.
     let on_roll = selected && state.lane_view == LaneView::Roll;
@@ -624,15 +688,11 @@ fn glyph_button(ui: &mut Ui, theme: &Theme, up: bool, enabled: bool, name: &str)
         ));
     }
     response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, name));
-    let response = if enabled {
+    if enabled {
         response.on_hover_cursor(CursorIcon::PointingHand)
     } else {
         response
-    };
-    // Keep the caps label level's metrics in use for the hint beside the buttons.
-    let _ = TextKind::Label;
-    let _ = Align2::LEFT_CENTER;
-    response
+    }
 }
 
 #[cfg(test)]
@@ -646,15 +706,18 @@ mod tests {
         assert_eq!(rename_name("Lead"), "Rename Lead");
         assert_eq!(mute_name("Lead"), "Mute track Lead");
         assert_eq!(solo_name("Lead"), "Solo track Lead");
+        assert_eq!(level_name("Lead"), "Level track Lead");
         assert_eq!(roll_name("Lead"), "Roll: Lead");
         assert_eq!(delete_question("Lead"), "Delete Lead?");
     }
 
     #[test]
     fn a_row_fits_the_column() {
-        // chip | name (76: ten 13 pt characters, longer names get the ellipsis) | pencil |
-        // M | S | Roll inside the 220 pt inner width.
-        let fixed = TRACK_CHIP_GAP
+        // bar + chip | name (52: seven 13 pt characters, "Track 8" included; longer names get
+        // the ellipsis) | pencil | M | S | LEVEL | Roll inside the 220 pt inner width, with
+        // the paddings on the 4 / 8 / 12 scale.
+        assert_eq!(KNOB, KnobSize::Sm.block_width());
+        let fixed = ROW_PAD_LEFT
             + TRACK_CHIP
             + TRACK_CHIP_GAP
             + CELL_GAP
@@ -663,10 +726,13 @@ mod tests {
             + SQUARE
             + CELL_GAP
             + SQUARE
+            + CELL_GAP
+            + KNOB
             + ROLL_GAP
             + ROLL_WIDTH
-            + TRACK_CHIP_GAP;
+            + ROW_PAD_RIGHT;
         let inner = crate::ui::RIGHT_COLUMN_WIDTH - 2.0 * 20.0;
-        assert!(inner - fixed >= 72.0, "name column {}", inner - fixed);
+        assert!(inner - fixed >= 48.0, "name column {}", inner - fixed);
+        assert!(fixed <= inner, "the row stays inside the column");
     }
 }

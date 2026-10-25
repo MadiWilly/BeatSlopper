@@ -7,14 +7,15 @@
 //!
 //! - the five drum strips, then one strip per *active* instrument track (M10:
 //!   [`visible_channels`]; an unused slot's strip is hidden), each [`STRIP_WIDTH`] (64) pt,
-//!   no gap, inside a horizontal `ScrollArea` that only scrolls once the strips and the
-//!   master column are wider than the panel: a stack of three unlabelled `Sm` knobs
+//!   no gap, inside a horizontal `ScrollArea` that takes the width left of the master and
+//!   only scrolls once the strips are wider than that: a stack of three unlabelled `Sm` knobs
 //!   (PAN bipolar, then the DELAY and REVERB sends) centred over the fader column, then the
 //!   [`neu::fader`] (level in dB, value above, the channel's caps name below) in its 36 pt
 //!   column with the 6x140 [`neu::meter`] painted in the column's right margin beside the
 //!   track, and the 28x28 M / S [`neu::toggle_button_sized`] toggles stacked in the 28 pt
 //!   column to the left of the fader, top-aligned with the track;
-//! - a [`MASTER_WIDTH`] (52) pt master column: the PAN / DLY / REV legends aligned with the
+//! - a [`MASTER_WIDTH`] (52) pt master column pinned at the panel's right edge, outside the
+//!   scroll area (FL docks the master right): the PAN / DLY / REV legends aligned with the
 //!   knob rows (the strips' knobs are unlabelled, their tooltips show the value), then the
 //!   MASTER gain knob (`Sm`, `MasterGain` in dB), the LIMIT toggle (`LimiterOn`) and the
 //!   [`neu::stereo_meter`] down to the faders' bottom.
@@ -197,45 +198,70 @@ fn place<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> InnerRes
     )
 }
 
-/// The strips and the master column. The strips share the panel width while they fit (never
-/// narrower than [`STRIP_WIDTH`]); once the visible strips and the master are wider than the
-/// panel the body scrolls horizontally.
+/// The strips and the master column. The master is pinned at the panel's right edge (FL
+/// docks it there) outside the strips' horizontal `ScrollArea`, which takes the rest of
+/// the width; the strips share that room while they fit (never narrower than
+/// [`STRIP_WIDTH`]) and scroll under the master once they are wider.
 fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let channels = visible_channels(state);
     let count = channels.len().max(1);
-    let strip_width = ((ui.available_width() - MASTER_WIDTH) / count as f32)
-        .floor()
-        .max(STRIP_WIDTH);
-    let total = strips_width(channels.len(), strip_width);
+    let width = ui.available_width();
     let height = ui.available_height();
-    ScrollArea::horizontal()
-        .id_salt("mixer_strips")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let origin = ui.cursor().min;
-            // Claim the content size up front so the scroll area knows how wide the strips
-            // are; everything below is placed from `origin` by hand.
-            ui.allocate_rect(
-                Rect::from_min_size(origin, vec2(total, height)),
-                Sense::hover(),
-            );
-            let mut last = None;
-            for (i, channel) in channels.iter().enumerate() {
-                let x = origin.x + i as f32 * strip_width;
-                last = Some(strip(
-                    ui,
-                    state,
-                    theme,
-                    *channel,
-                    pos2(x, origin.y),
-                    strip_width,
-                ));
-            }
-            let master_x = origin.x + channels.len() as f32 * strip_width;
-            if let Some(fader) = last {
-                master(ui, state, theme, pos2(master_x, origin.y), fader);
-            }
-        });
+    let strips_room = (width - MASTER_WIDTH).max(STRIP_WIDTH);
+    let strip_width = (strips_room / count as f32).floor().max(STRIP_WIDTH);
+    let total = channels.len() as f32 * strip_width;
+    let origin = ui.cursor().min;
+    let strips_rect = Rect::from_min_size(origin, vec2(strips_room, height));
+    let last = ui
+        .scope_builder(
+            UiBuilder::new()
+                .max_rect(strips_rect)
+                .layout(Layout::top_down(Align::Min)),
+            |ui| {
+                ScrollArea::horizontal()
+                    .id_salt("mixer_strips")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let origin = ui.cursor().min;
+                        // Claim the content size up front so the scroll area knows how
+                        // wide the strips are; everything below is placed from `origin`
+                        // by hand.
+                        ui.allocate_rect(
+                            Rect::from_min_size(origin, vec2(total, height)),
+                            Sense::hover(),
+                        );
+                        let mut last = None;
+                        for (i, channel) in channels.iter().enumerate() {
+                            let x = origin.x + i as f32 * strip_width;
+                            last = Some(strip(
+                                ui,
+                                state,
+                                theme,
+                                *channel,
+                                pos2(x, origin.y),
+                                strip_width,
+                            ));
+                        }
+                        last
+                    })
+                    .inner
+            },
+        )
+        .inner;
+    if let Some(fader) = last {
+        master(
+            ui,
+            state,
+            theme,
+            pos2(origin.x + strips_room, origin.y),
+            fader,
+        );
+    }
+    // The body's own footprint, whatever the strips and the master took.
+    ui.allocate_rect(
+        Rect::from_min_size(origin, vec2(width, height)),
+        Sense::hover(),
+    );
 }
 
 /// One channel strip at `origin`, `width` wide: the knob stack, the fader with its meter and

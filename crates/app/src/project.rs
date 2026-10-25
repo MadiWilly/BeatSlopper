@@ -264,6 +264,8 @@ impl AppState {
         let first = self.active_tracks().next().unwrap_or(0);
         self.edit_track = first;
         self.release_held_notes();
+        // Notes the clipboard holds on slots this file leaves unused are dropped.
+        self.prune_clipboard();
         self.rebuild_lanes();
         self.clear_roll_selection();
         self.input.set_octave(project.octave);
