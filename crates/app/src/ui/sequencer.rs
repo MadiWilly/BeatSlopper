@@ -569,6 +569,9 @@ fn roll_window(ctx: &egui::Context, state: &mut AppState, theme: &Theme) {
         .with_inner_size(ROLL_WINDOW_SIZE)
         .with_min_inner_size(vec2(600.0, 300.0));
     ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+        // This window's keyboard: shortcuts (Space, R, Ctrl+Z, ...) and the piano keys work
+        // here as in the main window.
+        state.handle_window_input(ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
             state.set_roll_popped(false);
         }
