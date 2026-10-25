@@ -544,7 +544,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
 
     // The app builds the file from its mirrors; the engine would build the same one.
     let project = state.build_project();
-    let from_engine = engine::Project::from_engine(&engine, 0, 4, 0.8);
+    let from_engine = engine::Project::from_engine(&engine, 4, 0.8);
     assert_eq!(project.reverb, from_engine.reverb);
     assert_eq!(project.params, from_engine.params);
     assert_eq!(project.reverb, heard);
@@ -556,12 +556,14 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
     let (mut loaded, mut other) = AppState::headless(ThemeMode::Light);
     let free_before = loaded.engine.free_slots();
     loaded.apply_project(&back);
-    let expected = ParamId::COUNT
-        + 2
-        + app::app::mixer_messages(&loaded.mixer).len()
-        + app::app::eq_messages(&loaded.eq).len()
-        + app::app::reverb_messages(&loaded.reverb).len()
-        + app::app::bank_messages(&loaded.bank, None).len();
+    let expected =
+        app::app::track_messages(&loaded.tracks, &loaded.track_params, loaded.edit_track).len()
+            + ParamId::ALL.iter().filter(|id| id.is_global()).count()
+            + 2
+            + app::app::mixer_messages(&loaded.mixer).len()
+            + app::app::eq_messages(&loaded.eq).len()
+            + app::app::reverb_messages(&loaded.reverb).len()
+            + app::app::bank_messages(&loaded.bank, None).len();
     assert_eq!(
         free_before - loaded.engine.free_slots() + loaded.outbox.len(),
         expected,

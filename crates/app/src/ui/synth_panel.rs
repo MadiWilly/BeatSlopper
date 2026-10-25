@@ -87,20 +87,43 @@ pub fn preset_names() -> Vec<&'static str> {
     presets::ALL.iter().map(|preset| preset.name).collect()
 }
 
+/// The panel title for the edit track: `"Synth · <track name>"` (M10).
+#[must_use]
+pub fn head_title(state: &AppState) -> String {
+    format!("Synth · {}", state.edit_track_ui().name)
+}
+
+/// Label of the lamp beside the preset selector that lights once a per-track parameter
+/// moved after the preset was applied (M10).
+pub const MODIFIED_LABEL: &str = "Modified";
+
+/// The head: [`head_title`] with the edit track's colour chip on the left, the preset
+/// selector and the MOD lamp flush right.
 fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.set_min_height(controls::ROW_HEIGHT);
-        neu::title(ui, theme, "Synth");
-        controls::right_aligned(ui, "synth_preset", |ui| preset_selector(ui, state, theme));
+        ui.spacing_mut().item_spacing.x = controls::TRACK_CHIP_GAP;
+        let track = state.edit_track_ui().clone();
+        controls::track_chip(ui, theme, track.colour, &track.name);
+        neu::title(ui, theme, &head_title(state))
+            .on_hover_text("The selected track; every control here edits it");
+        controls::right_aligned(ui, "synth_preset", |ui| {
+            ui.spacing_mut().item_spacing.x = controls::HEAD_GAP;
+            preset_selector(ui, state, theme);
+            neu::slider::lamp(ui, theme, state.preset_modified(), MODIFIED_LABEL)
+                .on_hover_text("Lit once a knob moved after the preset was applied");
+        });
     });
 }
 
-/// The preset `segmented`: a change applies the preset (defaults + overrides, all sent).
+/// The preset `segmented`: a change applies the preset to the edit track (its per-track
+/// parameters back to the defaults plus the preset's values, all sent).
 fn preset_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let names = preset_names();
-    let before = state.preset_index.min(names.len().saturating_sub(1));
+    let before = state.preset_index().min(names.len().saturating_sub(1));
     let mut selected = before;
-    neu::segmented::segmented(ui, theme, &mut selected, &names);
+    neu::segmented::segmented(ui, theme, &mut selected, &names)
+        .on_hover_text("Preset for the selected track");
     if selected != before {
         state.apply_preset(selected);
     }

@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use engine::{Channel, DrumRow, Message, Note, PatternLength, STEPS};
+use engine::{Channel, DrumRow, MAX_TRACKS, Message, Note, PatternLength, STEPS, TrackId};
 
 use crate::app::{AppState, LaneView, MAX_BPM, MIN_BPM, PendingAction};
 use crate::drag_paint::{PaintRow, PaintStroke};
@@ -31,16 +31,17 @@ pub const ESCAPE_DOUBLE_TAP: Duration = Duration::from_millis(400);
 /// Semitones one PageUp / PageDown moves the selected bass note.
 pub const OCTAVE_SEMITONES: i32 = 12;
 
-/// The mixer channel a sequencer row's mute / solo acts on.
+/// The mixer channel a sequencer row's mute / solo acts on: the bass lane is the edit track
+/// (M10), so its channel is `Channel::from_track(edit_track)`.
 #[must_use]
-pub fn row_channel(row: PaintRow) -> Channel {
+pub fn row_channel(row: PaintRow, edit_track: TrackId) -> Channel {
     match row {
         PaintRow::Drum(DrumRow::Kick) => Channel::Kick,
         PaintRow::Drum(DrumRow::Snare) => Channel::Snare,
         PaintRow::Drum(DrumRow::Clap) => Channel::Clap,
         PaintRow::Drum(DrumRow::ClosedHat) => Channel::ClosedHat,
         PaintRow::Drum(DrumRow::OpenHat) => Channel::OpenHat,
-        PaintRow::Bass => Channel::Synth,
+        PaintRow::Bass => Channel::from_track(edit_track),
     }
 }
 
@@ -180,7 +181,9 @@ impl AppState {
             }
             PaintRow::Bass => {
                 let note = on.then(|| self.input.base_note());
-                self.pattern_mut().set_synth_step(step as u8, note, false);
+                let track = self.edit_track;
+                self.pattern_mut()
+                    .set_synth_step(track, step as u8, note, false);
                 self.send(Message::SetSynthStep {
                     step: step as u8,
                     note,
@@ -204,24 +207,24 @@ impl AppState {
 
     /// Double-click on a row label: flips the mute of the row's mixer channel.
     pub fn toggle_row_mute(&mut self, row: PaintRow) {
-        self.toggle_mute(row_channel(row));
+        self.toggle_mute(row_channel(row, self.edit_track));
     }
 
     /// Shift + double-click on a row label: flips the solo of the row's mixer channel.
     pub fn toggle_row_solo(&mut self, row: PaintRow) {
-        self.toggle_solo(row_channel(row));
+        self.toggle_solo(row_channel(row, self.edit_track));
     }
 
     /// Whether the row's channel is muted (its label dims).
     #[must_use]
     pub fn row_muted(&self, row: PaintRow) -> bool {
-        self.mixer.strip(row_channel(row)).mute
+        self.mixer.strip(row_channel(row, self.edit_track)).mute
     }
 
     /// Whether the row's channel is soloed (its label gets the accent dot).
     #[must_use]
     pub fn row_soloed(&self, row: PaintRow) -> bool {
-        self.mixer.strip(row_channel(row)).solo
+        self.mixer.strip(row_channel(row, self.edit_track)).solo
     }
 
     /// `x2`: doubles the edit pattern's length (16 -> 32 -> 64). When the new half is empty
@@ -238,26 +241,30 @@ impl AppState {
         self.begin_edit();
         let new_len = length.steps() as usize;
         let pattern = self.pattern_mut();
+        // M10: every track's notes count, and every track is copied along.
         let half_empty = DrumRow::ALL.iter().all(|row| {
             pattern.drums[row.index()][len..new_len]
                 .iter()
                 .all(|s| !s.on)
-        }) && pattern.notes().iter().all(|n| usize::from(n.start) < len);
+        }) && (0..MAX_TRACKS as TrackId)
+            .all(|t| pattern.notes(t).iter().all(|n| usize::from(n.start) < len));
         pattern.set_length(length);
         if half_empty {
             for row in DrumRow::ALL {
                 let (first, second) = pattern.drums[row.index()].split_at_mut(len);
                 second[..len].copy_from_slice(&first[..len]);
             }
-            let shifted: Vec<Note> = pattern
-                .notes()
-                .iter()
-                .filter(|n| usize::from(n.start) < len)
-                .map(|n| Note::new(n.start + len as u8, n.length, n.pitch, n.velocity))
-                .collect();
-            for note in shifted {
-                // Stops quietly when the pattern is full (64 notes).
-                let _ = pattern.add_note(note);
+            for track in 0..MAX_TRACKS as TrackId {
+                let shifted: Vec<Note> = pattern
+                    .notes(track)
+                    .iter()
+                    .filter(|n| usize::from(n.start) < len)
+                    .map(|n| Note::new(n.start + len as u8, n.length, n.pitch, n.velocity))
+                    .collect();
+                for note in shifted {
+                    // Stops quietly when the track is full (64 notes).
+                    let _ = pattern.add_note(track, note);
+                }
             }
         }
         self.clamp_shown_bar_qol();
@@ -495,10 +502,10 @@ mod tests {
     fn row_labels_mute_and_solo_the_mixer_channel() {
         let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
         assert_eq!(
-            row_channel(PaintRow::Drum(DrumRow::ClosedHat)),
+            row_channel(PaintRow::Drum(DrumRow::ClosedHat), 0),
             Channel::ClosedHat
         );
-        assert_eq!(row_channel(PaintRow::Bass), Channel::Synth);
+        assert_eq!(row_channel(PaintRow::Bass, 0), Channel::Synth);
         state.toggle_row_mute(PaintRow::Drum(DrumRow::ClosedHat));
         assert!(state.row_muted(PaintRow::Drum(DrumRow::ClosedHat)));
         state.toggle_row_solo(PaintRow::Bass);
@@ -523,8 +530,8 @@ mod tests {
             let drums = &state.pattern().drums[row.index()];
             assert_eq!(drums[16..32], demo.drums[row.index()][0..16], "{row:?}");
         }
-        let notes = state.pattern().notes();
-        assert_eq!(notes.len(), demo.notes().len() * 2);
+        let notes = state.pattern().notes(0);
+        assert_eq!(notes.len(), demo.notes(0).len() * 2);
         assert!(notes.iter().any(|n| n.start == 16));
         drain(&mut state, &mut engine);
         assert_eq!(engine.bank().current_pattern().len(), 32);

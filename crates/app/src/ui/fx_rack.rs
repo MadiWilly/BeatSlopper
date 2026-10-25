@@ -6,6 +6,10 @@
 //! `.fx-body`. The body is a vertical `ScrollArea`; the M2 rows always fit the top row of the
 //! page unscrolled, the M8 rows scroll into view:
 //!
+//! M10: DRIVE, LO-FI, CHORUS and SIDECHAIN are per track (the `ParamId::is_synth_insert`
+//! ids): their heads carry the edit track's colour chip and name and their knobs edit that
+//! track's insert; DELAY, REVERB and MASTER are the shared buses.
+//!
 //! 1. two columns pushed apart: left DRIVE (AMOUNT, MIX knobs), DELAY (head row with the time
 //!    `segmented` 1/16 | 1/8 | 1/4 | 1/2, then FEEDBACK and MIX knobs); right REVERB (SIZE,
 //!    DAMPING, MIX knobs), MASTER (GAIN knob in dB, beside it the LIMIT `toggle_button` and
@@ -126,6 +130,15 @@ fn column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
+/// The head of a per-track group (M10: DRIVE, LO-FI, CHORUS, SIDECHAIN, the
+/// [`ParamId::is_synth_insert`] ids): the caps label, then the edit track's chip and name
+/// ([`controls::track_tag`]), because these knobs edit that track's insert, not a shared bus.
+fn track_group_head(ui: &mut Ui, state: &AppState, theme: &Theme, text: &str) {
+    controls::group_head(ui, theme, text, |ui| {
+        controls::track_tag(ui, state, theme);
+    });
+}
+
 /// A section: head, then its controls row (`.fx-sec{gap:10px}`, `.fx-ctls{gap:10px}`).
 fn section<R>(
     ui: &mut Ui,
@@ -149,8 +162,8 @@ fn drive_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     section(
         ui,
         state,
-        |ui, _| {
-            controls::group_label(ui, theme, "Drive");
+        |ui, state| {
+            track_group_head(ui, state, theme, "Drive");
         },
         |ui, state| {
             Knob::new(ParamId::DriveAmount, fmt_percent).show(ui, state, theme);
@@ -231,8 +244,8 @@ fn lofi_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     section(
         ui,
         state,
-        |ui, _| {
-            controls::group_label(ui, theme, "Lo-Fi");
+        |ui, state| {
+            track_group_head(ui, state, theme, "Lo-Fi");
         },
         |ui, state| {
             Knob::new(ParamId::LofiBits, fmt_bits).show(ui, state, theme);
@@ -251,8 +264,8 @@ fn chorus_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     section(
         ui,
         state,
-        |ui, _| {
-            controls::group_label(ui, theme, "Chorus");
+        |ui, state| {
+            track_group_head(ui, state, theme, "Chorus");
         },
         |ui, state| {
             Knob::new(ParamId::ChorusRate, fmt_rate_hz).show(ui, state, theme);
@@ -266,8 +279,8 @@ fn sidechain_section(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     section(
         ui,
         state,
-        |ui, _| {
-            controls::group_label(ui, theme, "Sidechain");
+        |ui, state| {
+            track_group_head(ui, state, theme, "Sidechain");
         },
         |ui, state| {
             Knob::new(ParamId::SidechainAmount, fmt_percent).show(ui, state, theme);

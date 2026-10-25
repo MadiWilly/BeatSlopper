@@ -79,6 +79,24 @@
 //! (a length-1 note upsert on both sides), as do click-then-key note entry and record-arm
 //! overdub. [`pattern_messages`] replays notes the same way, so a resend (startup, load,
 //! undo) carries chords and long notes.
+//!
+//! Instrument tracks (M10): [`AppState::tracks`] mirrors the eight track slots ([`TrackUi`]:
+//! name, colour, active flag, preset, modified marker) and [`AppState::edit_track`] is the
+//! selected one. Parameters split in two: [`AppState::params`] keeps the *global* ids (delay,
+//! reverb, master gain, limiter; the per-track entries in it are unused and stay at their
+//! defaults) and [`AppState::track_params`]`[t]` holds track `t`'s synth and insert values.
+//! [`AppState::param`] reads the edit track for a per-track id; [`AppState::set_param`] sends
+//! `SetTrackParam { track: edit_track, .. }` for one and `SetParam` for a global id, and a
+//! real change to a per-track id marks the edit track modified. [`AppState::apply_preset`]
+//! applies to the edit track (its track ids go back to the defaults, the preset's values on
+//! top; the preset's global ids reset the globals as before M10). Every pattern's note edits
+//! and the grid lane address the edit track, as do the keyboard and MIDI (the engine's
+//! `NoteOn` already targets its edit track, which [`AppState::select_track`] keeps in step
+//! through `SetEditTrack`). The track operations ([`AppState::add_track`],
+//! [`AppState::duplicate_track`], [`AppState::remove_track`], [`AppState::rename_track`],
+//! [`AppState::set_track_colour`], [`AppState::move_track`]) are undo steps; selecting a
+//! track is view state like selecting a pattern, but the [`Snapshot`] carries `edit_track`
+//! so undoing a track operation puts the selection back too.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -87,10 +105,11 @@ use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
 use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE, MAX_REPEATS, pattern_letter};
+use engine::track::{COLOUR_COUNT, MAX_NAME_LEN, default_name, track_index};
 use engine::{
     Bank, ChainEntry, Channel, ChannelParam, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, MAX_NOTES,
-    Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern, PatternLength,
-    PlayMode, Position, STEPS,
+    MAX_TRACKS, Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern,
+    PatternLength, PlayMode, Position, STEPS, TrackId,
 };
 use engine::{EqParam, EqState, ReverbParam, ReverbState};
 use neu::{Theme, ThemeMode};
@@ -117,7 +136,8 @@ use neu::{VisualInput, VisualPreset};
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
 
-/// eframe storage key for the selected preset index.
+/// eframe storage key for the selected preset index (M10: the edit track's preset; on the
+/// next launch it is re-applied to track 0).
 pub const PRESET_INDEX_KEY: &str = "preset_index";
 
 /// eframe storage key for the last project path.
@@ -324,6 +344,119 @@ pub fn default_params() -> [f32; ParamId::COUNT] {
     params
 }
 
+/// Every parameter at its default with preset `index` (clamped to the list) on top: what a
+/// track holds right after [`AppState::apply_preset`]. Only the per-track ids are meaningful
+/// for a track, but the whole array is filled so the global ids can be read off it too.
+#[must_use]
+pub fn preset_params(index: usize) -> [f32; ParamId::COUNT] {
+    let mut params = default_params();
+    let index = index.min(presets::ALL.len().saturating_sub(1));
+    if let Some(preset) = presets::ALL.get(index) {
+        for (id, value) in preset.values {
+            params[id.index()] = id.clamp(*value);
+        }
+    }
+    params
+}
+
+/// What a fresh track's [`AppState::track_params`] entry holds: every parameter at its
+/// default, with preset `index`'s *per-track* values on top (the global entries of a track's
+/// array are unused and stay at their defaults).
+#[must_use]
+pub fn preset_track_params(index: usize) -> [f32; ParamId::COUNT] {
+    let values = preset_params(index);
+    let mut params = default_params();
+    for id in ParamId::ALL {
+        if id.is_track() {
+            params[id.index()] = values[id.index()];
+        }
+    }
+    params
+}
+
+/// `true` when the per-track ids of `params` differ from those of preset `index`
+/// ([`preset_params`]): the track was edited since the preset was applied.
+#[must_use]
+pub fn track_differs_from_preset(params: &[f32; ParamId::COUNT], index: usize) -> bool {
+    let base = preset_params(index);
+    ParamId::ALL
+        .iter()
+        .any(|id| id.is_track() && params[id.index()] != base[id.index()])
+}
+
+/// One instrument track slot as the UI sees it (M10): the name and colour chip the panels
+/// show, whether the slot is in use, the preset it was built from and whether a knob moved
+/// since. The sound itself lives in [`AppState::track_params`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackUi {
+    /// Display name, at most [`MAX_NAME_LEN`] characters (`"Synth"` / `"Track N"` by default).
+    pub name: String,
+    /// Colour swatch `0..COLOUR_COUNT` ([`Theme::track_colour`]).
+    pub colour: u8,
+    /// Whether the slot holds a track (inactive slots are hidden everywhere).
+    pub active: bool,
+    /// Index into [`presets::ALL`] of the preset shown as selected for this track.
+    pub preset: usize,
+    /// `true` once a per-track parameter moved after the preset was applied (the MOD lamp).
+    pub modified: bool,
+}
+
+impl TrackUi {
+    /// An unused slot: the default name and colour of `slot`, preset 0, not modified.
+    #[must_use]
+    pub fn inactive(slot: TrackId) -> Self {
+        Self {
+            name: default_name(slot),
+            colour: track_index(slot) as u8 % COLOUR_COUNT,
+            active: false,
+            preset: 0,
+            modified: false,
+        }
+    }
+
+    /// A fresh active track in `slot` (default name and colour, preset 0, not modified).
+    #[must_use]
+    pub fn fresh(slot: TrackId) -> Self {
+        Self {
+            active: true,
+            ..Self::inactive(slot)
+        }
+    }
+
+    /// Name of this track's preset.
+    #[must_use]
+    pub fn preset_name(&self) -> &'static str {
+        presets::ALL
+            .get(self.preset)
+            .map_or("", |preset| preset.name)
+    }
+}
+
+/// The track mirrors of a fresh state: slot 0 active (`"Synth"`), the rest unused.
+#[must_use]
+pub fn default_tracks() -> [TrackUi; MAX_TRACKS] {
+    std::array::from_fn(|slot| {
+        if slot == 0 {
+            TrackUi::fresh(0)
+        } else {
+            TrackUi::inactive(slot as TrackId)
+        }
+    })
+}
+
+/// Every track's parameters at their defaults.
+#[must_use]
+pub fn default_track_params() -> [[f32; ParamId::COUNT]; MAX_TRACKS] {
+    [default_params(); MAX_TRACKS]
+}
+
+/// `name` trimmed and cut to [`MAX_NAME_LEN`] characters (what [`AppState::rename_track`]
+/// stores).
+#[must_use]
+pub fn clean_track_name(name: &str) -> String {
+    name.trim().chars().take(MAX_NAME_LEN).collect()
+}
+
 /// Frames to render before `--smoke-test` closes the window.
 pub const SMOKE_TEST_FRAMES: u32 = 60;
 
@@ -339,6 +472,25 @@ pub fn quantise_step(position: Position, length: usize) -> usize {
     } else {
         step % length
     }
+}
+
+/// Stack of the helper thread that builds the engine ([`new_engine`]).
+pub const ENGINE_BUILD_STACK: usize = 16 << 20;
+
+/// `engine::new_engine` run on a short-lived thread with an [`ENGINE_BUILD_STACK`]-sized
+/// stack. The engine builds its eight tracks as one array before boxing them, which in a
+/// debug build takes several hundred KiB of stack (M10); the main thread, already deep in
+/// the event loop when the app is constructed, overflowed its 1 MiB. Falls back to building
+/// inline when no thread can be spawned.
+#[must_use]
+pub fn new_engine(sample_rate: f32) -> (EngineHandle, engine::Engine) {
+    std::thread::Builder::new()
+        .name("beatslopper-engine-init".into())
+        .stack_size(ENGINE_BUILD_STACK)
+        .spawn(move || engine::new_engine(sample_rate))
+        .ok()
+        .and_then(|thread| thread.join().ok())
+        .unwrap_or_else(|| engine::new_engine(sample_rate))
 }
 
 /// Serialisable mirror of [`ThemeMode`] for storage (keeps `neu` free of serde).
@@ -398,11 +550,21 @@ pub struct AppState {
     pub engine: EngineHandle,
     /// Whether the M0 test tone is on.
     pub test_tone: bool,
-    /// UI-side mirror of every engine parameter, indexed by [`ParamId::index`]. Always within
+    /// UI-side mirror of the engine's *global* parameters (delay, reverb, master gain,
+    /// limiter), indexed by [`ParamId::index`]. The per-track entries are unused and stay at
+    /// their defaults (M10: see [`AppState::track_params`]). Always within
     /// [`ParamId::range`]; edit through [`AppState::set_param`] so the engine follows.
     pub params: [f32; ParamId::COUNT],
-    /// Index into [`presets::ALL`] of the preset shown as selected.
-    pub preset_index: usize,
+    /// The eight instrument track slots (M10): name, colour, active flag, preset, modified
+    /// marker. Edit through the track operations so the engine follows.
+    pub tracks: [TrackUi; MAX_TRACKS],
+    /// Per-track parameter mirrors (M10), indexed by slot then [`ParamId::index`]; only the
+    /// [`ParamId::is_track`] entries are meaningful. [`AppState::param`] reads the edit
+    /// track's; [`AppState::set_param`] writes it and sends `SetTrackParam`.
+    pub track_params: [[f32; ParamId::COUNT]; MAX_TRACKS],
+    /// The selected track (M10): what the SYNTH panel, the FX rack's insert groups, the grid
+    /// lane, the roll, the keyboard and MIDI address. Always an active slot.
+    pub edit_track: TrackId,
     /// Tempo in BPM (`MIN_BPM..=MAX_BPM`).
     pub bpm: f32,
     /// Swing amount (`MIN_SWING..=MAX_SWING`).
@@ -590,7 +752,7 @@ impl AppState {
     /// State without an audio device, for tests and for the no-device fallback. Returns the
     /// `Engine` too so tests can render offline and check the messages arrived.
     pub fn headless(mode: ThemeMode) -> (Self, engine::Engine) {
-        let (handle, engine) = engine::new_engine(48_000.0);
+        let (handle, engine) = new_engine(48_000.0);
         let mut state = Self::from_parts(mode, handle, None);
         // No test may ever block on an OS file dialog.
         state.dialogs_enabled = false;
@@ -611,7 +773,9 @@ impl AppState {
             engine,
             test_tone: false,
             params: default_params(),
-            preset_index: 0,
+            tracks: default_tracks(),
+            track_params: default_track_params(),
+            edit_track: 0,
             bpm: DEFAULT_BPM,
             swing: 0.0,
             bank: Bank::default(),
@@ -693,7 +857,7 @@ impl AppState {
     /// With a stream running, every parameter, the tempo, the swing and the whole bank are
     /// sent so the engine matches the UI from the first buffer.
     pub fn with_audio(mode: ThemeMode) -> Self {
-        match AudioOutput::start(engine::new_engine) {
+        match AudioOutput::start(new_engine) {
             Ok((audio, handle)) => {
                 let mut state = Self::from_parts(mode, handle, Some(audio));
                 state.resend_all();
@@ -752,10 +916,25 @@ impl AppState {
         self.send(Message::TestTone(on));
     }
 
-    /// Current UI value of parameter `id` (always within [`ParamId::range`]).
+    /// Current UI value of parameter `id` (always within [`ParamId::range`]): the edit
+    /// track's value for a per-track id, the global value otherwise.
     #[must_use]
     pub fn param(&self, id: ParamId) -> f32 {
-        self.params[id.index()]
+        if id.is_track() {
+            self.track_params[track_index(self.edit_track)][id.index()]
+        } else {
+            self.params[id.index()]
+        }
+    }
+
+    /// Value of per-track parameter `id` on track `slot` (the global value for a global id).
+    #[must_use]
+    pub fn track_param(&self, slot: TrackId, id: ParamId) -> f32 {
+        if id.is_track() {
+            self.track_params[track_index(slot)][id.index()]
+        } else {
+            self.params[id.index()]
+        }
     }
 
     /// Master gain, linear (`1.0` = unity); the same value as `param(MasterGain)`.
@@ -775,6 +954,17 @@ impl AppState {
     /// ([`AppState::begin_continuous_edit`]); [`AppState::edit_param`] adds the drag-start hint.
     pub fn set_param(&mut self, id: ParamId, value: f32) -> f32 {
         let value = id.clamp(value);
+        if id.is_track() {
+            let track = self.edit_track;
+            let t = track_index(track);
+            if value != self.track_params[t][id.index()] {
+                self.begin_continuous_edit(EditKey::Param(id), false);
+                self.tracks[t].modified = true;
+            }
+            self.track_params[t][id.index()] = value;
+            self.send(Message::SetTrackParam { track, id, value });
+            return value;
+        }
         if value != self.params[id.index()] {
             self.begin_continuous_edit(EditKey::Param(id), false);
         }
@@ -793,23 +983,55 @@ impl AppState {
     /// [`AppState::set_param`] from a control: `drag_started` (egui's `Response::drag_started`,
     /// or `true` for a click on a discrete control) always starts a new undo step.
     pub fn edit_param(&mut self, id: ParamId, value: f32, drag_started: bool) -> f32 {
-        if drag_started && id.clamp(value) != self.params[id.index()] {
+        if drag_started && id.clamp(value) != self.param(id) {
             self.begin_continuous_edit(EditKey::Param(id), true);
         }
         self.set_param(id, value)
     }
 
-    /// Sends every parameter to the engine (startup, or after the UI state was rebuilt).
+    /// Sends every parameter to the engine (startup, or after the UI state was rebuilt): one
+    /// `SetParam` per global id, then one `SetTrackParam` per per-track id of every *active*
+    /// track (an inactive slot holds the defaults on both sides).
     pub fn resend_all_params(&mut self) {
         for id in ParamId::ALL {
-            self.send(Message::SetParam(*id, self.params[id.index()]));
+            if id.is_global() {
+                self.send(Message::SetParam(*id, self.params[id.index()]));
+            }
+        }
+        for slot in 0..MAX_TRACKS {
+            if self.tracks[slot].active {
+                self.resend_track_params(slot as TrackId);
+            }
         }
     }
 
-    /// Sends everything the engine mirrors: parameters, tempo, swing, the mixer and the whole
-    /// bank (startup, project load, undo).
+    /// Sends every per-track parameter of track `slot` (`SetTrackParam` per id).
+    pub fn resend_track_params(&mut self, slot: TrackId) {
+        let t = track_index(slot);
+        for id in ParamId::ALL {
+            if id.is_track() {
+                self.send(Message::SetTrackParam {
+                    track: t as TrackId,
+                    id: *id,
+                    value: self.track_params[t][id.index()],
+                });
+            }
+        }
+    }
+
+    /// Sends everything the engine mirrors (startup, project load, undo): the track slots'
+    /// active flags first (switching a slot off drops its notes in the engine, so this goes
+    /// before the bank), then every parameter, the edit track, tempo, swing, the mixer, the
+    /// EQ, the reverb and the whole bank (which carries every track's notes).
     pub fn resend_all(&mut self) {
+        for slot in 0..MAX_TRACKS {
+            self.send(Message::SetTrackActive {
+                track: slot as TrackId,
+                on: self.tracks[slot].active,
+            });
+        }
         self.resend_all_params();
+        self.send(Message::SetEditTrack(self.edit_track));
         self.send(Message::SetBpm(self.bpm));
         self.send(Message::SetSwing(self.swing));
         self.resend_mixer();
@@ -1119,32 +1341,55 @@ impl AppState {
         self.send(Message::SetSwing(swing));
     }
 
-    /// Selects preset `index` (clamped to the list): every parameter goes back to its default,
-    /// the preset's values are applied on top and everything is sent to the engine. One undo
-    /// step.
+    /// Selects preset `index` (clamped to the list) for the edit track: its per-track
+    /// parameters go back to their defaults with the preset's values on top (the track's
+    /// preset is remembered and its modified marker cleared), and the global parameters are
+    /// reset the same way (presets carry reverb and delay values, as before M10). Every
+    /// global value and the edit track's values are sent. One undo step.
     pub fn apply_preset(&mut self, index: usize) {
         let index = index.min(presets::ALL.len().saturating_sub(1));
         self.begin_edit();
-        self.preset_index = index;
-        self.params = default_params();
-        if let Some(preset) = presets::ALL.get(index) {
-            for (id, value) in preset.values {
-                self.params[id.index()] = id.clamp(*value);
+        let values = preset_params(index);
+        let track = self.edit_track;
+        let t = track_index(track);
+        self.tracks[t].preset = index;
+        self.tracks[t].modified = false;
+        for id in ParamId::ALL {
+            if id.is_track() {
+                self.track_params[t][id.index()] = values[id.index()];
+            } else {
+                self.params[id.index()] = values[id.index()];
             }
         }
         // Presets carry reverb values: keep the plugin's reverb mirror in step.
         self.reverb.size = self.params[ParamId::ReverbSize.index()];
         self.reverb.damping = self.params[ParamId::ReverbDamping.index()];
         self.reverb.mix = self.params[ParamId::ReverbMix.index()];
-        self.resend_all_params();
+        for id in ParamId::ALL {
+            if id.is_global() {
+                self.send(Message::SetParam(*id, self.params[id.index()]));
+            }
+        }
+        self.resend_track_params(track);
     }
 
-    /// Name of the selected preset.
+    /// Index into [`presets::ALL`] of the edit track's preset.
+    #[must_use]
+    pub fn preset_index(&self) -> usize {
+        self.edit_track_ui().preset
+    }
+
+    /// Name of the edit track's preset.
     #[must_use]
     pub fn preset_name(&self) -> &'static str {
-        presets::ALL
-            .get(self.preset_index)
-            .map_or("", |preset| preset.name)
+        self.edit_track_ui().preset_name()
+    }
+
+    /// Whether the edit track's parameters moved since its preset was applied (the SYNTH
+    /// head's MOD lamp).
+    #[must_use]
+    pub fn preset_modified(&self) -> bool {
+        self.edit_track_ui().modified
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1298,7 +1543,7 @@ impl AppState {
         {
             self.selected_step = None;
         }
-        let notes = self.pattern().notes().len();
+        let notes = self.edit_notes().len();
         if self.roll_selected.is_some_and(|index| index >= notes)
             || self.roll_selection.iter().any(|&index| index >= notes)
         {
@@ -1322,6 +1567,8 @@ impl AppState {
         if pattern != *self.pattern() {
             self.begin_edit();
             *self.pattern_mut() = pattern;
+            let track = self.edit_track;
+            self.pattern_mut().rebuild_lane(track);
             self.selected_step = None;
             self.clamp_shown_bar();
             self.send_pattern();
@@ -1393,7 +1640,9 @@ impl AppState {
         let note = note.map(|n| n.min(127));
         let accent = accent && note.is_some();
         self.begin_edit();
-        self.pattern_mut().set_synth_step(step as u8, note, accent);
+        let track = self.edit_track;
+        self.pattern_mut()
+            .set_synth_step(track, step as u8, note, accent);
         self.send(Message::SetSynthStep {
             step: step as u8,
             note,
@@ -1448,13 +1697,27 @@ impl AppState {
         self.send(Message::ClearRow(row));
     }
 
-    /// Clears the bass lane. An undo step only if the lane had notes.
+    /// Clears the bass lane: every note of the edit track in the edit pattern. An undo step
+    /// only if the track had notes.
     pub fn clear_synth(&mut self) {
-        if self.pattern().synth.iter().any(|s| s.note.is_some()) {
+        if !self.edit_notes().is_empty() {
             self.begin_edit();
         }
-        self.pattern_mut().clear_synth();
+        let track = self.edit_track;
+        self.pattern_mut().clear_notes(track);
         self.send(Message::ClearSynth);
+    }
+
+    /// The edit track's notes in the edit pattern (what the roll and the bass lane show).
+    #[must_use]
+    pub fn edit_notes(&self) -> &[Note] {
+        self.pattern().notes(self.edit_track)
+    }
+
+    /// Track `slot`'s notes in the edit pattern.
+    #[must_use]
+    pub fn track_notes(&self, slot: TrackId) -> &[Note] {
+        self.pattern().notes(slot)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1470,12 +1733,13 @@ impl AppState {
     pub fn add_note(&mut self, note: Note) -> Option<usize> {
         if note.length == 0
             || usize::from(note.start) >= self.pattern().len()
-            || self.pattern().notes().len() >= MAX_NOTES
+            || self.edit_notes().len() >= MAX_NOTES
         {
             return None;
         }
         self.begin_edit();
-        let index = self.pattern_mut().add_note(note)?;
+        let track = self.edit_track;
+        let index = self.pattern_mut().add_note(track, note)?;
         self.send_notes();
         Some(index)
     }
@@ -1484,7 +1748,7 @@ impl AppState {
     /// re-sorting; `None` (no edit) when `index` is out of range or `note` is invalid. An
     /// unchanged note is not an edit either (returns `Some(index)`).
     pub fn set_note(&mut self, index: usize, note: Note) -> Option<usize> {
-        let current = *self.pattern().notes().get(index)?;
+        let current = *self.edit_notes().get(index)?;
         let mut target = note;
         target.normalise();
         if target == current {
@@ -1494,7 +1758,8 @@ impl AppState {
             return None;
         }
         self.begin_edit();
-        let new_index = self.pattern_mut().set_note(index, note)?;
+        let track = self.edit_track;
+        let new_index = self.pattern_mut().set_note(track, index, note)?;
         self.send_notes();
         Some(new_index)
     }
@@ -1502,11 +1767,12 @@ impl AppState {
     /// Removes note `index` of the edit pattern; `false` (no edit) when out of range. A
     /// selection on the roll follows the shift of the later notes.
     pub fn remove_note(&mut self, index: usize) -> bool {
-        if index >= self.pattern().notes().len() {
+        if index >= self.edit_notes().len() {
             return false;
         }
         self.begin_edit();
-        self.pattern_mut().remove_note(index);
+        let track = self.edit_track;
+        self.pattern_mut().remove_note(track, index);
         let shift = |s: usize| match s {
             s if s == index => None,
             s if s > index => Some(s - 1),
@@ -1525,19 +1791,22 @@ impl AppState {
     /// Removes every note of the edit pattern (the bass lane becomes rests). An undo step only
     /// if there was a note.
     pub fn clear_notes(&mut self) {
-        if self.pattern().notes().is_empty() {
+        if self.edit_notes().is_empty() {
             return;
         }
         self.begin_edit();
-        self.pattern_mut().clear_notes();
+        let track = self.edit_track;
+        self.pattern_mut().clear_notes(track);
         self.clear_roll_selection();
         self.send_notes();
     }
 
-    /// Replays the edit pattern's note list to the engine ([`note_messages`]).
+    /// Replays the edit track's note list of the edit pattern to the engine
+    /// ([`note_messages`]).
     pub fn send_notes(&mut self) {
         let index = self.bank.current;
-        for msg in note_messages(self.pattern(), index) {
+        let track = self.edit_track;
+        for msg in note_messages(self.pattern(), index, track) {
             self.send(msg);
         }
     }
@@ -1589,10 +1858,11 @@ impl AppState {
         if length == 0 || usize::from(start) >= self.pattern().len() {
             return 0;
         }
+        let track = self.edit_track;
         let wanted: Vec<u8> = crate::chords::chord_pitches(chord, root)
-            .filter(|&p| self.pattern().note_at(start, p).is_none())
+            .filter(|&p| self.pattern().note_at(track, start, p).is_none())
             .collect();
-        let room = MAX_NOTES.saturating_sub(self.pattern().notes().len());
+        let room = MAX_NOTES.saturating_sub(self.edit_notes().len());
         let wanted = &wanted[..wanted.len().min(room)];
         if wanted.is_empty() {
             return 0;
@@ -1601,7 +1871,7 @@ impl AppState {
         let mut added = 0;
         for &pitch in wanted {
             let note = Note::new(start, length, pitch, velocity);
-            if self.pattern_mut().add_note(note).is_some() {
+            if self.pattern_mut().add_note(track, note).is_some() {
                 added += 1;
             }
         }
@@ -1616,7 +1886,8 @@ impl AppState {
     /// caller ([`crate::ui::sequencer::apply_roll_output`]).
     pub fn move_notes(&mut self, edits: &[(usize, Note)]) -> usize {
         let len = self.pattern().len();
-        let mut target = self.pattern().notes().to_vec();
+        let track = self.edit_track;
+        let mut target = self.edit_notes().to_vec();
         let mut changed = 0;
         for &(index, note) in edits {
             let Some(slot) = target.get_mut(index) else {
@@ -1634,9 +1905,9 @@ impl AppState {
             return 0;
         }
         self.begin_edit();
-        self.pattern_mut().clear_notes();
+        self.pattern_mut().clear_notes(track);
         for note in target {
-            self.pattern_mut().add_note(note);
+            self.pattern_mut().add_note(track, note);
         }
         self.send_notes();
         changed
@@ -1646,7 +1917,7 @@ impl AppState {
     /// range are ignored. Returns how many were removed (`0` means no edit). The roll
     /// selection is dropped.
     pub fn remove_notes(&mut self, indices: &[usize]) -> usize {
-        let count = self.pattern().notes().len();
+        let count = self.edit_notes().len();
         let mut order: Vec<usize> = indices.iter().copied().filter(|&i| i < count).collect();
         order.sort_unstable();
         order.dedup();
@@ -1654,8 +1925,9 @@ impl AppState {
             return 0;
         }
         self.begin_edit();
+        let track = self.edit_track;
         for &index in order.iter().rev() {
-            self.pattern_mut().remove_note(index);
+            self.pattern_mut().remove_note(track, index);
         }
         self.clear_roll_selection();
         self.send_notes();
@@ -1761,6 +2033,8 @@ impl AppState {
         self.begin_edit();
         *self.pattern_mut() = pattern;
         self.pattern_mut().normalise();
+        let track = self.edit_track;
+        self.pattern_mut().rebuild_lane(track);
         self.selected_step = None;
         self.clamp_shown_bar();
         self.send_pattern();
@@ -1883,17 +2157,295 @@ impl AppState {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Instrument tracks (M10). Every operation but `select_track` is one undo step; the
+    // mirrors change first, then the matching message goes out. The TRACKS panel calls these.
+
+    /// Track `slot`'s UI mirror (wraps into `0..MAX_TRACKS`).
+    #[must_use]
+    pub fn track(&self, slot: TrackId) -> &TrackUi {
+        &self.tracks[track_index(slot)]
+    }
+
+    /// The edit track's UI mirror.
+    #[must_use]
+    pub fn edit_track_ui(&self) -> &TrackUi {
+        self.track(self.edit_track)
+    }
+
+    /// The active slots in slot order.
+    pub fn active_tracks(&self) -> impl Iterator<Item = TrackId> + '_ {
+        self.tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.active)
+            .map(|(slot, _)| slot as TrackId)
+    }
+
+    /// How many slots hold a track.
+    #[must_use]
+    pub fn active_track_count(&self) -> usize {
+        self.tracks.iter().filter(|t| t.active).count()
+    }
+
+    /// Whether slot `slot` holds a track.
+    #[must_use]
+    pub fn track_active(&self, slot: TrackId) -> bool {
+        self.track(slot).active
+    }
+
+    /// The first unused slot, if any.
+    #[must_use]
+    pub fn free_track_slot(&self) -> Option<TrackId> {
+        (0..MAX_TRACKS as TrackId).find(|&slot| !self.tracks[usize::from(slot)].active)
+    }
+
+    /// ADD: puts a fresh track (default name `"Track N"`, colour = slot, preset 0 applied)
+    /// into the first unused slot, tells the engine (`SetTrackActive` on, then its
+    /// parameters) and selects it. One undo step. `None` (with a status line) when all eight
+    /// slots are in use.
+    pub fn add_track(&mut self) -> Option<TrackId> {
+        let Some(slot) = self.free_track_slot() else {
+            self.set_status(format!("All {MAX_TRACKS} tracks are in use"));
+            return None;
+        };
+        self.begin_edit();
+        let t = usize::from(slot);
+        self.tracks[t] = TrackUi::fresh(slot);
+        self.track_params[t] = preset_track_params(0);
+        self.send(Message::SetTrackActive {
+            track: slot,
+            on: true,
+        });
+        self.resend_track_params(slot);
+        self.select_track(slot);
+        Some(slot)
+    }
+
+    /// DUP: clones track `from`'s settings (parameters, preset, modified marker; not its
+    /// notes, like FL's clone) into the first unused slot as `"<name> copy"` with the slot's
+    /// own colour, tells the engine (`SetTrackActive` on, `CopyTrack`) and selects the copy.
+    /// One undo step. `None` when `from` is unused or every slot is taken.
+    pub fn duplicate_track(&mut self, from: TrackId) -> Option<TrackId> {
+        if !self.track_active(from) {
+            return None;
+        }
+        let Some(slot) = self.free_track_slot() else {
+            self.set_status(format!("All {MAX_TRACKS} tracks are in use"));
+            return None;
+        };
+        self.begin_edit();
+        let f = track_index(from);
+        let t = usize::from(slot);
+        let source = self.tracks[f].clone();
+        self.tracks[t] = TrackUi {
+            name: clean_track_name(&format!("{} copy", source.name)),
+            colour: slot % COLOUR_COUNT,
+            active: true,
+            preset: source.preset,
+            modified: source.modified,
+        };
+        self.track_params[t] = self.track_params[f];
+        self.send(Message::SetTrackActive {
+            track: slot,
+            on: true,
+        });
+        self.send(Message::CopyTrack {
+            from: f as TrackId,
+            to: slot,
+        });
+        self.select_track(slot);
+        Some(slot)
+    }
+
+    /// DEL: switches slot `slot` off: its notes leave every pattern (the engine does the same
+    /// on `SetTrackActive` off), its parameters go back to the defaults and its mixer strip
+    /// is kept. The last active track cannot be removed (`false`, status line). If it was the
+    /// edit track the nearest active slot is selected. One undo step.
+    pub fn remove_track(&mut self, slot: TrackId) -> bool {
+        let t = track_index(slot);
+        if !self.tracks[t].active {
+            return false;
+        }
+        if self.active_track_count() <= 1 {
+            self.set_status("The last track cannot be removed");
+            return false;
+        }
+        self.begin_edit();
+        self.tracks[t] = TrackUi::inactive(t as TrackId);
+        self.track_params[t] = default_params();
+        for pattern in &mut self.bank.patterns {
+            pattern.clear_notes(t as TrackId);
+        }
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            clipboard.clear_notes(t as TrackId);
+        }
+        self.send(Message::SetTrackActive {
+            track: t as TrackId,
+            on: false,
+        });
+        if track_index(self.edit_track) == t {
+            let nearest = self.nearest_active_track(t as TrackId).unwrap_or(0);
+            self.select_track(nearest);
+        } else {
+            self.rebuild_lanes();
+        }
+        true
+    }
+
+    /// The active slot closest to `slot` (the one before it wins a tie), `None` when no
+    /// other slot is active.
+    #[must_use]
+    pub fn nearest_active_track(&self, slot: TrackId) -> Option<TrackId> {
+        let from = track_index(slot) as i32;
+        (1..MAX_TRACKS as i32)
+            .flat_map(|d| [from - d, from + d])
+            .filter(|&s| (0..MAX_TRACKS as i32).contains(&s))
+            .map(|s| s as TrackId)
+            .find(|&s| self.track_active(s))
+    }
+
+    /// Renames track `slot` to `name` trimmed and cut to [`MAX_NAME_LEN`] characters. An
+    /// empty name, an unused slot or the same name again changes nothing (`false`). One undo
+    /// step.
+    pub fn rename_track(&mut self, slot: TrackId, name: &str) -> bool {
+        let t = track_index(slot);
+        let name = clean_track_name(name);
+        if name.is_empty() || !self.tracks[t].active || self.tracks[t].name == name {
+            return false;
+        }
+        self.begin_edit();
+        self.tracks[t].name = name;
+        true
+    }
+
+    /// Gives track `slot` colour swatch `colour` (wraps into `0..COLOUR_COUNT`). One undo
+    /// step when it changes; `false` for an unused slot or the same colour.
+    pub fn set_track_colour(&mut self, slot: TrackId, colour: u8) -> bool {
+        let t = track_index(slot);
+        let colour = colour % COLOUR_COUNT;
+        if !self.tracks[t].active || self.tracks[t].colour == colour {
+            return false;
+        }
+        self.begin_edit();
+        self.tracks[t].colour = colour;
+        true
+    }
+
+    /// Makes slot `slot` the edit track: every held key is released first (so no note hangs
+    /// on the old track), the grid's bass selection and the roll selection are dropped, every
+    /// pattern's lane is rebuilt for it and the engine gets `SetEditTrack`. View state, not an
+    /// undo step. `false` (nothing changes) for an unused slot.
+    pub fn select_track(&mut self, slot: TrackId) -> bool {
+        let slot = track_index(slot) as TrackId;
+        if !self.track_active(slot) {
+            return false;
+        }
+        if slot != self.edit_track {
+            self.release_held_notes();
+        }
+        self.edit_track = slot;
+        self.selected_step = None;
+        self.clear_roll_selection();
+        self.rebuild_lanes();
+        self.send(Message::SetEditTrack(slot));
+        true
+    }
+
+    /// Selects the active track `delta` places after the edit track in slot order (`-1` =
+    /// previous, `1` = next), wrapping around the list. `false` with a single track.
+    pub fn select_adjacent_track(&mut self, delta: i32) -> bool {
+        let active: Vec<TrackId> = self.active_tracks().collect();
+        if active.len() < 2 {
+            return false;
+        }
+        let here = active
+            .iter()
+            .position(|&s| s == self.edit_track)
+            .unwrap_or(0) as i32;
+        let len = active.len() as i32;
+        let target = active[((here + delta).rem_euclid(len)) as usize];
+        self.select_track(target)
+    }
+
+    /// Moves track `slot` one place up (`up`) or down the list of active tracks by swapping it
+    /// with the nearest active slot in that direction: parameters, name, colour, preset,
+    /// notes in every pattern and the mixer strips swap on both sides (`SwapTracks`), and the
+    /// selection stays on the moved track. One undo step; `false` when it cannot move.
+    pub fn move_track(&mut self, slot: TrackId, up: bool) -> bool {
+        let a = track_index(slot);
+        if !self.tracks[a].active {
+            return false;
+        }
+        let target = if up {
+            (0..a).rev().find(|&s| self.tracks[s].active)
+        } else {
+            (a + 1..MAX_TRACKS).find(|&s| self.tracks[s].active)
+        };
+        let Some(b) = target else {
+            return false;
+        };
+        self.begin_edit();
+        self.tracks.swap(a, b);
+        self.track_params.swap(a, b);
+        for pattern in &mut self.bank.patterns {
+            pattern.swap_tracks(a as TrackId, b as TrackId);
+        }
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            clipboard.swap_tracks(a as TrackId, b as TrackId);
+        }
+        self.mixer.swap(
+            Channel::from_track(a as TrackId),
+            Channel::from_track(b as TrackId),
+        );
+        let edit = track_index(self.edit_track);
+        if edit == a {
+            self.edit_track = b as TrackId;
+        } else if edit == b {
+            self.edit_track = a as TrackId;
+        }
+        self.clear_roll_selection();
+        self.rebuild_lanes();
+        self.send(Message::SwapTracks(a as TrackId, b as TrackId));
+        true
+    }
+
+    /// Rebuilds every pattern's grid lane (and the clipboard's) for the edit track.
+    pub fn rebuild_lanes(&mut self) {
+        let track = self.edit_track;
+        for pattern in &mut self.bank.patterns {
+            pattern.rebuild_lane(track);
+        }
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            clipboard.rebuild_lane(track);
+        }
+    }
+
+    /// Releases every key held from the computer keyboard, the on-screen piano or MIDI
+    /// (`NoteOff` for each, lights off) without the engine-wide `AllNotesOff`.
+    pub fn release_held_notes(&mut self) {
+        let events = self.input.release_all();
+        self.apply_note_events(&events);
+        for note in 0..self.held_notes.len() {
+            if self.held_notes[note] {
+                self.note_off(note as u8);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Undo / redo and the unsaved marker.
 
     /// The current state as an undo [`Snapshot`].
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            bank: self.bank.clone(),
+            bank: Box::new(self.bank.clone()),
             params: self.params,
+            tracks: self.tracks.clone(),
+            track_params: self.track_params,
+            edit_track: self.edit_track,
             bpm: self.bpm,
             swing: self.swing,
-            preset_index: self.preset_index,
             mixer: self.mixer,
             eq: self.eq,
             reverb: self.reverb,
@@ -1971,25 +2523,39 @@ impl AppState {
         let Snapshot {
             bank,
             params,
+            tracks,
+            track_params,
+            edit_track,
             bpm,
             swing,
-            preset_index,
             mixer,
             eq,
             reverb,
             project_path,
         } = snapshot;
-        self.bank = bank;
+        self.bank = *bank;
         self.params = params;
+        self.tracks = tracks;
+        self.track_params = track_params;
         self.bpm = bpm;
         self.swing = swing;
-        self.preset_index = preset_index;
         self.mixer = mixer;
         self.eq = eq;
         self.reverb = reverb;
         self.project_path = project_path;
         self.last_continuous_edit = None;
         self.dirty = true;
+        // The selection comes back with the snapshot; a held key must not hang on a track
+        // that may be gone.
+        if edit_track != self.edit_track {
+            self.release_held_notes();
+        }
+        self.edit_track = if self.track_active(edit_track) {
+            edit_track
+        } else {
+            self.active_tracks().next().unwrap_or(0)
+        };
+        self.rebuild_lanes();
         self.clamp_shown_bar();
         self.clamp_song_selected();
         self.resend_all();
@@ -2454,8 +3020,14 @@ pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
         }
     }
     // M7: the synth part is the note list (chords, held notes), not the derived lane. Notes
-    // starting on hidden steps are accepted while the length is widened.
-    out.extend(note_messages(pattern, index));
+    // starting on hidden steps are accepted while the length is widened. M10: one list per
+    // track; `ClearPattern` above already emptied every track, so only the tracks that hold
+    // notes are replayed.
+    for track in 0..MAX_TRACKS as TrackId {
+        if !pattern.notes(track).is_empty() {
+            out.extend(note_messages(pattern, index, track));
+        }
+    }
     if used != usize::from(len) {
         out.push(Message::SetPatternLength {
             pattern: index,
@@ -2475,24 +3047,63 @@ pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
     out
 }
 
-/// The messages that replace pattern `index`'s note list in the engine with `pattern`'s (M7):
-/// `ClearNotes(index)` then one `SetNote` per note in sorted order, each with
-/// `index == note_count` (an append), so the engine's list ends up identical to the mirror's
-/// whatever it held before. At most `MAX_NOTES + 1` messages. A note that starts at or beyond
-/// the engine pattern's *current* length is ignored by the engine, so callers that replay a
-/// pattern with hidden notes widen the length first ([`pattern_messages`] does).
+/// The messages that replace track `track`'s note list of pattern `index` in the engine with
+/// `pattern`'s (M7, per track since M10): `ClearNotes { pattern, track }` then one `SetNote`
+/// per note in sorted order, each with `index == note_count` (an append), so the engine's
+/// list ends up identical to the mirror's whatever it held before. At most `MAX_NOTES + 1`
+/// messages. A note that starts at or beyond the engine pattern's *current* length is ignored
+/// by the engine, so callers that replay a pattern with hidden notes widen the length first
+/// ([`pattern_messages`] does).
 #[must_use]
-pub fn note_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
-    let notes = pattern.notes();
+pub fn note_messages(pattern: &Pattern, index: u8, track: TrackId) -> Vec<Message> {
+    let notes = pattern.notes(track);
     let mut out = Vec::with_capacity(notes.len() + 1);
-    out.push(Message::ClearNotes(index));
+    out.push(Message::ClearNotes {
+        pattern: index,
+        track,
+    });
     for (i, note) in notes.iter().enumerate() {
         out.push(Message::SetNote {
             pattern: index,
+            track,
             index: i as u8,
             note: *note,
         });
     }
+    out
+}
+
+/// The messages that put every track slot into the engine (part of a resend): one
+/// `SetTrackActive` per slot, then every active track's parameters, then `SetEditTrack`.
+/// `MAX_TRACKS + active * track_ids + 1` messages.
+#[must_use]
+pub fn track_messages(
+    tracks: &[TrackUi; MAX_TRACKS],
+    track_params: &[[f32; ParamId::COUNT]; MAX_TRACKS],
+    edit_track: TrackId,
+) -> Vec<Message> {
+    let mut out = Vec::new();
+    for (slot, track) in tracks.iter().enumerate() {
+        out.push(Message::SetTrackActive {
+            track: slot as TrackId,
+            on: track.active,
+        });
+    }
+    for (slot, track) in tracks.iter().enumerate() {
+        if !track.active {
+            continue;
+        }
+        for id in ParamId::ALL {
+            if id.is_track() {
+                out.push(Message::SetTrackParam {
+                    track: slot as TrackId,
+                    id: *id,
+                    value: track_params[slot][id.index()],
+                });
+            }
+        }
+    }
+    out.push(Message::SetEditTrack(edit_track));
     out
 }
 
@@ -2583,7 +3194,9 @@ pub fn bank_messages(bank: &Bank, mode: Option<PlayMode>) -> Vec<Message> {
 pub struct BeatSlopperApp {
     /// Tokens for the mode currently applied to the egui context.
     theme: Theme,
-    state: AppState,
+    /// Boxed: `AppState` is about 50 KiB (the pattern bank alone is 40), and the debug build
+    /// moves it through several frames at startup; a box keeps those moves pointer-sized.
+    state: Box<AppState>,
     smoke_test: bool,
     frames: u32,
     smoke_done: bool,
@@ -2646,7 +3259,7 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<RecentList>(s, RECENT_KEY));
 
-        let mut state = AppState::with_audio(mode);
+        let mut state = Box::new(AppState::with_audio(mode));
         // Windows that were open last time reopen where they were (never in the smoke test).
         if !smoke_test {
             state.plugin_open = plugin_windows.open_flags();
@@ -2717,7 +3330,7 @@ impl BeatSlopperApp {
         (
             Self {
                 theme: Theme::for_mode(mode),
-                state,
+                state: Box::new(state),
                 smoke_test,
                 frames: 0,
                 smoke_done: false,
@@ -2876,7 +3489,7 @@ impl BeatSlopperApp {
     /// Performs one keyboard shortcut. Dialog shortcuts go through the project panel's
     /// actions, which refuse to open a dialog unless [`AppState::dialogs_enabled`].
     pub fn run_shortcut(&mut self, shortcut: Shortcut) {
-        let state = &mut self.state;
+        let state: &mut AppState = &mut self.state;
         match shortcut {
             Shortcut::PlayStop => state.toggle_play(),
             Shortcut::ToggleArm => state.toggle_arm(),
@@ -2898,6 +3511,18 @@ impl BeatSlopperApp {
             }
             Shortcut::BpmUp => state.nudge_bpm(1),
             Shortcut::BpmDown => state.nudge_bpm(-1),
+            Shortcut::AddTrack => {
+                state.add_track();
+            }
+            Shortcut::DuplicateTrack => {
+                state.duplicate_track(state.edit_track);
+            }
+            Shortcut::PrevTrack => {
+                state.select_adjacent_track(-1);
+            }
+            Shortcut::NextTrack => {
+                state.select_adjacent_track(1);
+            }
         }
     }
 
@@ -2966,7 +3591,7 @@ impl App for BeatSlopperApp {
     fn save(&mut self, storage: &mut dyn Storage) {
         let stored: Option<StoredThemeMode> = self.state.theme_override.map(Into::into);
         eframe::set_value(storage, THEME_OVERRIDE_KEY, &stored);
-        eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index);
+        eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index());
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
@@ -3117,7 +3742,7 @@ mod tests {
     fn fresh_state_holds_the_defaults() {
         let (state, _engine) = AppState::headless(ThemeMode::Dark);
         assert_eq!(state.params, default_params());
-        assert_eq!(state.preset_index, 0);
+        assert_eq!(state.preset_index(), 0);
         assert_eq!(state.bpm, DEFAULT_BPM);
         assert_eq!(state.swing, 0.0);
         assert_eq!(state.pattern().clone(), Pattern::demo());
@@ -3172,7 +3797,7 @@ mod tests {
             state.set_param(ParamId::Glide, 0.9);
             let free_before = state.engine.free_slots();
             state.apply_preset(i);
-            assert_eq!(state.preset_index, i);
+            assert_eq!(state.preset_index(), i);
             assert_eq!(state.preset_name(), preset.name);
             assert_eq!(
                 free_before - state.engine.free_slots(),
@@ -3209,7 +3834,7 @@ mod tests {
     fn preset_index_is_clamped_to_the_list() {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
         state.apply_preset(usize::MAX);
-        assert_eq!(state.preset_index, presets::ALL.len() - 1);
+        assert_eq!(state.preset_index(), presets::ALL.len() - 1);
         assert_eq!(
             state.preset_name(),
             presets::ALL[presets::ALL.len() - 1].name
@@ -3245,7 +3870,7 @@ mod tests {
     #[test]
     fn resend_all_params_sends_one_message_per_id() {
         let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
-        state.params[ParamId::DriveMix.index()] = 0.9;
+        state.track_params[0][ParamId::DriveMix.index()] = 0.9;
         let free_before = state.engine.free_slots();
         state.resend_all_params();
         assert_eq!(free_before - state.engine.free_slots(), ParamId::COUNT);
@@ -3338,7 +3963,7 @@ mod tests {
             .flatten()
             .filter(|s| **s != DrumStep::default())
             .count();
-        let notes = state.pattern().notes().len();
+        let notes = state.pattern().notes(0).len();
         assert!(notes > 0, "the demo has a bass line");
         // SetEditPattern, ClearPattern, the length, the non-empty drum steps, ClearNotes plus
         // one SetNote per note (M7), 5 volumes, 5 tunes.
@@ -3346,7 +3971,10 @@ mod tests {
             messages.len(),
             3 + used_steps + 1 + notes + 2 * DrumRow::COUNT
         );
-        assert!(messages.contains(&Message::ClearNotes(0)));
+        assert!(messages.contains(&Message::ClearNotes {
+            pattern: 0,
+            track: 0
+        }));
         assert!(
             !messages
                 .iter()
@@ -3383,7 +4011,10 @@ mod tests {
         state.set_swing(0.25);
         let free_before = state.engine.free_slots();
         state.resend_all();
-        let expected = ParamId::COUNT
+        // M10: the eight active flags and `SetEditTrack` come on top; with one active track
+        // the parameters are still one message per id.
+        let expected = track_messages(&state.tracks, &state.track_params, state.edit_track).len()
+            + ParamId::ALL.iter().filter(|id| id.is_global()).count()
             + 2
             + mixer_messages(&state.mixer).len()
             + eq_messages(&state.eq).len()
@@ -3449,7 +4080,7 @@ mod tests {
             "synth solo"
         );
 
-        // Every strip value is resent in one go: 36 messages.
+        // Every strip value is resent in one go: 78 messages (13 strips, M10).
         let messages = mixer_messages(&state.mixer);
         assert_eq!(messages.len(), Channel::COUNT * ChannelParam::ALL.len());
         assert_eq!(
@@ -3464,7 +4095,10 @@ mod tests {
         other.mixer = state.mixer;
         let free_before = other.engine.free_slots();
         other.resend_mixer();
-        assert_eq!(free_before - other.engine.free_slots(), 36);
+        assert_eq!(
+            free_before - other.engine.free_slots(),
+            Channel::COUNT * ChannelParam::ALL.len()
+        );
         fresh.process_messages();
         assert_eq!(fresh.mixer(), &state.mixer);
     }
@@ -3631,12 +4265,12 @@ mod tests {
         bank.patterns[1] = Pattern::demo_variation();
         bank.set_length(1, PatternLength::Bar2);
         bank.patterns[1].set_drum_step(DrumRow::Kick, 20, true, true);
-        bank.patterns[1].set_synth_step(31, Some(48), false);
+        bank.patterns[1].set_synth_step(0, 31, Some(48), false);
         bank.patterns[1].drum_volume[2] = -4.0;
         bank.patterns[2] = Pattern::demo();
         bank.set_length(2, PatternLength::Bar4);
         bank.patterns[2].set_drum_step(DrumRow::Snare, 63, true, false);
-        bank.patterns[2].set_synth_step(40, Some(50), true);
+        bank.patterns[2].set_synth_step(0, 40, Some(50), true);
         bank.patterns[2].drum_tune[4] = 5.0;
         // Hidden data beyond the length survives a resend.
         bank.patterns[0].drums[DrumRow::Clap.index()][30].on = true;
@@ -3712,7 +4346,7 @@ mod tests {
                 }
             }
             for step in 0..64u8 {
-                pattern.set_synth_step(step, Some(36 + i as u8 + step % 12), step % 2 == 0);
+                pattern.set_synth_step(0, step, Some(36 + i as u8 + step % 12), step % 2 == 0);
             }
         }
         let messages = bank_messages(&state.bank, None);
@@ -4278,15 +4912,15 @@ mod tests {
     /// note at step 20 of a one-bar pattern.
     fn chord_pattern() -> Pattern {
         let mut p = Pattern::empty();
-        p.add_note(Note::new(0, 4, 48, 0.8));
-        p.add_note(Note::new(0, 4, 52, 0.8));
-        p.add_note(Note::new(0, 4, 55, 1.0));
-        p.add_note(Note::new(8, 6, 43, 0.8));
+        p.add_note(0, Note::new(0, 4, 48, 0.8));
+        p.add_note(0, Note::new(0, 4, 52, 0.8));
+        p.add_note(0, Note::new(0, 4, 55, 1.0));
+        p.add_note(0, Note::new(8, 6, 43, 0.8));
         // Hidden: widen, add, shrink (the note stays in the list beyond the length).
         p.set_length(PatternLength::Bar2);
-        p.add_note(Note::new(20, 2, 60, 0.8));
+        p.add_note(0, Note::new(20, 2, 60, 0.8));
         p.set_length(PatternLength::Bar1);
-        assert_eq!(p.notes().len(), 5);
+        assert_eq!(p.notes(0).len(), 5);
         p
     }
 
@@ -4302,7 +4936,10 @@ mod tests {
                 .count(),
             5
         );
-        assert!(messages.contains(&Message::ClearNotes(2)));
+        assert!(messages.contains(&Message::ClearNotes {
+            pattern: 2,
+            track: 0
+        }));
         // The hidden note is sent while the length is widened to two bars.
         let widened = messages
             .iter()
@@ -4331,8 +4968,8 @@ mod tests {
         state.send_bank();
         sync(&mut state, &mut engine);
         assert_eq!(
-            engine.bank().patterns[2].notes(),
-            state.bank.patterns[2].notes()
+            engine.bank().patterns[2].notes(0),
+            state.bank.patterns[2].notes(0)
         );
         assert_eq!(engine.bank().patterns[2], state.bank.patterns[2]);
         assert_eq!(engine.bank(), &state.bank);
@@ -4361,7 +4998,7 @@ mod tests {
         assert_eq!(state.undo.len(), 3);
         assert!(state.dirty);
         assert_eq!(
-            state.pattern().notes(),
+            state.pattern().notes(0),
             &[
                 Note::new(0, 8, 36, 1.0),
                 Note::new(4, 2, 48, 0.8),
@@ -4373,12 +5010,12 @@ mod tests {
         assert!(state.pattern().synth[0].accent);
         assert_eq!(state.pattern().synth[4].note, Some(48));
         sync(&mut state, &mut engine);
-        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+        assert_eq!(engine.pattern().notes(0), state.pattern().notes(0));
 
         // Move the long note up a fifth and shorten it: it re-sorts behind the chord.
         assert_eq!(state.set_note(0, Note::new(6, 3, 43, 1.0)), Some(2));
         assert_eq!(state.undo.len(), 4);
-        assert_eq!(state.pattern().notes()[2], Note::new(6, 3, 43, 1.0));
+        assert_eq!(state.pattern().notes(0)[2], Note::new(6, 3, 43, 1.0));
         // Setting a note to itself is not an edit; out-of-range indices are refused.
         assert_eq!(state.set_note(2, Note::new(6, 3, 43, 1.0)), Some(2));
         assert_eq!(state.set_note(9, Note::new(1, 1, 60, 0.8)), None);
@@ -4389,7 +5026,7 @@ mod tests {
         );
         assert_eq!(state.undo.len(), 4);
         sync(&mut state, &mut engine);
-        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+        assert_eq!(engine.pattern().notes(0), state.pattern().notes(0));
 
         // Remove the middle chord note; a selection past it shifts down.
         state.roll_selected = Some(2);
@@ -4397,29 +5034,29 @@ mod tests {
         assert_eq!(state.roll_selected, Some(1));
         assert!(!state.remove_note(5));
         assert_eq!(state.undo.len(), 5);
-        assert_eq!(state.pattern().notes().len(), 2);
+        assert_eq!(state.pattern().notes(0).len(), 2);
         sync(&mut state, &mut engine);
-        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+        assert_eq!(engine.pattern().notes(0), state.pattern().notes(0));
 
         // Undo walks back through every step, the engine following.
         assert!(state.undo());
-        assert_eq!(state.pattern().notes().len(), 3);
+        assert_eq!(state.pattern().notes(0).len(), 3);
         assert!(state.undo());
-        assert_eq!(state.pattern().notes()[0], Note::new(0, 8, 36, 1.0));
+        assert_eq!(state.pattern().notes(0)[0], Note::new(0, 8, 36, 1.0));
         sync(&mut state, &mut engine);
-        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+        assert_eq!(engine.pattern().notes(0), state.pattern().notes(0));
         assert!(state.redo());
-        assert_eq!(state.pattern().notes()[2], Note::new(6, 3, 43, 1.0));
+        assert_eq!(state.pattern().notes(0)[2], Note::new(6, 3, 43, 1.0));
 
         // Clear: one step while there is something to clear, none afterwards.
         let before = state.undo.len();
         state.clear_notes();
-        assert!(state.pattern().notes().is_empty());
+        assert!(state.pattern().notes(0).is_empty());
         assert_eq!(state.undo.len(), before + 1);
         state.clear_notes();
         assert_eq!(state.undo.len(), before + 1);
         sync(&mut state, &mut engine);
-        assert!(engine.pattern().notes().is_empty());
+        assert!(engine.pattern().notes(0).is_empty());
 
         // A full pattern refuses a 65th note without an undo step.
         for i in 0..MAX_NOTES {
@@ -4444,7 +5081,7 @@ mod tests {
         // The grid writes one note per step: both chord notes at step 3 give way to a
         // length-1 accented note, the lane shows it, and the engine agrees.
         state.set_synth_step(3, Some(60), true);
-        assert_eq!(state.pattern().notes(), &[Note::step(3, 60, true)]);
+        assert_eq!(state.pattern().notes(0), &[Note::step(3, 60, true)]);
         assert_eq!(
             state.pattern().synth[3],
             SynthStep {
@@ -4453,16 +5090,16 @@ mod tests {
             }
         );
         state.set_synth_step(5, Some(43), false);
-        assert_eq!(state.pattern().notes().len(), 2);
+        assert_eq!(state.pattern().notes(0).len(), 2);
         assert_eq!(state.pattern().synth[5].note, Some(43));
         state.set_synth_step(3, None, false);
-        assert_eq!(state.pattern().notes(), &[Note::step(5, 43, false)]);
+        assert_eq!(state.pattern().notes(0), &[Note::step(5, 43, false)]);
         assert_eq!(state.pattern().synth[3], SynthStep::default());
         sync(&mut state, &mut engine);
         assert_eq!(engine.pattern(), state.pattern());
         // Every lane cell is what its notes say.
         let mut rebuilt = state.pattern().clone();
-        rebuilt.rebuild_lane();
+        rebuilt.rebuild_lane(0);
         assert_eq!(rebuilt.synth, state.pattern().synth);
     }
 
@@ -4493,7 +5130,7 @@ mod tests {
             state.pattern().synth[5],
             Note::step(5, 60, true).lane_step()
         );
-        assert!(state.pattern().note_at(5, 60).is_some());
+        assert!(state.pattern().note_at(0, 5, 60).is_some());
 
         // The playhead in roll steps: bar * 16 + step + frac while the edit pattern plays.
         state.playhead = Position {
@@ -4517,7 +5154,7 @@ mod tests {
         state.select_pattern(3);
         assert_eq!(state.roll_selected, None);
         state.select_pattern(0);
-        state.roll_selected = Some(state.pattern().notes().len() - 1);
+        state.roll_selected = Some(state.pattern().notes(0).len() - 1);
         state.clear_notes();
         assert_eq!(state.roll_selected, None);
     }
@@ -4558,7 +5195,7 @@ mod tests {
         state.dirty = false;
         let major = &CHORDS[0];
         assert_eq!(state.add_chord(major, 48, 2, 3, 0.8), 3);
-        let notes = state.pattern().notes().to_vec();
+        let notes = state.pattern().notes(0).to_vec();
         assert_eq!(notes.len(), 3);
         for (n, pitch) in notes.iter().zip([48, 52, 55]) {
             assert_eq!((n.start, n.length, n.pitch), (2, 3, pitch), "{n:?}");
@@ -4568,7 +5205,7 @@ mod tests {
 
         // The root and the fifth are there already: minor adds only its third.
         assert_eq!(state.add_chord(&CHORDS[1], 48, 2, 1, 0.8), 1);
-        assert_eq!(state.pattern().notes().len(), 4);
+        assert_eq!(state.pattern().notes(0).len(), 4);
         assert_eq!(state.undo.len(), 2);
         // Nothing to add, zero length or past the end: no edit.
         assert_eq!(state.add_chord(major, 48, 2, 1, 0.8), 0);
@@ -4577,12 +5214,12 @@ mod tests {
         assert_eq!(state.undo.len(), 2);
         // Tones above MIDI 127 are dropped.
         assert_eq!(state.add_chord(major, 125, 5, 1, 0.8), 1);
-        assert_eq!(state.pattern().notes().len(), 5);
+        assert_eq!(state.pattern().notes(0).len(), 5);
 
         assert!(state.undo());
         assert!(state.undo());
         assert!(state.undo());
-        assert!(state.pattern().notes().is_empty());
+        assert!(state.pattern().notes(0).is_empty());
         assert!(!state.undo());
     }
 
@@ -4663,7 +5300,7 @@ mod tests {
             state.move_notes(&[(0, Note::new(0, 1, 60, 0.8)), (2, Note::new(4, 1, 67, 0.8))]);
         assert_eq!(moved, 2);
         assert_eq!(
-            state.pattern().notes(),
+            state.pattern().notes(0),
             &[
                 Note::new(0, 1, 60, 0.8),
                 Note::new(2, 2, 52, 0.8),
@@ -4682,15 +5319,15 @@ mod tests {
         state.roll_selected = Some(0);
         state.roll_selection = vec![0, 2];
         assert_eq!(state.remove_notes(&[2, 0, 0, 9]), 2);
-        assert_eq!(state.pattern().notes(), &[Note::new(2, 2, 52, 0.8)]);
+        assert_eq!(state.pattern().notes(0), &[Note::new(2, 2, 52, 0.8)]);
         assert_eq!(state.roll_selected, None);
         assert!(state.roll_selection.is_empty());
         assert_eq!(state.undo.len(), 2);
         assert_eq!(state.remove_notes(&[5]), 0, "nothing in range");
         assert!(state.undo());
-        assert_eq!(state.pattern().notes().len(), 3);
+        assert_eq!(state.pattern().notes(0).len(), 3);
         assert!(state.undo());
-        assert_eq!(state.pattern().notes()[0].pitch, 48);
+        assert_eq!(state.pattern().notes(0)[0].pitch, 48);
 
         // A single removal shifts the rest of the selection down like the primary.
         state.roll_selected = Some(2);
@@ -5021,7 +5658,7 @@ mod tests {
         assert_eq!(state.undo.len(), 4, "four distinct edits");
 
         assert!(state.undo()); // preset
-        assert_eq!(state.preset_index, 0);
+        assert_eq!(state.preset_index(), 0);
         assert_eq!(state.param(ParamId::FilterCutoff), 500.0);
         assert!(state.undo()); // cutoff
         assert_eq!(
@@ -5049,7 +5686,7 @@ mod tests {
         for _ in 0..4 {
             assert!(state.redo());
         }
-        assert_eq!(state.preset_index, 3);
+        assert_eq!(state.preset_index(), 3);
         assert_eq!(state.bpm, 150.0);
         assert_eq!(state.swing, 0.5);
         sync(&mut state, &mut engine);
@@ -5262,5 +5899,434 @@ mod tests {
         assert_eq!(state.status_text(), None);
         state.expire_status();
         assert!(state.status.is_none());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M10: instrument tracks.
+
+    #[test]
+    fn a_fresh_state_has_one_track_and_the_lane_follows_the_edit_track() {
+        let (state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.edit_track, 0);
+        assert_eq!(state.active_track_count(), 1);
+        assert_eq!(state.edit_track_ui().name, "Synth");
+        assert_eq!(state.edit_track_ui().colour, 0);
+        assert!(!state.preset_modified());
+        assert_eq!(state.free_track_slot(), Some(1));
+        assert_eq!(state.track_params, default_track_params());
+        for id in ParamId::ALL {
+            assert_eq!(state.param(*id), id.default_value(), "{id:?}");
+        }
+        assert!(
+            !state.edit_notes().is_empty(),
+            "the demo bass line is on track 0"
+        );
+        assert_eq!(state.edit_notes(), state.track_notes(0));
+    }
+
+    #[test]
+    fn set_param_routes_track_ids_to_the_edit_track_and_marks_it_modified() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        let slot = state.add_track().expect("a free slot");
+        assert_eq!(slot, 1);
+        assert_eq!(state.edit_track, 1, "the new track is selected");
+        assert_eq!(state.edit_track_ui().name, "Track 2");
+        assert_eq!(state.edit_track_ui().colour, 1);
+        assert!(!state.preset_modified());
+
+        assert_eq!(state.set_param(ParamId::FilterCutoff, 1234.0), 1234.0);
+        assert_eq!(state.param(ParamId::FilterCutoff), 1234.0);
+        assert_eq!(state.track_param(1, ParamId::FilterCutoff), 1234.0);
+        assert_eq!(
+            state.track_param(0, ParamId::FilterCutoff),
+            ParamId::FilterCutoff.default_value(),
+            "track 0 untouched"
+        );
+        assert!(state.preset_modified(), "a knob move marks the track");
+        assert!(!state.track(0).modified);
+        // A global id still lands in `params`, whatever the edit track.
+        assert_eq!(state.set_param(ParamId::DelayMix, 0.4), 0.4);
+        assert_eq!(state.params[ParamId::DelayMix.index()], 0.4);
+
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.edit_track(), 1);
+        assert!(engine.track_active(1));
+        assert_eq!(engine.track_param(1, ParamId::FilterCutoff), 1234.0);
+        assert_eq!(
+            engine.track_param(0, ParamId::FilterCutoff),
+            ParamId::FilterCutoff.default_value()
+        );
+        assert_eq!(engine.param(ParamId::DelayMix), 0.4);
+        // The new track sounds like preset 0, as the UI says.
+        assert_eq!(
+            engine.track_param(1, ParamId::DriveAmount),
+            preset_params(0)[ParamId::DriveAmount.index()]
+        );
+
+        // Back on track 0, `param` reads its values again and the preset applies to it.
+        assert!(state.select_track(0));
+        assert_eq!(
+            state.param(ParamId::FilterCutoff),
+            ParamId::FilterCutoff.default_value()
+        );
+        state.apply_preset(2);
+        assert_eq!(state.preset_index(), 2);
+        assert_eq!(state.track(1).preset, 0, "the other track keeps its preset");
+        assert!(!state.track(0).modified);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.edit_track(), 0);
+        for id in ParamId::ALL.iter().filter(|id| id.is_track()) {
+            assert_eq!(
+                engine.track_param(0, *id),
+                state.track_param(0, *id),
+                "{id:?}"
+            );
+            assert_eq!(
+                engine.track_param(1, *id),
+                state.track_param(1, *id),
+                "{id:?}"
+            );
+        }
+        for id in ParamId::ALL.iter().filter(|id| id.is_global()) {
+            assert_eq!(engine.param(*id), state.param(*id), "{id:?}");
+        }
+        assert_eq!(engine.track_param(1, ParamId::FilterCutoff), 1234.0);
+        assert_eq!(
+            state.track_params[1],
+            {
+                let mut expected = preset_track_params(0);
+                expected[ParamId::FilterCutoff.index()] = 1234.0;
+                expected
+            },
+            "a track's array holds its preset's per-track values only"
+        );
+    }
+
+    #[test]
+    fn note_edits_land_on_the_edit_track_only() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        // The offline engine starts empty: give it the demo bank first.
+        state.resend_all();
+        sync(&mut state, &mut engine);
+        let demo = state.track_notes(0).to_vec();
+        assert_eq!(engine.bank().patterns[0].notes(0), demo.as_slice());
+        state.add_track();
+        assert!(state.edit_notes().is_empty(), "a new track has no notes");
+        assert_eq!(state.track_notes(0), demo.as_slice());
+        assert!(
+            state.pattern().synth.iter().all(|s| s.note.is_none()),
+            "lane rebuilt"
+        );
+
+        state.add_note(Note::new(0, 4, 72, 0.9));
+        state.set_synth_step(4, Some(60), true);
+        assert_eq!(state.edit_notes().len(), 2);
+        assert_eq!(state.pattern().synth[4].note, Some(60));
+        assert_eq!(state.track_notes(0), demo.as_slice(), "track 0 untouched");
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank().patterns[0].notes(1), state.track_notes(1));
+        assert_eq!(engine.bank().patterns[0].notes(0), demo.as_slice());
+
+        // Overdub records into the edit track as well.
+        state.play();
+        state.toggle_arm();
+        state.playhead = Position {
+            step: 8,
+            frac: 0.1,
+            playing: true,
+            ..Position::stopped(0)
+        };
+        state.note_on(67, 1.0);
+        state.note_off(67);
+        assert_eq!(state.pattern().synth[8].note, Some(67));
+        assert_eq!(state.track_notes(0), demo.as_slice());
+
+        // Clearing the lane clears the edit track's notes only.
+        state.clear_synth();
+        assert!(state.edit_notes().is_empty());
+        assert_eq!(state.track_notes(0), demo.as_slice());
+        sync(&mut state, &mut engine);
+        assert!(engine.bank().patterns[0].notes(1).is_empty());
+        assert_eq!(engine.bank().patterns[0].notes(0), demo.as_slice());
+
+        // Selecting track 0 brings its lane back.
+        state.select_track(0);
+        assert_eq!(state.edit_notes(), demo.as_slice());
+        assert_eq!(state.pattern().synth, Pattern::demo().synth);
+    }
+
+    #[test]
+    fn selecting_a_track_releases_held_keys_and_moves_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.add_track();
+        state.select_track(0);
+        state.apply_note_events(&[NoteEvent::On {
+            note: 60,
+            velocity: 0.8,
+        }]);
+        assert!(state.held_notes[60]);
+        let offs_before = state.note_off_count;
+        assert!(state.select_track(1));
+        assert!(!state.held_notes[60], "no key hangs on the old track");
+        assert!(state.note_off_count > offs_before);
+        assert!(state.input.held.is_empty());
+        assert!(!state.select_track(5), "an unused slot cannot be selected");
+        assert_eq!(state.edit_track, 1);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.edit_track(), 1);
+        assert_eq!(engine.active_voices(), 0, "nothing sounds on track 1");
+
+        // Alt+Up / Alt+Down walk the active tracks and wrap.
+        assert!(state.select_adjacent_track(1));
+        assert_eq!(state.edit_track, 0);
+        assert!(state.select_adjacent_track(-1));
+        assert_eq!(state.edit_track, 1);
+        state.remove_track(0);
+        assert!(!state.select_adjacent_track(1), "one track left");
+    }
+
+    #[test]
+    fn duplicate_copies_settings_not_notes() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.apply_preset(3);
+        state.set_param(ParamId::FilterCutoff, 999.0);
+        state.rename_track(0, "Lead");
+        let copy = state.duplicate_track(0).expect("a free slot");
+        assert_eq!(copy, 1);
+        assert_eq!(state.edit_track, 1);
+        assert_eq!(state.track(1).name, "Lead copy");
+        assert_eq!(state.track(1).preset, 3);
+        assert!(state.track(1).modified);
+        assert_eq!(state.track(1).colour, 1, "its own colour");
+        assert_eq!(state.track_params[1], state.track_params[0]);
+        assert!(state.edit_notes().is_empty(), "notes are not cloned");
+        assert!(!state.track_notes(0).is_empty());
+        sync(&mut state, &mut engine);
+        assert!(engine.track_active(1));
+        assert_eq!(engine.track_param(1, ParamId::FilterCutoff), 999.0);
+        assert!(engine.bank().patterns[0].notes(1).is_empty());
+        assert_eq!(state.duplicate_track(7), None, "an unused source");
+        // A long name is cut to the limit.
+        state.rename_track(1, "A name that is far too long");
+        assert_eq!(state.track(1).name.chars().count(), MAX_NAME_LEN);
+        state.duplicate_track(1);
+        assert_eq!(state.track(2).name.chars().count(), MAX_NAME_LEN);
+    }
+
+    #[test]
+    fn remove_track_drops_its_notes_and_undo_brings_them_back() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        let demo = state.track_notes(0).to_vec();
+        assert!(!state.remove_track(0), "the last track stays");
+        assert!(state.status_text().is_some());
+        state.add_track();
+        state.add_note(Note::new(2, 2, 64, 0.7));
+        state.select_pattern(1);
+        state.add_note(Note::new(5, 1, 50, 0.7));
+        state.select_pattern(0);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank().patterns[1].notes(1).len(), 1);
+
+        assert!(state.remove_track(1));
+        assert!(!state.track_active(1));
+        assert_eq!(state.edit_track, 0, "the nearest active track is selected");
+        assert!(state.bank.patterns[0].notes(1).is_empty());
+        assert!(state.bank.patterns[1].notes(1).is_empty());
+        assert_eq!(state.track_params[1], default_params());
+        assert_eq!(
+            state.edit_notes(),
+            demo.as_slice(),
+            "the lane shows track 0 again"
+        );
+        assert_eq!(state.active_track_count(), 1);
+        sync(&mut state, &mut engine);
+        assert!(!engine.track_active(1));
+        assert!(engine.bank().patterns[1].notes(1).is_empty());
+        assert_eq!(engine.edit_track(), 0);
+
+        assert!(state.undo());
+        assert!(state.track_active(1));
+        assert_eq!(
+            state.edit_track, 1,
+            "the selection comes back with the track"
+        );
+        assert_eq!(state.edit_notes(), &[Note::new(2, 2, 64, 0.7)]);
+        assert_eq!(state.bank.patterns[1].notes(1), &[Note::new(5, 1, 50, 0.7)]);
+        sync(&mut state, &mut engine);
+        assert!(engine.track_active(1));
+        assert_eq!(engine.edit_track(), 1);
+        assert_eq!(engine.bank().patterns[0].notes(1), state.track_notes(1));
+        assert_eq!(
+            engine.bank().patterns[1].notes(1),
+            state.bank.patterns[1].notes(1)
+        );
+        assert_eq!(engine.bank(), &state.bank);
+
+        assert!(state.redo());
+        assert!(!state.track_active(1));
+        assert_eq!(state.edit_track, 0);
+        sync(&mut state, &mut engine);
+        assert!(!engine.track_active(1));
+    }
+
+    #[test]
+    fn rename_colour_and_move_are_undo_steps_that_reach_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.resend_all();
+        sync(&mut state, &mut engine);
+        state.undo.clear();
+        assert!(state.rename_track(0, "  Pad  "));
+        assert_eq!(state.track(0).name, "Pad");
+        assert!(!state.rename_track(0, "Pad"), "same name: no edit");
+        assert!(!state.rename_track(0, "   "), "empty: no edit");
+        assert!(!state.rename_track(3, "Ghost"), "unused slot");
+        assert!(state.set_track_colour(0, 9));
+        assert_eq!(state.track(0).colour, 1, "wraps into the swatches");
+        assert!(!state.set_track_colour(0, 1));
+        assert_eq!(state.undo.len(), 2);
+        assert!(state.dirty);
+
+        // Two more tracks; move the last one to the top.
+        state.add_track();
+        state.add_track();
+        state.set_param(ParamId::FilterCutoff, 777.0);
+        state.add_note(Note::new(1, 1, 70, 0.5));
+        state.set_mixer(Channel::from_track(2), ChannelParam::Level, -9.0);
+        assert_eq!(state.edit_track, 2);
+        assert!(!state.move_track(2, false), "already last");
+        assert!(state.move_track(2, true));
+        assert_eq!(state.edit_track, 1, "the selection follows the moved track");
+        assert_eq!(state.param(ParamId::FilterCutoff), 777.0);
+        assert_eq!(state.edit_notes(), &[Note::new(1, 1, 70, 0.5)]);
+        assert_eq!(state.track(1).name, "Track 3");
+        assert_eq!(state.track(2).name, "Track 2");
+        assert_eq!(state.strip(Channel::from_track(1)).level_db, -9.0);
+        assert_eq!(state.strip(Channel::from_track(2)).level_db, 0.0);
+        assert!(state.move_track(1, true));
+        assert_eq!(state.edit_track, 0);
+        assert_eq!(state.track(0).name, "Track 3");
+        assert_eq!(state.track(1).name, "Pad");
+        assert_eq!(state.track(2).name, "Track 2");
+        assert!(!state.move_track(0, true), "already first");
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.edit_track(), 0);
+        assert_eq!(engine.track_param(0, ParamId::FilterCutoff), 777.0);
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(engine.mixer().strip(Channel::from_track(0)).level_db, -9.0);
+
+        // Undo walks the moves back.
+        assert!(state.undo());
+        assert_eq!(state.track(1).name, "Track 3");
+        assert_eq!(state.edit_track, 1);
+        assert!(state.undo());
+        assert_eq!(state.track(2).name, "Track 3");
+        assert_eq!(state.edit_track, 2);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.track_param(2, ParamId::FilterCutoff), 777.0);
+    }
+
+    #[test]
+    fn all_eight_slots_fill_and_the_resend_fits_the_outbox() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        for _ in 1..MAX_TRACKS {
+            assert!(state.add_track().is_some());
+        }
+        assert_eq!(state.add_track(), None, "all slots in use");
+        assert_eq!(state.active_track_count(), MAX_TRACKS);
+        assert_eq!(state.edit_track, 7);
+        state.resend_all();
+        let frames = sync(&mut state, &mut engine);
+        assert!(frames >= 1);
+        for slot in 0..MAX_TRACKS as TrackId {
+            assert!(engine.track_active(slot));
+        }
+        assert_eq!(engine.edit_track(), 7);
+        let messages = track_messages(&state.tracks, &state.track_params, state.edit_track);
+        let track_ids = ParamId::ALL.iter().filter(|id| id.is_track()).count();
+        assert_eq!(messages.len(), MAX_TRACKS + MAX_TRACKS * track_ids + 1);
+        assert_eq!(messages[0], Message::SetTrackActive { track: 0, on: true });
+        assert_eq!(messages[messages.len() - 1], Message::SetEditTrack(7));
+    }
+
+    #[test]
+    fn pattern_messages_replay_every_track_with_notes() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.add_track();
+        state.add_note(Note::new(3, 2, 61, 0.6));
+        let messages = pattern_messages(state.pattern(), 0);
+        assert!(messages.contains(&Message::ClearNotes {
+            pattern: 0,
+            track: 0
+        }));
+        assert!(messages.contains(&Message::ClearNotes {
+            pattern: 0,
+            track: 1
+        }));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, Message::ClearNotes { track: 2..=7, .. })),
+            "empty tracks are not replayed"
+        );
+        let on_track_1 = messages
+            .iter()
+            .filter(|m| matches!(m, Message::SetNote { track: 1, .. }))
+            .count();
+        assert_eq!(on_track_1, 1);
+        assert_eq!(
+            note_messages(state.pattern(), 0, 1),
+            vec![
+                Message::ClearNotes {
+                    pattern: 0,
+                    track: 1
+                },
+                Message::SetNote {
+                    pattern: 0,
+                    track: 1,
+                    index: 0,
+                    note: Note::new(3, 2, 61, 0.6)
+                }
+            ]
+        );
+        // A fresh engine fed the bank holds both tracks' notes.
+        let (mut other, mut fresh) = AppState::headless(ThemeMode::Dark);
+        other.bank = state.bank.clone();
+        other.tracks = state.tracks.clone();
+        other.track_params = state.track_params;
+        other.edit_track = state.edit_track;
+        other.resend_all();
+        sync(&mut other, &mut fresh);
+        assert_eq!(fresh.bank(), &state.bank);
+        // The edits above reached this state's own engine note by note.
+        state.send_bank();
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    #[test]
+    fn preset_helpers_and_track_names() {
+        assert_eq!(preset_params(0)[ParamId::DriveAmount.index()], 0.5);
+        assert!(!track_differs_from_preset(&preset_params(3), 3));
+        assert!(track_differs_from_preset(&default_params(), 0));
+        let mut edited = preset_params(2);
+        edited[ParamId::DelayMix.index()] = 0.9;
+        assert!(
+            !track_differs_from_preset(&edited, 2),
+            "global ids do not count"
+        );
+        edited[ParamId::Glide.index()] += 0.1;
+        assert!(track_differs_from_preset(&edited, 2));
+        assert_eq!(clean_track_name("  Keys "), "Keys");
+        assert_eq!(
+            clean_track_name("ABCDEFGHIJKLMNOPQRSTUV").len(),
+            MAX_NAME_LEN
+        );
+        assert_eq!(TrackUi::inactive(3).name, "Track 4");
+        assert_eq!(TrackUi::fresh(0).name, "Synth");
+        assert!(!TrackUi::inactive(3).active);
+        assert_eq!(TrackUi::fresh(9).colour, 1, "the colour follows the slot");
+        assert_eq!(default_tracks().iter().filter(|t| t.active).count(), 1);
     }
 }

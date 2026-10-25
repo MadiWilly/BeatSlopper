@@ -36,7 +36,7 @@ fn synth_panel_renders_in_both_themes_without_touching_params() {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         let state = render_one(mode, egui::Vec2::new(780.0, 520.0), ui::synth_panel::show);
         assert_eq!(state.mode, mode);
-        assert_eq!(state.preset_index, 0);
+        assert_eq!(state.preset_index(), 0);
         assert_eq!(
             state.params,
             default_params(),
@@ -374,7 +374,7 @@ fn right_clicking_a_step_cell_clears_it() {
     harness.step();
     assert_eq!(harness.state().pattern().synth[4], SynthStep::default());
     assert_eq!(harness.state().selected_step, None);
-    expected.set_synth_step(4, None, false);
+    expected.set_synth_step(0, 4, None, false);
     assert_eq!(harness.state().pattern().clone(), expected);
 
     // Two edits, two undo steps: back to the demo pattern.
@@ -1087,7 +1087,16 @@ fn mixer_panel_renders_in_both_themes_without_editing() {
                 state,
             );
         harness.run_steps(4);
-        for name in ui::mixer::CHANNEL_NAMES {
+        let names: Vec<String> = ui::mixer::visible_channels(harness.state())
+            .into_iter()
+            .map(|c| ui::mixer::channel_name(harness.state(), c))
+            .collect();
+        assert_eq!(
+            names.last().map(String::as_str),
+            Some("Synth"),
+            "one track strip"
+        );
+        for name in names {
             harness.get_by_label(&format!("{name} pan"));
             harness.get_by_label(&format!("{name} delay send"));
             harness.get_by_label(&format!("{name} reverb send"));
@@ -1391,7 +1400,7 @@ fn chord_pills_arm_a_chord_that_a_roll_click_places() {
     );
     // E2 as the root: E2 G#2 B2.
     pointer_click(&mut harness, roll_cell(&model, grid, 2, 40));
-    let notes = harness.state().pattern().notes().to_vec();
+    let notes = harness.state().pattern().notes(0).to_vec();
     let pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
     assert_eq!(pitches, vec![40, 44, 47]);
     assert!(notes.iter().all(|n| n.start == 2 && n.length == 1));
@@ -1404,7 +1413,7 @@ fn chord_pills_arm_a_chord_that_a_roll_click_places() {
     assert_eq!(harness.state().armed_chord, None);
     pointer_click(&mut harness, roll_cell(&model, grid, 5, 50));
     assert_eq!(
-        harness.state().pattern().notes().len(),
+        harness.state().pattern().notes(0).len(),
         4,
         "a plain note again"
     );
@@ -1529,7 +1538,7 @@ fn ctrl_click_marquee_and_group_drag_edit_a_selection_together() {
     pointer_drag(&mut harness, second, roll_cell(&model, grid, 6, 44));
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[
             Note::new(4, 1, 40, 0.8),
             Note::new(6, 1, 44, 0.8),
@@ -1560,18 +1569,18 @@ fn ctrl_click_marquee_and_group_drag_edit_a_selection_together() {
     pointer_release_with(&mut harness, to, Modifiers::COMMAND);
     assert_eq!(harness.state().roll_selection.len(), 3);
     assert_eq!(
-        harness.state().pattern().notes().len(),
+        harness.state().pattern().notes(0).len(),
         3,
         "a marquee adds nothing"
     );
 
     harness.key_press_modifiers(Modifiers::NONE, Key::Delete);
     harness.step();
-    assert!(harness.state().pattern().notes().is_empty());
+    assert!(harness.state().pattern().notes(0).is_empty());
     assert_eq!(harness.state().undo.len(), 2);
     assert!(harness.state().roll_selection.is_empty());
     assert!(harness.state_mut().undo());
-    assert_eq!(harness.state().pattern().notes().len(), 3);
+    assert_eq!(harness.state().pattern().notes(0).len(), 3);
 }
 
 /// The arrow keys nudge the selection by a row or a step; Ctrl+Up / Ctrl+Down move it an
@@ -1584,19 +1593,19 @@ fn arrow_keys_nudge_the_selection_and_ctrl_arrows_shift_an_octave() {
     harness.key_press_modifiers(Modifiers::NONE, Key::ArrowUp);
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes()[0],
+        harness.state().pattern().notes(0)[0],
         Note::new(2, 1, 41, 0.8)
     );
     harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowUp);
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes()[0],
+        harness.state().pattern().notes(0)[0],
         Note::new(2, 1, 53, 0.8)
     );
     harness.key_press_modifiers(Modifiers::NONE, Key::ArrowRight);
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes()[0],
+        harness.state().pattern().notes(0)[0],
         Note::new(3, 1, 53, 0.8)
     );
     assert_eq!(harness.state().undo.len(), 3);
@@ -1609,7 +1618,7 @@ fn arrow_keys_nudge_the_selection_and_ctrl_arrows_shift_an_octave() {
     assert_eq!(harness.state().roll_selection, [0, 2]);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
     harness.step();
-    let notes = harness.state().pattern().notes().to_vec();
+    let notes = harness.state().pattern().notes(0).to_vec();
     assert_eq!(notes[0], Note::new(3, 1, 41, 0.8));
     assert_eq!(
         notes[1],
@@ -1627,7 +1636,7 @@ fn arrow_keys_nudge_the_selection_and_ctrl_arrows_shift_an_octave() {
     }
     // (The list re-sorts by start, so compare by value.)
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[
             Note::new(0, 1, 41, 0.8),
             Note::new(3, 1, 35, 0.8),
@@ -1651,9 +1660,9 @@ fn right_click_and_right_drag_remove_notes() {
     let first = roll_cell(&model, grid, 2, 40);
     secondary_press(&mut harness, first, true);
     secondary_press(&mut harness, first, false);
-    assert_eq!(harness.state().pattern().notes().len(), 2);
+    assert_eq!(harness.state().pattern().notes(0).len(), 2);
     assert_eq!(
-        harness.state().pattern().notes()[0],
+        harness.state().pattern().notes(0)[0],
         Note::new(4, 1, 44, 0.8)
     );
     assert_eq!(harness.state().undo.len(), 1);
@@ -1661,7 +1670,7 @@ fn right_click_and_right_drag_remove_notes() {
     // Right button down on empty space, then across the B2: gone.
     secondary_press(&mut harness, roll_cell(&model, grid, 9, 50), true);
     assert_eq!(
-        harness.state().pattern().notes().len(),
+        harness.state().pattern().notes(0).len(),
         2,
         "empty space: nothing"
     );
@@ -1669,7 +1678,7 @@ fn right_click_and_right_drag_remove_notes() {
     harness.step();
     secondary_press(&mut harness, roll_cell(&model, grid, 6, 47), false);
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[Note::new(4, 1, 44, 0.8)]
     );
     assert_eq!(harness.state().undo.len(), 2);
@@ -1804,7 +1813,7 @@ fn pop_out_pill_moves_the_roll_to_its_own_window_and_dock_returns_it() {
     assert!(model.is_visible(40), "{}", model.pitches);
     pointer_click(&mut harness, roll_cell(&model, grid, 1, 40));
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[Note::new(1, 1, 40, 0.8)]
     );
 
@@ -1852,7 +1861,7 @@ fn held_keys_reach_the_roll_model() {
 #[test]
 fn drawing_on_the_roll_adds_notes_and_double_click_removes_one() {
     let mut harness = roll_harness(ThemeMode::Dark);
-    assert!(harness.state().pattern().notes().is_empty());
+    assert!(harness.state().pattern().notes(0).is_empty());
 
     // Draw C3 from step 3 to step 6 (four steps).
     let (model, grid) = roll_geometry(&harness, harness.state());
@@ -1861,7 +1870,7 @@ fn drawing_on_the_roll_adds_notes_and_double_click_removes_one() {
     pointer_drag(&mut harness, from, to);
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[Note::new(2, 4, 48, 0.8)],
         "the drag drew a four-step C3"
     );
@@ -1875,7 +1884,7 @@ fn drawing_on_the_roll_adds_notes_and_double_click_removes_one() {
     pointer_click(&mut harness, e3);
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[Note::new(2, 4, 48, 0.8), Note::new(2, 1, 52, 0.8)]
     );
     assert_eq!(harness.state().undo.len(), 2);
@@ -1908,7 +1917,7 @@ fn drawing_on_the_roll_adds_notes_and_double_click_removes_one() {
     pointer_click(&mut harness, e3_rect.center());
     harness.step();
     assert_eq!(
-        harness.state().pattern().notes(),
+        harness.state().pattern().notes(0),
         &[Note::new(2, 4, 48, 0.8)],
         "the double-click removed the E3"
     );
@@ -1978,12 +1987,12 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
         Note::new(0, 1, 43, 0.8),
         Note::new(8, 6, 48, 0.8),
     ];
-    assert_eq!(harness.state().state().pattern().notes(), &expected);
+    assert_eq!(harness.state().state().pattern().notes(0), &expected);
     assert_eq!(harness.state().state().undo.len(), 4);
     assert!(harness.state().state().dirty);
     engine.process_messages();
     assert_eq!(
-        engine.pattern().notes(),
+        engine.pattern().notes(0),
         &expected,
         "every edit reached the engine"
     );
@@ -2012,10 +2021,10 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
     // Ctrl+Z takes the long note away, Ctrl+Y brings it back.
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2);
-    assert_eq!(harness.state().state().pattern().notes(), &expected[..3]);
+    assert_eq!(harness.state().state().pattern().notes(0), &expected[..3]);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Y);
     harness.run_steps(2);
-    assert_eq!(harness.state().state().pattern().notes(), &expected);
+    assert_eq!(harness.state().state().pattern().notes(0), &expected);
 
     // Save, start a new project (roll empty), reopen: the notes are back on the roll.
     let path = temp_project_path("roll.beatslopper.json");
@@ -2028,7 +2037,7 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
     assert!(!harness.state().state().dirty);
     harness.state_mut().state_mut().new_project();
     harness.run_steps(2);
-    assert!(harness.state().state().pattern().notes().is_empty());
+    assert!(harness.state().state().pattern().notes(0).is_empty());
     assert!(
         harness
             .state_mut()
@@ -2036,7 +2045,7 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
             .load_project_from(path.clone())
     );
     harness.run_steps(3);
-    assert_eq!(harness.state().state().pattern().notes(), &expected);
+    assert_eq!(harness.state().state().pattern().notes(0), &expected);
     assert_eq!(
         harness.state().state().lane_view,
         app::app::LaneView::Roll,
@@ -2105,12 +2114,12 @@ fn lowest_radio<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kitt
 fn clicking_pluck_sets_the_osc_mode_and_unison_items_map_to_voice_counts() {
     let mut harness = synth_panel_harness(ThemeMode::Dark);
     assert_eq!(harness.state().param(engine::ParamId::OscMode), 0.0);
-    let preset_before = harness.state().preset_index;
+    let preset_before = harness.state().preset_index();
     lowest_radio(&harness, "Pluck").click();
     harness.run_steps(2);
     assert_eq!(harness.state().param(engine::ParamId::OscMode), 1.0);
     assert_eq!(
-        harness.state().preset_index,
+        harness.state().preset_index(),
         preset_before,
         "not the preset"
     );
@@ -2911,4 +2920,315 @@ fn the_recent_tab_lists_saved_projects_and_ctrl_shift_o_cycles_them() {
     harness.get_by_label(ui::recent_panel::EMPTY_LABEL);
     let _ = std::fs::remove_file(a);
     let _ = std::fs::remove_file(b);
+}
+
+// -------------------------------------------------------------------------------------------
+// M10: instrument tracks in the panels.
+
+/// The SYNTH head names the edit track ("Synth · <name>") with its colour chip; adding a
+/// track changes it, and the preset row edits the edit track only.
+#[test]
+fn synth_head_names_the_edit_track_and_follows_add_and_select() {
+    let mut harness = synth_panel_harness(ThemeMode::Dark);
+    harness.get_by_label(&ui::synth_panel::head_title(harness.state()));
+    harness.get_by_label("Synth · Synth");
+    harness.get_by_label(&ui::controls::track_chip_name("Synth"));
+    harness.get_by_label(ui::synth_panel::MODIFIED_LABEL);
+    assert!(harness.query_by_label("Synth · Track 2").is_none());
+
+    harness.state_mut().add_track();
+    harness.run_steps(2);
+    harness.get_by_label("Synth · Track 2");
+    harness.get_by_label("Track 2 colour");
+    assert!(harness.query_by_label("Synth · Synth").is_none());
+    assert_eq!(
+        harness
+            .get_by_label(ui::synth_panel::MODIFIED_LABEL)
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::False),
+        "a fresh track is not modified"
+    );
+
+    // The preset row applies to the edit track (track 2); track 1 keeps its preset.
+    radio(&harness, "Keys").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().track(1).preset, 5);
+    assert_eq!(harness.state().track(0).preset, 0);
+    assert_eq!(harness.state().preset_index(), 5);
+
+    // A knob move lights the MOD lamp; selecting track 1 shows its own state again.
+    harness.state_mut().set_param(engine::ParamId::Glide, 0.4);
+    harness.run_steps(2);
+    assert_eq!(
+        harness
+            .get_by_label(ui::synth_panel::MODIFIED_LABEL)
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    harness.state_mut().select_track(0);
+    harness.run_steps(2);
+    harness.get_by_label("Synth · Synth");
+    assert_eq!(harness.state().preset_index(), 0);
+    assert_eq!(
+        harness
+            .get_by_label(ui::synth_panel::MODIFIED_LABEL)
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::False)
+    );
+    assert_eq!(
+        harness.state().param(engine::ParamId::Glide),
+        engine::ParamId::Glide.default_value()
+    );
+}
+
+/// The FX rack's per-track groups carry the edit track's chip and name; the shared buses
+/// do not. Rendering still edits nothing.
+#[test]
+fn fx_rack_labels_the_insert_groups_with_the_edit_track() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (mut state, _engine) = AppState::headless(mode);
+        state.rename_track(0, "Lead");
+        state.undo.clear();
+        state.dirty = false;
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(ui::fx_rack::WIDTH + 40.0, 900.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::fx_rack::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(4);
+        // DRIVE, LO-FI, CHORUS and SIDECHAIN: one chip each.
+        assert_eq!(harness.get_all_by_label("Lead colour").count(), 4);
+        for group in [
+            "Drive",
+            "Lo-Fi",
+            "Chorus",
+            "Sidechain",
+            "Delay",
+            "Reverb",
+            "Master",
+        ] {
+            harness.get_by_label(group);
+        }
+        let state = harness.into_state();
+        assert_eq!(state.params, default_params());
+        assert!(!state.dirty);
+    }
+}
+
+/// The MIXER shows the five drum strips, one strip per active track (named after the track,
+/// with its colour chip) and the master; an unused slot has no strip, and more strips than
+/// fit the panel scroll instead of overlapping.
+#[test]
+fn mixer_shows_one_strip_per_active_track() {
+    let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+    state.rename_track(0, "Lead");
+    state.add_track();
+    state.rename_track(1, "Pad");
+    state.add_track();
+    let theme = Theme::for_mode(ThemeMode::Dark);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(ui::mixer::WIDTH + 40.0, 420.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::mixer::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(4);
+    for name in ["Lead", "Pad", "Track 3"] {
+        harness.get_by_label(&format!("{name} level"));
+        harness.get_by_label(&format!("{name} pan"));
+        harness.get_by_label(&format!("Mute {name}"));
+        harness.get_by_label(&format!("Solo {name}"));
+        harness.get_by_label(&ui::controls::track_chip_name(name));
+    }
+    assert!(harness.query_by_label("Track 4 level").is_none());
+    assert!(harness.query_by_label("Synth level").is_none(), "renamed");
+    // Five drum meters and three track meters.
+    assert_eq!(harness.get_all_by_label("Level").count(), 8);
+    // Eight strips side by side, each in its own column.
+    let kick = harness.get_by_label("Kick level").rect();
+    let lead = harness.get_by_label("Lead level").rect();
+    let pad = harness.get_by_label("Pad level").rect();
+    let third = harness.get_by_label("Track 3 level").rect();
+    assert!(kick.max.x <= lead.min.x && lead.max.x <= pad.min.x && pad.max.x <= third.min.x);
+    assert_eq!(lead.min.y, kick.min.y, "the same row");
+    assert!(
+        third.max.x > ui::mixer::WIDTH + 40.0,
+        "eight strips overflow the panel: the body scrolls ({third:?})"
+    );
+
+    // Removing a track hides its strip.
+    harness.state_mut().remove_track(1);
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Pad level").is_none());
+    harness.get_by_label("Track 3 level");
+    assert_eq!(harness.get_all_by_label("Level").count(), 7);
+    // And with the default two-track mixer nothing overflows.
+    harness.state_mut().remove_track(2);
+    harness.run_steps(2);
+    assert_eq!(harness.get_all_by_label("Level").count(), 6);
+    let stereo = harness.get_by_label("Stereo level").rect();
+    assert!(stereo.max.x <= ui::mixer::WIDTH + 40.0);
+}
+
+/// The roll draws the other active tracks' notes as ghosts in their colours (both themes):
+/// the ghost helper gets the demo bass line while the empty second track is selected, a
+/// click on a ghost cell draws a note on the edit track, and selecting the first track
+/// turns that note into the ghost.
+#[test]
+fn roll_shows_the_other_tracks_notes_as_ghosts_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (mut state, _engine) = AppState::headless(mode);
+        state.add_track();
+        state.set_lane_view(app::app::LaneView::Roll);
+        state.undo.clear();
+        state.dirty = false;
+        let theme = Theme::for_mode(mode);
+        let ghosts = ui::sequencer::roll_ghosts(&state, &theme);
+        let demo = Pattern::demo();
+        assert_eq!(ghosts.len(), demo.notes(0).len());
+        assert!(ghosts.iter().all(|g| g.colour == theme.track_colour(0)));
+        assert!(ghosts.iter().any(|g| g.start == 0 && g.pitch == 36));
+
+        let ui_theme = theme.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1000.0, 440.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::sequencer::show(ui, state, &ui_theme),
+                state,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Piano roll");
+        harness.get_by_label("Track 2 colour");
+        assert!(harness.state().edit_notes().is_empty());
+        assert!(!harness.state().dirty, "ghosts are not an edit");
+
+        // A press on a ghost's cell draws a note there, on the edit track.
+        let (model, grid) = roll_geometry(&harness, harness.state());
+        assert!(model.is_visible(36));
+        pointer_click(&mut harness, roll_cell(&model, grid, 0, 36));
+        assert_eq!(harness.state().edit_notes().len(), 1);
+        assert_eq!(harness.state().edit_notes()[0].pitch, 36);
+        assert_eq!(
+            harness.state().track_notes(0),
+            demo.notes(0),
+            "the ghosts' track is untouched"
+        );
+        assert_eq!(
+            ui::sequencer::roll_ghosts(harness.state(), &theme).len(),
+            demo.notes(0).len()
+        );
+
+        harness.state_mut().select_track(0);
+        harness.run_steps(2);
+        harness.get_by_label("Synth colour");
+        let ghosts = ui::sequencer::roll_ghosts(harness.state(), &theme);
+        assert_eq!(ghosts.len(), 1);
+        assert_eq!(ghosts[0].colour, theme.track_colour(1));
+        assert_eq!(harness.state().edit_notes(), demo.notes(0));
+    }
+}
+
+/// Ctrl+T adds a track, Ctrl+Shift+D duplicates the edit track, Alt+Up / Alt+Down select
+/// the previous / next track; the synth head and the sequencer head follow, and Ctrl+Z
+/// undoes the structural changes.
+#[test]
+fn track_shortcuts_add_duplicate_and_select_through_the_app() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    harness.get_by_label("Synth · Synth");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::T);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().active_track_count(), 2);
+    assert_eq!(harness.state().state().edit_track, 1);
+    harness.get_by_label("Synth · Track 2");
+    // Ctrl+T is not the piano's T key.
+    assert_eq!(harness.state().state().note_on_count, 0);
+    assert!(harness.state().state().dirty);
+
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::D);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().active_track_count(), 3);
+    assert_eq!(harness.state().state().edit_track, 2);
+    assert_eq!(harness.state().state().track(2).name, "Track 2 copy");
+    harness.get_by_label("Synth · Track 2 copy");
+    // The sequencer head carries the edit track's chip too (the mixer is not shown).
+    assert!(harness.get_all_by_label("Track 2 copy colour").count() >= 2);
+
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().edit_track, 1);
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().edit_track, 0);
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().edit_track, 2, "wraps");
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowDown);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().edit_track, 0);
+    harness.get_by_label("Synth · Synth");
+    // Selecting is not an undo step: Ctrl+Z undoes the duplicate, then the add.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().active_track_count(), 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().active_track_count(), 1);
+    assert_eq!(harness.state().state().edit_track, 0);
+    harness.get_by_label("Synth · Synth");
+}
+
+/// With three tracks in the mixer the top row keeps its height and the whole sequencer,
+/// its head's track tag included, is still visible at the default window size.
+#[test]
+fn whole_sequencer_is_visible_with_three_tracks_in_the_mixer() {
+    let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    app.state_mut().right_panel = app::app::RightPanel::Mixer;
+    app.state_mut().add_track();
+    app.state_mut().add_track();
+    app.state_mut().rename_track(2, "Sixteen chars ok");
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    harness.run_steps(3);
+    harness.get_by_label("Mute Kick");
+    harness.get_by_label("Sixteen chars ok level");
+    let bass = harness.get_by_label("Bass step 16").rect();
+    let octave = harness.get_by_label("Octave").rect();
+    let sequencer_bottom = bass.max.y + ui::sequencer::ROW_GAP + 10.0 + 20.0;
+    let keys_panel_top = octave.min.y - 30.0;
+    assert!(
+        sequencer_bottom <= keys_panel_top,
+        "sequencer ends at {sequencer_bottom} but the KEYS panel starts at {keys_panel_top}"
+    );
+    // The head: the track tag sits after the GRID | ROLL tab and before the right group.
+    let seq = harness.get_by_label("Sequencer").rect();
+    let tag = harness
+        .get_all_by_label("Sixteen chars ok colour")
+        .map(|n| n.rect())
+        .find(|r| r.min.y >= seq.min.y - 1.0 && r.max.y <= seq.max.y + 1.0)
+        .expect("the sequencer head's chip");
+    let rec = harness.get_by_label("Rec").rect();
+    assert!(tag.max.x < rec.min.x, "{tag:?} vs {rec:?}");
+    let roll_tab = radio(&harness, "Roll").rect();
+    assert!(roll_tab.max.x <= tag.min.x);
+    // The mixer's strips stay inside the top row.
+    let synth_level = harness.get_by_label("Synth level").rect();
+    assert!(
+        synth_level.max.y + 30.0 <= seq.min.y,
+        "{synth_level:?} vs {seq:?}"
+    );
 }

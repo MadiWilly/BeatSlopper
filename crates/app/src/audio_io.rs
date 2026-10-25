@@ -135,7 +135,9 @@ where
 ///
 /// Everything it does in [`Renderer::fill`] is allocation-free and panic-free.
 pub struct Renderer {
-    engine: Engine,
+    /// Boxed: the engine is about 50 KiB, so moving it through the stream builder's generic
+    /// layers by value would cost that much stack per copy (the debug build overflowed).
+    engine: Box<Engine>,
     channels: usize,
     max_frames: usize,
     scratch: Vec<f32>,
@@ -147,7 +149,7 @@ impl Renderer {
         let channels = channels.max(1);
         let max_frames = max_frames.max(1);
         Self {
-            engine,
+            engine: Box::new(engine),
             channels,
             max_frames,
             scratch: vec![0.0; max_frames * 2],

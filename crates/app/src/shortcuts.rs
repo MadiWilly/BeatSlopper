@@ -13,6 +13,9 @@
 //! | Ctrl+Shift+O             | open the next RECENT project (QOL)       |
 //! | + / = / Ctrl+Up          | tempo up 1 BPM (QOL)                     |
 //! | - / Ctrl+Down            | tempo down 1 BPM (QOL)                   |
+//! | Ctrl+T                   | add an instrument track (M10)            |
+//! | Ctrl+Shift+D             | duplicate the edit track (M10)           |
+//! | Alt+Up / Alt+Down        | select the previous / next track (M10)   |
 //!
 //! Home (rewind while playing), Escape (deselect / test tone off; twice = panic) and the
 //! Up / Down / PageUp / PageDown note nudges of a selected bass step are handled in
@@ -51,11 +54,20 @@ pub enum Shortcut {
     ToggleArm,
     BpmUp,
     BpmDown,
+    /// Ctrl+Shift+D: clone the edit track (M10). Before `AddTrack` only by convention; no
+    /// plain Ctrl+D exists.
+    DuplicateTrack,
+    /// Ctrl+T: a new track (M10).
+    AddTrack,
+    /// Alt+Up: the previous active track (M10).
+    PrevTrack,
+    /// Alt+Down: the next active track (M10).
+    NextTrack,
 }
 
 impl Shortcut {
     /// Every shortcut, in check order.
-    pub const ALL: [Shortcut; 12] = [
+    pub const ALL: [Shortcut; 16] = [
         Shortcut::SaveAs,
         Shortcut::OpenRecent,
         Shortcut::Redo,
@@ -68,6 +80,10 @@ impl Shortcut {
         Shortcut::ToggleArm,
         Shortcut::BpmUp,
         Shortcut::BpmDown,
+        Shortcut::DuplicateTrack,
+        Shortcut::AddTrack,
+        Shortcut::PrevTrack,
+        Shortcut::NextTrack,
     ];
 
     /// The key combinations that trigger this shortcut.
@@ -94,6 +110,10 @@ impl Shortcut {
                 (Modifiers::NONE, Key::Minus),
                 (Modifiers::COMMAND, Key::ArrowDown),
             ],
+            Shortcut::DuplicateTrack => &[(COMMAND_SHIFT, Key::D)],
+            Shortcut::AddTrack => &[(Modifiers::COMMAND, Key::T)],
+            Shortcut::PrevTrack => &[(Modifiers::ALT, Key::ArrowUp)],
+            Shortcut::NextTrack => &[(Modifiers::ALT, Key::ArrowDown)],
         }
     }
 
@@ -113,6 +133,10 @@ impl Shortcut {
             Shortcut::ToggleArm => "R",
             Shortcut::BpmUp => "+ / Ctrl+Up",
             Shortcut::BpmDown => "- / Ctrl+Down",
+            Shortcut::DuplicateTrack => "Ctrl+Shift+D",
+            Shortcut::AddTrack => "Ctrl+T",
+            Shortcut::PrevTrack => "Alt+Up",
+            Shortcut::NextTrack => "Alt+Down",
         }
     }
 
@@ -268,6 +292,49 @@ mod tests {
         assert!(input.key_pressed(Key::ArrowUp));
         assert!(!Shortcut::OpenRecent.opens_dialog());
         assert!(!Shortcut::BpmUp.opens_dialog());
+    }
+
+    #[test]
+    fn track_shortcuts_add_duplicate_and_select_tracks() {
+        let mut input = input_with(
+            vec![
+                press(Modifiers::COMMAND, Key::T),
+                press(COMMAND_SHIFT, Key::D),
+                press(Modifiers::ALT, Key::ArrowUp),
+                press(Modifiers::ALT, Key::ArrowDown),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            take_shortcuts(&mut input),
+            vec![
+                Shortcut::DuplicateTrack,
+                Shortcut::AddTrack,
+                Shortcut::PrevTrack,
+                Shortcut::NextTrack,
+            ]
+        );
+        assert!(take_shortcuts(&mut input).is_empty(), "consumed");
+        // Plain T is a piano key, plain arrows nudge notes, Ctrl+D is nothing.
+        let mut input = input_with(
+            vec![
+                press(Modifiers::NONE, Key::T),
+                press(Modifiers::NONE, Key::ArrowDown),
+                press(Modifiers::COMMAND, Key::D),
+            ],
+            Modifiers::NONE,
+        );
+        assert!(take_shortcuts(&mut input).is_empty());
+        assert!(input.key_pressed(Key::T));
+        assert!(input.key_pressed(Key::ArrowDown));
+        for shortcut in [
+            Shortcut::AddTrack,
+            Shortcut::DuplicateTrack,
+            Shortcut::PrevTrack,
+            Shortcut::NextTrack,
+        ] {
+            assert!(!shortcut.opens_dialog());
+        }
     }
 
     #[test]

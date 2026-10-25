@@ -52,6 +52,12 @@
 //! `AppState`. The CHORDS column ([`CHORD_COLUMN_WIDTH`], right of the roll) lists
 //! [`CHORDS`] as toggle pills: with one armed, a draw on the roll places the whole chord on
 //! the drawn root ([`AppState::add_chord`], one undo step).
+//!
+//! Instrument tracks (M10): the bass lane and the roll edit the *edit track's* notes
+//! ([`AppState::edit_notes`]); the head shows the edit track's colour chip and name after
+//! the `GRID | ROLL` tab ([`controls::track_tag`]), and the roll draws every other active
+//! track's notes of the pattern as ghosts in their track colours ([`roll_ghosts`],
+//! `neu::piano_roll_with_ghosts`): reference only, never editable.
 
 use egui::{
     Align, Align2, CursorIcon, Layout, Modifiers, Response, Role, ScrollArea, Sense, Ui, Vec2,
@@ -60,8 +66,8 @@ use egui::{
 use engine::pattern::pattern_letter;
 use engine::{DrumRow, Note, PATTERN_COUNT, PatternLength, STEPS};
 use neu::{
-    KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput, RollNote, STEP_CELL,
-    STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
+    GhostNote, KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput, RollNote,
+    STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
 };
 
 use crate::app::{AppState, EditKey, LaneView, queued_blink_visible};
@@ -219,8 +225,27 @@ pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
         held: state.held_notes,
         black_keys: state.roll_black_keys,
     };
-    model.normalise(state.pattern().notes().len());
+    model.normalise(state.edit_notes().len());
     model
+}
+
+/// The other active tracks' notes of the edit pattern as ghosts (M10), each in its track's
+/// colour; every track but the edit track, in slot order. Built per frame.
+#[must_use]
+pub fn roll_ghosts(state: &AppState, theme: &Theme) -> Vec<GhostNote> {
+    state
+        .active_tracks()
+        .filter(|&slot| slot != state.edit_track)
+        .flat_map(|slot| {
+            let colour = theme.track_colour(state.track(slot).colour);
+            state.track_notes(slot).iter().map(move |n| GhostNote {
+                start: n.start,
+                length: n.length,
+                pitch: n.pitch,
+                colour,
+            })
+        })
+        .collect()
 }
 
 /// The roll's selection: [`AppState::roll_selection`] plus the primary
@@ -241,8 +266,7 @@ pub fn roll_selection(state: &AppState) -> Vec<usize> {
 #[must_use]
 pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
     state
-        .pattern()
-        .notes()
+        .edit_notes()
         .iter()
         .enumerate()
         .map(|(i, n)| RollNote {
@@ -269,7 +293,7 @@ pub fn to_note(n: RollNote) -> Note {
 /// note is remembered by value (as the edit leaves it), then found again in the new list.
 pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: PianoRollOutput) {
     state.set_roll_low_pitch(model.low_pitch);
-    let before = state.pattern().notes().to_vec();
+    let before = state.edit_notes().to_vec();
     let mut wanted: Vec<Note> = model
         .selection
         .iter()
@@ -335,7 +359,7 @@ pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: Pian
         }
     }
 
-    let after = state.pattern().notes();
+    let after = state.edit_notes();
     let mut selection: Vec<usize> = wanted
         .iter()
         .filter_map(|w| after.iter().position(|n| n == w))
@@ -529,7 +553,8 @@ fn roll_area(
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let notes = roll_notes(state);
-            let out = neu::piano_roll(ui, theme, &mut model, &notes);
+            let ghosts = roll_ghosts(state, theme);
+            let out = neu::piano_roll_with_ghosts(ui, theme, &mut model, &notes, &ghosts);
             apply_roll_output(state, &model, out);
             // Whole rows only: pad the rest so the handle sits at the same place.
             let rest = height - model.size().y;
@@ -652,7 +677,8 @@ fn roll_window_contents(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let notes = roll_notes(state);
-        let out = neu::piano_roll(ui, theme, &mut model, &notes);
+        let ghosts = roll_ghosts(state, theme);
+        let out = neu::piano_roll_with_ghosts(ui, theme, &mut model, &notes, &ghosts);
         apply_roll_output(state, &model, out);
         ui.add_space(COLUMN_GAP);
         chord_column(ui, state, theme, model.size().y, false);
@@ -760,6 +786,8 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         pattern_tabs(ui, state, theme);
         queued_indicator(ui, state, theme);
         lane_view_tabs(ui, state, theme);
+        // M10: the lane and the roll edit this track.
+        controls::track_tag(ui, state, theme);
         if state.lane_view == LaneView::Roll && state.roll_popped {
             // The roll is in its own window: the pill that brings it back stays reachable.
             if neu::toggle_button(ui, theme, POP_OUT_LABEL, true)

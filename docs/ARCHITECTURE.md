@@ -1045,3 +1045,129 @@ RMS of a 1 s render captured pre-refactor from `tests/fixtures/v6_demo.json`).
   8 active tracks is allocation-free.
 - `tests/fx_m8.rs` insert tests now drive a `SynthInsert`; `tests/fixtures/v6_demo.json` is
   the pre-M10 `Project::default()`.
+
+## M10 as built (app, part 1)
+
+The app compiles against the M10 engine again and exposes the track model in the existing
+panels; the TRACKS panel (`crates/app/src/ui/tracks.rs`, the right-column `Tracks` tab) is
+part 2 and is not here. Everything below lives in `crates/app`.
+
+### State (`app.rs`)
+- `pub struct TrackUi { pub name: String, pub colour: u8, pub active: bool, pub preset:
+  usize, pub modified: bool }` (`Clone`, `PartialEq`, `Eq`, `Debug`): `TrackUi::inactive(slot)`,
+  `TrackUi::fresh(slot)` (active, `engine::track::default_name`, colour = slot % 8, preset 0),
+  `preset_name() -> &'static str`.
+- `AppState.tracks: [TrackUi; MAX_TRACKS]`, `AppState.track_params: [[f32; ParamId::COUNT];
+  MAX_TRACKS]` (only the `ParamId::is_track()` entries are meaningful; the global entries of
+  a track's array stay at their defaults), `AppState.edit_track: TrackId` (always an active
+  slot). `AppState.params` keeps the **global** ids only (its per-track entries stay at the
+  defaults). Helpers: `default_tracks()`, `default_track_params()`, `preset_params(index)`
+  (defaults + preset), `preset_track_params(index)` (defaults + the preset's per-track ids),
+  `track_differs_from_preset(&params, index) -> bool`, `clean_track_name(&str) -> String`
+  (trim, <= `MAX_NAME_LEN` = 16 chars).
+- Reads: `param(id)` (the edit track's value for a per-track id, else the global),
+  `track_param(slot, id)`, `track(slot) -> &TrackUi`, `edit_track_ui() -> &TrackUi`,
+  `active_tracks() -> impl Iterator<Item = TrackId>` (slot order), `active_track_count()`,
+  `track_active(slot)`, `free_track_slot() -> Option<TrackId>`,
+  `nearest_active_track(slot) -> Option<TrackId>`, `edit_notes() -> &[Note]` (the edit
+  track's notes of the edit pattern), `track_notes(slot) -> &[Note]`, `preset_index()` (the
+  edit track's preset), `preset_name()`, `preset_modified()`.
+- Writes: `set_param(id, v)` sends `SetTrackParam { track: edit_track, .. }` for a per-track
+  id (a real change sets `tracks[edit].modified`) and `SetParam` for a global id;
+  `apply_preset(index)` applies to the edit track (its per-track ids = defaults + preset, its
+  `preset` set, `modified` cleared) and resets the globals as before M10 (presets carry
+  reverb / delay values), sending one message per id. `resend_track_params(slot)`;
+  `resend_all_params()` = every global `SetParam` + every active track's `SetTrackParam`s;
+  `resend_all()` sends `SetTrackActive` for all eight slots first (off drops that slot's
+  notes in the engine, so this precedes the bank), then the params, `SetEditTrack`, bpm,
+  swing, mixer (78 values), EQ, reverb, bank. `track_messages(&tracks, &track_params,
+  edit_track) -> Vec<Message>` is the pure form (tests count with it).
+- Track operations (the TRACKS panel calls these; all but `select_track` are one undo step
+  and mark the project dirty):
+  - `add_track() -> Option<TrackId>`: first unused slot, `TrackUi::fresh`, params =
+    `preset_track_params(0)`, `SetTrackActive` on + its params, then selected. `None` with a
+    status line when all eight slots are used.
+  - `duplicate_track(from) -> Option<TrackId>`: settings, preset and modified marker into the
+    first unused slot as `"<name> copy"` (cut to 16 chars), colour = slot, `SetTrackActive`
+    on + `CopyTrack`, selected; notes are not cloned. `None` for an unused source or no room.
+  - `remove_track(slot) -> bool`: refuses the last active track (status line); clears the
+    slot's notes in every pattern mirror and the clipboard, resets its params, sends
+    `SetTrackActive` off; if it was the edit track the nearest active slot is selected.
+  - `rename_track(slot, &str) -> bool` (trimmed, <= 16 chars; empty / same / unused = no
+    edit), `set_track_colour(slot, colour) -> bool` (wraps mod 8).
+  - `select_track(slot) -> bool` (view state, no undo step): releases held keys
+    (`release_held_notes`), drops the bass and roll selections, `rebuild_lanes()`, sends
+    `SetEditTrack`. `select_adjacent_track(delta: i32) -> bool` walks the active tracks in
+    slot order and wraps (Alt+Up = -1, Alt+Down = 1).
+  - `move_track(slot, up: bool) -> bool`: swaps with the nearest *active* slot in that
+    direction (mirrors, params, notes in every pattern and the clipboard, mixer strips),
+    the selection follows the moved track, sends `SwapTracks`.
+  - `rebuild_lanes()` (every pattern's and the clipboard's lane for the edit track),
+    `release_held_notes()`.
+- Notes: every note edit (`add_note`, `set_note`, `remove_note`, `clear_notes`, `move_notes`,
+  `remove_notes`, `add_chord`, `set_synth_step`, `clear_synth`, drag-paint, overdub, the
+  click-then-key entry) addresses `edit_track`; `note_messages(pattern, index, track)`
+  replays one track (`ClearNotes { pattern, track }` + `SetNote { track, .. }`), and
+  `pattern_messages` replays every track that holds notes after `ClearPattern` (which
+  empties all tracks in the engine). `paste_pattern` / `set_pattern` rebuild the lane.
+- Undo: `Snapshot` (`undo.rs`) gained `tracks`, `track_params` and `edit_track`, and its
+  `bank` is boxed (`Box<Bank>`, 40 KiB); `restore` puts the mirrors back, moves the
+  selection to the snapshot's edit track (or the first active slot), rebuilds the lanes and
+  `resend_all`s. `apply_project` releases held keys and rebuilds the lanes too.
+- Project (`project.rs`): `build_project` writes the global ids into `params` and one
+  `TrackState` per active slot (`track_state(slot)`: name, colour, the preset *name* even
+  when modified, every per-track id); `apply_project` loads the globals, every listed active
+  slot (preset found by name, else by matching the parameters against the presets, else 0;
+  `modified` = the per-track ids differ from that preset's), switches unlisted slots off
+  (and drops their notes from the bank mirror), keeps one active track at least, and selects
+  the first active slot. The persisted `preset_index` (eframe storage) is still re-applied at
+  startup, to track 0.
+- Shortcuts (`shortcuts.rs`): `Shortcut::AddTrack` (Ctrl+T), `DuplicateTrack`
+  (Ctrl+Shift+D), `PrevTrack` (Alt+Up), `NextTrack` (Alt+Down); `BeatSlopperApp::run_shortcut`
+  dispatches them to `add_track`, `duplicate_track(edit_track)`, `select_adjacent_track`.
+  Suppressed while a text field has focus like every other shortcut.
+- Stack: `app::new_engine(sample_rate)` builds the engine on a helper thread with
+  `ENGINE_BUILD_STACK` (16 MiB): `engine::new_engine` builds its `[Track; 8]` on the stack
+  before boxing it, which the debug build's main thread (1 MiB, already deep in the event
+  loop) could not hold once the bank grew to 40 KiB. `BeatSlopperApp.state` is boxed, the
+  audio `Renderer` boxes its engine, `ExportJob::spawn` takes a `Box<Project>` and the export
+  thread gets the same stack size. `--smoke-test` passes in debug again.
+
+### Panels
+- SYNTH (`ui/synth_panel.rs`): the head is the edit track's colour chip
+  (`controls::track_chip`, 10 pt, accessible as `"<name> colour"`) and the title
+  `head_title(state)` = `"Synth · <name>"`; flush right the preset selector (the edit track's
+  preset; a click applies to it) and the `MODIFIED_LABEL` (`"Modified"`) lamp
+  (`preset_modified()`).
+- FX rack (`ui/fx_rack.rs`): DRIVE, LO-FI, CHORUS and SIDECHAIN (the `is_synth_insert` ids)
+  use `track_group_head`: the caps label plus `controls::track_tag` (chip + name, tooltip
+  "Edits track <name> ..."); DELAY, REVERB and MASTER are unchanged.
+- MIXER (`ui/mixer.rs`): `visible_channels(state)` = the five drum channels then the active
+  tracks' channels in slot order; strips are laid out inside a horizontal `ScrollArea`
+  (`strips_width(count, strip_width)`, scrolls once wider than the panel; the default six
+  strips plus master fill it exactly). A track strip's fader label and accessible names use
+  the track's name (`channel_name(state, channel)`, `strip_label`, `control_name(state,
+  channel, param)`), and its colour chip sits in the M / S column above the fader
+  (`CHIP_RISE`). `DRUM_STRIP_LABELS` / `DRUM_CHANNEL_NAMES` replace the old 6-entry arrays.
+- SEQUENCER (`ui/sequencer.rs`): the head shows `controls::track_tag` after the `GRID | ROLL`
+  tab; the bass lane and the roll edit `edit_notes()`; `roll_ghosts(state, theme) ->
+  Vec<GhostNote>` builds every other active track's notes in their colours per frame and
+  both roll sites call `neu::piano_roll_with_ghosts`. `qol::row_channel(row, edit_track)`
+  maps the bass lane to `Channel::from_track(edit_track)` for the label's mute / solo.
+- `controls.rs`: `TRACK_CHIP` (10), `TRACK_CHIP_GAP` (6), `track_chip_name(name)`,
+  `track_chip(ui, theme, colour, name)`, `track_tag(ui, state, theme)`.
+
+### Tests
+- `app.rs`: routing of `set_param` to the edit track, note edits per track (overdub included),
+  select releases held keys, duplicate copies settings only, remove + undo restores the notes
+  on both sides, rename / colour / move with undo, all eight slots, `pattern_messages` per
+  track, the preset helpers. `project.rs`: a two-track project through build / apply, a file
+  and undo, plus a v6 file into track 0. `shortcuts.rs`: the four new bindings.
+  `ui/mixer.rs`: names and visible channels.
+- `tests/ui_renders.rs`: the SYNTH head follows add / select and the preset row edits the
+  edit track (MODIFIED lamp state via accesskit), the FX rack's four chips, the mixer's one
+  strip per active track (overflow scrolls, removal hides), ghosts in both themes (a click on
+  a ghost cell draws on the edit track), the track shortcuts through the app harness, and
+  the 1280 x 1140 whole-sequencer visibility with three tracks in the mixer.
+- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (app 258, engine 379 + 1 ignored, neu 118), `--smoke-test` ok.

@@ -18,9 +18,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
-use engine::{ExportStats, ParamId, Project};
+use engine::track::track_index;
+use engine::{ExportStats, MAX_TRACKS, ParamId, Project, TrackId, TrackState};
 
-use crate::app::{AppState, EXPORT_REPEATS, PendingAction};
+use crate::app::{
+    AppState, EXPORT_REPEATS, PendingAction, TrackUi, default_params, track_differs_from_preset,
+};
 
 /// Default file name offered by the Save As dialog.
 pub const DEFAULT_PROJECT_FILE: &str = "beat.beatslopper.json";
@@ -59,12 +62,15 @@ pub struct ExportJob {
 }
 
 impl ExportJob {
-    /// Spawns the worker: renders `kind` of `project` at `sample_rate` to `path`.
-    pub fn spawn(project: Project, kind: ExportKind, sample_rate: f32, path: PathBuf) -> Self {
+    /// Spawns the worker: renders `kind` of `project` at `sample_rate` to `path`. The project
+    /// comes boxed (40 KiB) so the move into the worker thread is pointer-sized.
+    pub fn spawn(project: Box<Project>, kind: ExportKind, sample_rate: f32, path: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let target = path.clone();
         let handle = std::thread::Builder::new()
             .name("beatslopper-export".into())
+            // The offline engine is built on this thread (see `app::new_engine`).
+            .stack_size(crate::app::ENGINE_BUILD_STACK)
             .spawn(move || {
                 let result = match kind {
                     ExportKind::Loop { repeats } => {
@@ -137,9 +143,15 @@ impl AppState {
     #[must_use]
     #[allow(clippy::needless_update)]
     pub fn build_project(&self) -> Project {
+        // M10: the global ids only; the per-track ids travel in `tracks`.
         let params = ParamId::ALL
             .iter()
+            .filter(|id| id.is_global())
             .map(|&id| (id.key().to_owned(), self.param(id)))
+            .collect();
+        let tracks = self
+            .active_tracks()
+            .map(|slot| self.track_state(slot))
             .collect();
         Project {
             version: engine::project::FORMAT_VERSION,
@@ -150,10 +162,50 @@ impl AppState {
             mixer: self.mixer,
             eq: self.eq,
             reverb: self.reverb,
-            preset_index: self.preset_index,
+            tracks,
             octave: self.input.octave,
             velocity: self.input.velocity,
             ..Project::default()
+        }
+    }
+
+    /// Track `slot` as the project file stores it: name, colour, active flag, the preset's
+    /// name (kept even when the track was modified since, so the highlight survives a
+    /// reload; the modified marker is derived from the parameters on load) and every
+    /// per-track parameter.
+    #[must_use]
+    pub fn track_state(&self, slot: TrackId) -> TrackState {
+        let t = track_index(slot);
+        let ui = &self.tracks[t];
+        let mut state = TrackState::new(t as TrackId);
+        state.name = ui.name.clone();
+        state.colour = ui.colour;
+        state.active = ui.active;
+        state.preset = ui.preset_name().to_owned();
+        for &id in ParamId::ALL {
+            if id.is_track() {
+                state.set_param(id, self.track_params[t][id.index()]);
+            }
+        }
+        state
+    }
+
+    /// The UI mirror of a loaded track entry: the preset is found by name (else by matching
+    /// the parameters against every preset, else preset 0) and the modified marker is set
+    /// when the parameters differ from that preset's.
+    fn track_ui_from_state(state: &TrackState, params: &[f32; ParamId::COUNT]) -> TrackUi {
+        let by_name = crate::presets::ALL
+            .iter()
+            .position(|preset| preset.name == state.preset);
+        let by_params =
+            || (0..crate::presets::ALL.len()).find(|&i| !track_differs_from_preset(params, i));
+        let preset = by_name.or_else(by_params).unwrap_or(0);
+        TrackUi {
+            name: crate::app::clean_track_name(&state.name),
+            colour: state.colour % engine::track::COLOUR_COUNT,
+            active: true,
+            preset,
+            modified: track_differs_from_preset(params, preset),
         }
     }
 
@@ -174,12 +226,47 @@ impl AppState {
         } else {
             0.0
         };
-        self.preset_index = project
-            .preset_index
-            .min(crate::presets::ALL.len().saturating_sub(1));
+        // M10: the globals from `params`, every track slot from `tracks` (an unlisted or
+        // inactive slot is switched off and loses any notes the file held for it).
         for &id in ParamId::ALL {
-            self.params[id.index()] = id.clamp(project.param(id));
+            self.params[id.index()] = if id.is_global() {
+                id.clamp(project.param(id))
+            } else {
+                id.default_value()
+            };
         }
+        self.bank = project.bank.clone();
+        self.bank.normalise();
+        for slot in 0..MAX_TRACKS {
+            match project.track(slot as TrackId).filter(|s| s.active) {
+                Some(state) => {
+                    let mut params = default_params();
+                    for &id in ParamId::ALL {
+                        if id.is_track() {
+                            params[id.index()] = id.clamp(state.param(id));
+                        }
+                    }
+                    self.tracks[slot] = Self::track_ui_from_state(state, &params);
+                    self.track_params[slot] = params;
+                }
+                None => {
+                    self.tracks[slot] = TrackUi::inactive(slot as TrackId);
+                    self.track_params[slot] = default_params();
+                    for pattern in &mut self.bank.patterns {
+                        pattern.clear_notes(slot as TrackId);
+                    }
+                }
+            }
+        }
+        if self.active_track_count() == 0 {
+            // A file listing no track at all: keep the invariant of one active track.
+            self.tracks[0] = TrackUi::fresh(0);
+        }
+        let first = self.active_tracks().next().unwrap_or(0);
+        self.edit_track = first;
+        self.release_held_notes();
+        self.rebuild_lanes();
+        self.clear_roll_selection();
         self.input.set_octave(project.octave);
         self.input.set_velocity(project.velocity);
         // M6: the mixer (a v3 file has none and loads with the defaults).
@@ -194,8 +281,6 @@ impl AppState {
         self.params[ParamId::ReverbSize.index()] = self.reverb.size;
         self.params[ParamId::ReverbDamping.index()] = self.reverb.damping;
         self.params[ParamId::ReverbMix.index()] = self.reverb.mix;
-        self.bank = project.bank.clone();
-        self.bank.normalise();
         self.selected_step = None;
         self.shown_bar = 0;
         self.song_selected = (self.bank.chain_len > 0).then_some(0);
@@ -331,7 +416,8 @@ impl AppState {
         if let ExportKind::Loop { repeats } = kind {
             self.export_repeats = repeats;
         }
-        let job = ExportJob::spawn(self.build_project(), kind, self.sample_rate(), path);
+        let project = Box::new(self.build_project());
+        let job = ExportJob::spawn(project, kind, self.sample_rate(), path);
         self.export_job = Some(job);
         true
     }
@@ -425,7 +511,7 @@ mod tests {
         loaded.apply_project(&back);
         assert_eq!(loaded.bpm, 133.0);
         assert_eq!(loaded.swing, 0.3);
-        assert_eq!(loaded.preset_index, 3);
+        assert_eq!(loaded.preset_index(), 3);
         assert_eq!(loaded.params, state.params);
         assert_eq!(loaded.bank, state.bank);
         assert_eq!(loaded.current(), 1);
@@ -718,7 +804,7 @@ mod tests {
         state.add_note(Note::new(0, 4, 52, 0.8));
         state.add_note(Note::new(0, 4, 55, 1.0));
         state.add_note(Note::new(8, 6, 43, 0.8));
-        let notes = state.pattern().notes().to_vec();
+        let notes = state.pattern().notes(0).to_vec();
         assert_eq!(notes.len(), 4);
 
         let project = state.build_project();
@@ -732,7 +818,7 @@ mod tests {
         assert!(state.save_project_to(path.clone()));
         let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
         assert!(loaded.load_project_from(path.clone()));
-        assert_eq!(loaded.pattern().notes(), notes.as_slice());
+        assert_eq!(loaded.pattern().notes(0), notes.as_slice());
         assert_eq!(loaded.bank, state.bank);
         assert_eq!(loaded.roll_selected, None);
         while !loaded.outbox.is_empty() {
@@ -741,7 +827,7 @@ mod tests {
         }
         engine.process_messages();
         assert_eq!(
-            engine.pattern().notes(),
+            engine.pattern().notes(0),
             notes.as_slice(),
             "the load resent the notes"
         );
@@ -759,7 +845,7 @@ mod tests {
         loaded.apply_project(&old);
         assert_eq!(loaded.bpm, 110.0);
         assert_eq!(
-            loaded.pattern().notes(),
+            loaded.pattern().notes(0),
             &[Note::step(0, 36, false), Note::step(2, 43, true)]
         );
         assert_eq!(loaded.pattern().synth[2].note, Some(43));
@@ -772,5 +858,120 @@ mod tests {
             file_label(Path::new("C:/songs/beat.beatslopper.json")),
             "beat.beatslopper.json"
         );
+    }
+
+    /// M10: two tracks with their own presets, names, colours and notes survive build /
+    /// apply and a file; a removed slot stays removed and the edit track lands on the first
+    /// active one.
+    #[test]
+    fn two_tracks_round_trip_through_build_and_apply() {
+        use engine::Note;
+
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.apply_preset(1);
+        state.rename_track(0, "Sub");
+        let second = state.add_track().unwrap();
+        state.apply_preset(4);
+        state.set_param(ParamId::FilterCutoff, 2222.0);
+        state.rename_track(second, "Pad");
+        state.set_track_colour(second, 5);
+        state.add_note(Note::new(0, 8, 64, 0.7));
+        state.add_note(Note::new(0, 8, 67, 0.7));
+        state.set_mixer(
+            engine::Channel::from_track(second),
+            engine::ChannelParam::Pan,
+            -0.3,
+        );
+        let demo = state.track_notes(0).to_vec();
+
+        let project = state.build_project();
+        assert_eq!(project.version, engine::project::FORMAT_VERSION);
+        assert_eq!(project.tracks.len(), 2);
+        assert_eq!(project.tracks[0].name, "Sub");
+        assert_eq!(project.tracks[0].preset, "Sub");
+        assert_eq!(project.tracks[1].name, "Pad");
+        assert_eq!(project.tracks[1].colour, 5);
+        assert_eq!(project.tracks[1].preset, "Pad", "kept although modified");
+        assert_eq!(project.track_param(1, ParamId::FilterCutoff), 2222.0);
+        assert!(
+            project
+                .params
+                .keys()
+                .all(|k| ParamId::from_key(k).is_some_and(ParamId::is_global)),
+            "per-track ids travel in `tracks`"
+        );
+        assert_eq!(project.bank.patterns[0].notes(1).len(), 2);
+        let json = project.to_json_pretty();
+        assert!(json.contains("\"Pad\""));
+        let back = Project::from_json(&json).unwrap();
+        assert_eq!(back, project);
+
+        let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
+        loaded.add_track();
+        loaded.add_track(); // slot 2, which the file does not list
+        loaded.add_note(Note::new(1, 1, 40, 0.5));
+        loaded.apply_project(&back);
+        assert_eq!(loaded.active_track_count(), 2);
+        assert!(!loaded.track_active(2), "an unlisted slot is switched off");
+        assert!(loaded.bank.patterns[0].notes(2).is_empty());
+        assert_eq!(loaded.edit_track, 0, "the first active track");
+        assert_eq!(loaded.track(0).name, "Sub");
+        assert_eq!(loaded.track(0).preset, 1);
+        assert!(!loaded.track(0).modified);
+        assert_eq!(loaded.track(1).name, "Pad");
+        assert_eq!(loaded.track(1).colour, 5);
+        assert_eq!(loaded.track(1).preset, 4);
+        assert!(
+            loaded.track(1).modified,
+            "the cutoff moved since the preset"
+        );
+        assert_eq!(loaded.track_params, state.track_params);
+        assert_eq!(loaded.tracks, state.tracks);
+        assert_eq!(loaded.bank, state.bank);
+        assert_eq!(loaded.edit_notes(), demo.as_slice());
+        assert_eq!(loaded.track_notes(1).len(), 2);
+        assert_eq!(loaded.mixer, state.mixer);
+        assert_eq!(loaded.build_project(), project);
+        while !loaded.outbox.is_empty() {
+            engine.process_messages();
+            loaded.flush_outbox();
+        }
+        engine.process_messages();
+        assert!(engine.track_active(0) && engine.track_active(1));
+        assert!(!engine.track_active(2));
+        assert_eq!(engine.edit_track(), 0);
+        assert_eq!(engine.track_param(1, ParamId::FilterCutoff), 2222.0);
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.mixer(), &state.mixer);
+
+        // Through a file as well; undoing the open brings the three-track state back.
+        let path = temp_path("tracks.beatslopper.json");
+        assert!(state.save_project_to(path.clone()));
+        let (mut from_file, _engine) = AppState::headless(ThemeMode::Dark);
+        from_file.add_track();
+        from_file.add_track();
+        assert!(from_file.load_project_from(path.clone()));
+        assert_eq!(from_file.tracks, state.tracks);
+        assert_eq!(from_file.bank, state.bank);
+        assert!(from_file.undo());
+        assert_eq!(from_file.active_track_count(), 3);
+        assert_eq!(from_file.edit_track, 2);
+        let _ = std::fs::remove_file(path);
+
+        // A v6 file: its synth params, preset index and notes become track 0 "Synth".
+        let v6_text = r#"{
+            "version": 6, "bpm": 100.0, "preset_index": 2,
+            "params": { "filter_cutoff": 500.0, "delay_mix": 0.3 },
+            "bank": { "patterns": [ { "length": 16, "notes": [
+                { "start": 0, "length": 2, "pitch": 40, "velocity": 0.9 } ] } ] }
+        }"#;
+        let old = Project::from_json(v6_text).unwrap();
+        loaded.apply_project(&old);
+        assert_eq!(loaded.active_track_count(), 1);
+        assert_eq!(loaded.track(0).name, "Synth");
+        assert_eq!(loaded.track(0).preset, 2);
+        assert_eq!(loaded.param(ParamId::FilterCutoff), 500.0);
+        assert_eq!(loaded.param(ParamId::DelayMix), 0.3);
+        assert_eq!(loaded.edit_notes(), &[Note::new(0, 2, 40, 0.9)]);
     }
 }

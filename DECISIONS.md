@@ -301,3 +301,13 @@ list of them, modelled on how FL Studio and Ableton Live do it. The model and th
 - `Project.tracks` missing means one default "Synth" track; an explicit empty list means none.
 - The engine's eight tracks are boxed once at construction (real-time safe) so `Engine` stays
   movable by value.
+
+## 2026-10-25: M10 app (part 1): engine built off the main thread
+The debug app overflowed the main thread's 1 MiB stack at startup once the engine carried
+eight tracks (`new_engine` builds `[Track; 8]` on the stack before boxing, under eframe's
+event-loop frames); tests never saw it (2 MiB test threads). The app builds the engine on a
+helper thread with a 16 MiB stack (`app::new_engine`), boxes the app state and the audio
+renderer's engine, and gives the export thread the same stack. The engine is unchanged (a
+later clean-up could construct the tracks in place). `select_track` is view state, not an
+undo step, but `edit_track` is in the snapshot so undoing a track operation restores the
+selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, not modified).

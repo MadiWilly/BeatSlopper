@@ -449,6 +449,49 @@ pub fn right_panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title:
     });
 }
 
+/// Diameter of a track colour chip (M10).
+pub const TRACK_CHIP: f32 = 10.0;
+/// Gap between a track chip and the name beside it.
+pub const TRACK_CHIP_GAP: f32 = 6.0;
+
+/// Accessible name of a track's colour chip: `"Synth colour"`.
+#[must_use]
+pub fn track_chip_name(name: &str) -> String {
+    format!("{name} colour")
+}
+
+/// A [`TRACK_CHIP`]-wide filled circle in `theme.track_colour(colour)` (M10), vertically
+/// centred on the current row; accessible as [`track_chip_name`], its tooltip the track
+/// name.
+pub fn track_chip(ui: &mut Ui, theme: &Theme, colour: u8, name: &str) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(TRACK_CHIP, TRACK_CHIP), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .circle_filled(rect.center(), TRACK_CHIP * 0.5, theme.track_colour(colour));
+    }
+    let label = track_chip_name(name);
+    let response = response.on_hover_text(name.to_owned());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), &label));
+    response
+}
+
+/// The edit track's tag (M10): its colour chip and its name as a caps label, with a tooltip
+/// saying that the group beside it edits that track. Used by the FX rack's per-track groups
+/// and the SEQUENCER head.
+pub fn track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) -> Response {
+    let track = state.edit_track_ui();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = TRACK_CHIP_GAP;
+        track_chip(ui, theme, track.colour, &track.name);
+        neu::label(ui, theme, &track.name).on_hover_text(format!(
+            "Edits track {} (Alt+Up / Alt+Down select another track)",
+            track.name
+        ))
+    })
+    .inner
+}
+
 /// Pushes `add`'s contents to the right edge of a horizontal `ui`, using the width they had
 /// last frame (egui's right-to-left layouts put nested groups at the far left, so measuring
 /// is the reliable way). The first frame lays them out flush left; the next one is right.

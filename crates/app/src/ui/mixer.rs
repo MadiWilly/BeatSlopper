@@ -1,11 +1,14 @@
-//! MIXER panel (M6): six channel strips and a master column in the FX rack's slot.
+//! MIXER panel (M6): the channel strips and a master column in the FX rack's slot.
 //!
 //! The panel shares the FX rack's head (`controls::right_panel_head`: the title and the
 //! `FX | Mixer` tab) and its [`WIDTH`]; the body is laid out by hand from a fixed origin so
 //! every strip has the same geometry and the whole thing fits the top row (the SYNTH panel's
 //! ~370 pt) without scrolling at the 1280 x 1140 design size:
 //!
-//! - six strips of [`STRIP_WIDTH`] (64) pt, no gap: a stack of three unlabelled `Sm` knobs
+//! - the five drum strips, then one strip per *active* instrument track (M10:
+//!   [`visible_channels`]; an unused slot's strip is hidden), each [`STRIP_WIDTH`] (64) pt,
+//!   no gap, inside a horizontal `ScrollArea` that only scrolls once the strips and the
+//!   master column are wider than the panel: a stack of three unlabelled `Sm` knobs
 //!   (PAN bipolar, then the DELAY and REVERB sends) centred over the fader column, then the
 //!   [`neu::fader`] (level in dB, value above, the channel's caps name below) in its 36 pt
 //!   column with the 6x140 [`neu::meter`] painted in the column's right margin beside the
@@ -17,16 +20,20 @@
 //!   [`neu::stereo_meter`] down to the faders' bottom.
 //!
 //! The knobs give the strip their accessible names ("Kick pan", "Kick delay send", "Kick
-//! reverb send", "Kick level", "Mute Kick", "Solo Kick") so tests and screen readers can
-//! address them. Every value goes through [`AppState::edit_mixer`] (clamp, mirror,
-//! `Message::SetMixer`, undo: one step per knob drag, one per M / S click); the meters read
-//! [`AppState::shown_meters`], the engine's block peaks decayed by `AppState::update_meters`.
+//! reverb send", "Kick level", "Mute Kick", "Solo Kick"; a track strip uses the track's
+//! name, so the default track reads "Synth level") so tests and screen readers can address
+//! them. A track strip carries the track's colour chip above its fader, in the M / S column
+//! ([`controls::track_chip`]), and its name as the fader label. Every value goes through
+//! [`AppState::edit_mixer`] (clamp, mirror, `Message::SetMixer`, undo: one step per knob
+//! drag, one per M / S click); the meters read [`AppState::shown_meters`], the engine's block
+//! peaks decayed by `AppState::update_meters`.
 
 use egui::{
-    Align, InnerResponse, Layout, Pos2, Rect, Response, Role, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Align, InnerResponse, Layout, Pos2, Rect, Response, Role, ScrollArea, Sense, Ui, UiBuilder,
+    WidgetInfo, pos2, vec2,
 };
 use engine::mixer::{MAX_LEVEL_DB, MIN_LEVEL_DB};
-use engine::{Channel, ChannelParam, ParamId};
+use engine::{Channel, ChannelParam, DrumRow, ParamId};
 use neu::slider::SliderSpec;
 use neu::{KnobSize, KnobSpec, METER_TRACK, SLIDER_WIDTH, STEREO_METER_SIZE, TOGGLE_SQUARE, Theme};
 
@@ -56,12 +63,16 @@ pub const MASTER_DROP: f32 = 16.0;
 /// Distance from the fader track's centre line to the meter's left edge (half the 14 pt
 /// thumb plus 2 pt, leaving 3 pt to the next strip's M / S column).
 pub const METER_OFFSET: f32 = 9.0;
-/// Caps labels under the faders, in [`Channel::ALL`] order.
-pub const STRIP_LABELS: [&str; Channel::COUNT] =
-    ["Kick", "Snare", "Clap", "C.Hat", "O.Hat", "Synth"];
-/// Accessible channel names, in [`Channel::ALL`] order.
-pub const CHANNEL_NAMES: [&str; Channel::COUNT] =
-    ["Kick", "Snare", "Clap", "Closed hat", "Open hat", "Synth"];
+/// Caps labels under the drum faders, in [`DrumRow::ALL`] order (a track strip's label is
+/// the track's name).
+pub const DRUM_STRIP_LABELS: [&str; DrumRow::COUNT] = ["Kick", "Snare", "Clap", "C.Hat", "O.Hat"];
+/// Accessible drum channel names, in [`DrumRow::ALL`] order (a track channel is named after
+/// the track).
+pub const DRUM_CHANNEL_NAMES: [&str; DrumRow::COUNT] =
+    ["Kick", "Snare", "Clap", "Closed hat", "Open hat"];
+/// How far above the fader track a track strip's colour chip sits (its centre, in the
+/// M / S column).
+pub const CHIP_RISE: f32 = 10.0;
 /// Legends of the three knob rows (master column), top to bottom.
 pub const KNOB_LEGENDS: [&str; 3] = ["Pan", "Dly", "Rev"];
 /// Tooltips of [`KNOB_LEGENDS`]: the sends are per-channel amounts *into* a bus; the bus's
@@ -122,16 +133,42 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// Accessible name of `channel` ("Closed hat").
+/// The strips the panel shows, left to right: the five drum channels, then the channel of
+/// every active track in slot order (M10).
 #[must_use]
-pub fn channel_name(channel: Channel) -> &'static str {
-    CHANNEL_NAMES[channel.index()]
+pub fn visible_channels(state: &AppState) -> Vec<Channel> {
+    Channel::ALL
+        .iter()
+        .copied()
+        .filter(|channel| match channel.track() {
+            Some(slot) => state.track_active(slot),
+            None => true,
+        })
+        .collect()
+}
+
+/// Accessible name of `channel` ("Closed hat"; a track channel is the track's name).
+#[must_use]
+pub fn channel_name(state: &AppState, channel: Channel) -> String {
+    match channel.track() {
+        Some(slot) => state.track(slot).name.clone(),
+        None => DRUM_CHANNEL_NAMES[channel.index()].to_owned(),
+    }
+}
+
+/// Caps label under `channel`'s fader (`"C.Hat"`; a track channel is the track's name).
+#[must_use]
+pub fn strip_label(state: &AppState, channel: Channel) -> String {
+    match channel.track() {
+        Some(slot) => state.track(slot).name.clone(),
+        None => DRUM_STRIP_LABELS[channel.index()].to_owned(),
+    }
 }
 
 /// Accessible name of a strip knob or fader: `"Kick pan"`, `"Kick delay send"`,
-/// `"Kick reverb send"`, `"Kick level"`.
+/// `"Kick reverb send"`, `"Kick level"`, `"Synth level"`.
 #[must_use]
-pub fn control_name(channel: Channel, param: ChannelParam) -> String {
+pub fn control_name(state: &AppState, channel: Channel, param: ChannelParam) -> String {
     let what = match param {
         ChannelParam::Level => "level",
         ChannelParam::Pan => "pan",
@@ -140,7 +177,13 @@ pub fn control_name(channel: Channel, param: ChannelParam) -> String {
         ChannelParam::DelaySend => "delay send",
         ChannelParam::ReverbSend => "reverb send",
     };
-    format!("{} {what}", channel_name(channel))
+    format!("{} {what}", channel_name(state, channel))
+}
+
+/// Width of `count` strips plus the master column.
+#[must_use]
+pub fn strips_width(count: usize, strip_width: f32) -> f32 {
+    count as f32 * strip_width + MASTER_WIDTH
 }
 
 /// Lays `add` out in a child ui pinned to `rect` (top-down); the parent's cursor only moves
@@ -154,27 +197,45 @@ fn place<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> InnerRes
     )
 }
 
+/// The strips and the master column. The strips share the panel width while they fit (never
+/// narrower than [`STRIP_WIDTH`]); once the visible strips and the master are wider than the
+/// panel the body scrolls horizontally.
 fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let origin = ui.cursor().min;
-    let strip_width = ((ui.available_width() - MASTER_WIDTH) / Channel::COUNT as f32)
+    let channels = visible_channels(state);
+    let count = channels.len().max(1);
+    let strip_width = ((ui.available_width() - MASTER_WIDTH) / count as f32)
         .floor()
         .max(STRIP_WIDTH);
-    let mut last = None;
-    for (i, channel) in Channel::ALL.iter().enumerate() {
-        let x = origin.x + i as f32 * strip_width;
-        last = Some(strip(
-            ui,
-            state,
-            theme,
-            *channel,
-            pos2(x, origin.y),
-            strip_width,
-        ));
-    }
-    let master_x = origin.x + Channel::COUNT as f32 * strip_width;
-    if let Some(fader) = last {
-        master(ui, state, theme, pos2(master_x, origin.y), fader);
-    }
+    let total = strips_width(channels.len(), strip_width);
+    let height = ui.available_height();
+    ScrollArea::horizontal()
+        .id_salt("mixer_strips")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let origin = ui.cursor().min;
+            // Claim the content size up front so the scroll area knows how wide the strips
+            // are; everything below is placed from `origin` by hand.
+            ui.allocate_rect(
+                Rect::from_min_size(origin, vec2(total, height)),
+                Sense::hover(),
+            );
+            let mut last = None;
+            for (i, channel) in channels.iter().enumerate() {
+                let x = origin.x + i as f32 * strip_width;
+                last = Some(strip(
+                    ui,
+                    state,
+                    theme,
+                    *channel,
+                    pos2(x, origin.y),
+                    strip_width,
+                ));
+            }
+            let master_x = origin.x + channels.len() as f32 * strip_width;
+            if let Some(fader) = last {
+                master(ui, state, theme, pos2(master_x, origin.y), fader);
+            }
+        });
 }
 
 /// One channel strip at `origin`, `width` wide: the knob stack, the fader with its meter and
@@ -207,10 +268,25 @@ fn strip(
     );
     place(ui, meter, |ui| neu::meter(ui, theme, level, METER_TRACK));
 
+    // A track strip: its colour chip above the M / S column (M10).
+    if let Some(slot) = channel.track() {
+        let track = state.track(slot).clone();
+        let chip = Rect::from_center_size(
+            pos2(
+                origin.x + TOGGLE_SQUARE.x * 0.5,
+                fader.track.min.y - CHIP_RISE,
+            ),
+            vec2(controls::TRACK_CHIP, controls::TRACK_CHIP),
+        );
+        place(ui, chip, |ui| {
+            controls::track_chip(ui, theme, track.colour, &track.name);
+        });
+    }
+
     // M / S in the left column, top-aligned with the track.
     let mute_rect = Rect::from_min_size(pos2(origin.x, fader.track.min.y), TOGGLE_SQUARE);
     let solo_rect = mute_rect.translate(vec2(0.0, TOGGLE_SQUARE.y + TOGGLE_GAP));
-    let name = channel_name(channel);
+    let name = channel_name(state, channel);
     let mute = state.mixer.strip(channel).mute;
     let response = place(ui, mute_rect, |ui| {
         neu::toggle_button_sized(ui, theme, "M", mute, TOGGLE_SQUARE)
@@ -273,7 +349,7 @@ fn strip_knob(
         state.edit_mixer(channel, param, value, response.drag_started());
     }
     let shown = state.mixer.get(channel, param);
-    let name = control_name(channel, param);
+    let name = control_name(state, channel, param);
     response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(shown), &name));
     response
 }
@@ -287,8 +363,9 @@ fn fader(
     channel: Channel,
     origin: Pos2,
 ) -> FaderRects {
+    let label = strip_label(state, channel);
     let spec = SliderSpec {
-        label: STRIP_LABELS[channel.index()],
+        label: &label,
         min: MIN_LEVEL_DB,
         max: MAX_LEVEL_DB,
         default: ChannelParam::Level.default_value(channel),
@@ -303,7 +380,7 @@ fn fader(
         state.edit_mixer(channel, ChannelParam::Level, value, response.drag_started());
     }
     let shown = state.mixer.get(channel, ChannelParam::Level);
-    let name = control_name(channel, ChannelParam::Level);
+    let name = control_name(state, channel, ChannelParam::Level);
     response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(shown), &name));
     FaderRects {
         block: inner.response.rect,
@@ -375,23 +452,55 @@ mod tests {
 
     #[test]
     fn names_follow_the_channel_and_parameter() {
-        assert_eq!(control_name(Channel::Kick, ChannelParam::Pan), "Kick pan");
+        let (mut state, _engine) = AppState::headless(neu::ThemeMode::Dark);
         assert_eq!(
-            control_name(Channel::ClosedHat, ChannelParam::DelaySend),
+            control_name(&state, Channel::Kick, ChannelParam::Pan),
+            "Kick pan"
+        );
+        assert_eq!(
+            control_name(&state, Channel::ClosedHat, ChannelParam::DelaySend),
             "Closed hat delay send"
         );
         assert_eq!(
-            control_name(Channel::Synth, ChannelParam::Level),
+            control_name(&state, Channel::Synth, ChannelParam::Level),
             "Synth level"
         );
-        assert_eq!(channel_name(Channel::OpenHat), "Open hat");
-        assert_eq!(STRIP_LABELS[Channel::ClosedHat.index()], "C.Hat");
+        assert_eq!(channel_name(&state, Channel::OpenHat), "Open hat");
+        assert_eq!(strip_label(&state, Channel::ClosedHat), "C.Hat");
+        assert_eq!(strip_label(&state, Channel::Synth), "Synth");
+        // A track strip is named after the track (M10).
+        state.rename_track(0, "Lead");
+        assert_eq!(
+            control_name(&state, Channel::Synth, ChannelParam::Level),
+            "Lead level"
+        );
+        assert_eq!(strip_label(&state, Channel::Track(0)), "Lead");
+    }
+
+    #[test]
+    fn only_active_tracks_have_strips() {
+        let (mut state, _engine) = AppState::headless(neu::ThemeMode::Dark);
+        let mut drums: Vec<Channel> = DrumRow::ALL.iter().map(|r| Channel::from_row(*r)).collect();
+        drums.push(Channel::Track(0));
+        assert_eq!(visible_channels(&state), drums);
+        let slot = state.add_track().unwrap();
+        drums.push(Channel::from_track(slot));
+        assert_eq!(visible_channels(&state), drums);
+        state.remove_track(0);
+        assert_eq!(visible_channels(&state).len(), DrumRow::COUNT + 1);
+        assert_eq!(
+            visible_channels(&state).last(),
+            Some(&Channel::from_track(slot))
+        );
     }
 
     #[test]
     fn six_strips_and_the_master_fill_the_panel_width() {
         let content = WIDTH - 2.0 * 20.0;
         assert_eq!(STRIP_WIDTH, 64.0);
-        assert_eq!(Channel::COUNT as f32 * STRIP_WIDTH + MASTER_WIDTH, content);
+        // The default mixer: five drums and one track fill the panel exactly; every further
+        // track makes the body scroll.
+        assert_eq!(strips_width(DrumRow::COUNT + 1, STRIP_WIDTH), content);
+        assert!(strips_width(DrumRow::COUNT + 2, STRIP_WIDTH) > content);
     }
 }

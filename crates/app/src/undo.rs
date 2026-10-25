@@ -21,7 +21,9 @@
 
 use std::path::PathBuf;
 
-use engine::{Bank, EqState, MixerState, ParamId, ReverbState};
+use engine::{Bank, EqState, MAX_TRACKS, MixerState, ParamId, ReverbState, TrackId};
+
+use crate::app::TrackUi;
 
 /// Most undo steps remembered; older ones are dropped.
 pub const UNDO_CAP: usize = 100;
@@ -30,12 +32,20 @@ pub const UNDO_CAP: usize = 100;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     /// All eight patterns, the chain, the play mode and the selected pattern (M5).
-    pub bank: Bank,
+    /// All eight patterns, the chain, the play mode and the selected pattern (M5). Boxed:
+    /// a bank is 40 KiB (M10) and a snapshot is built on the stack at every edit.
+    pub bank: Box<Bank>,
+    /// The global parameters (M10: per-track ids live in `track_params`).
     pub params: [f32; ParamId::COUNT],
+    /// The eight track slots (M10): name, colour, active flag, preset, modified marker.
+    pub tracks: [TrackUi; MAX_TRACKS],
+    /// Every slot's per-track parameters (M10).
+    pub track_params: [[f32; ParamId::COUNT]; MAX_TRACKS],
+    /// The selected track (M10), so undoing a track operation puts the selection back.
+    pub edit_track: TrackId,
     pub bpm: f32,
     pub swing: f32,
-    pub preset_index: usize,
-    /// The six mixer strips (M6).
+    /// The 13 mixer strips (M6; 5 drums + 8 tracks since M10).
     pub mixer: MixerState,
     /// The master EQ (plugins milestone).
     pub eq: EqState,
@@ -135,15 +145,17 @@ impl UndoStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{DEFAULT_BPM, default_params};
+    use crate::app::{DEFAULT_BPM, default_params, default_track_params, default_tracks};
 
     fn snap(bpm: f32) -> Snapshot {
         Snapshot {
-            bank: Bank::default(),
+            bank: Box::new(Bank::default()),
             params: default_params(),
+            tracks: default_tracks(),
+            track_params: default_track_params(),
+            edit_track: 0,
             bpm,
             swing: 0.0,
-            preset_index: 0,
             mixer: MixerState::default(),
             eq: EqState::default(),
             reverb: ReverbState::default(),
