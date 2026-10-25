@@ -112,7 +112,7 @@ whenever it gains commits.
 ## M11: FL-style mixer (inserts, effect slots, routing)
 - [x] engine: 16 inserts + master, source -> insert numbers, EQ3 + compressor DSP, 3 effect slots, route-to higher inserts, project v8 with v7 migration
 - [x] app: FL mixer layout (scrollable inserts, slot pills, EQ3, route selector, rename/colour, link to new insert), insert number boxes in TRACKS and drum rows, undo (2026-10-25; docs/ARCHITECTURE.md "M11 as built (app)")
-- [x] Tests per PLAN.md M11 (863 workspace tests); release build + perf green 2026-10-25; smoke test + tag m11 deferred until the user's no-launch window ends (19:30)
+- [x] Tests per PLAN.md M11 (863 workspace tests); full gate green 2026-10-25 (release, smoke, perf), tag m11 at b1486f0
 
 ## M10 review follow-ups (reviewer pass 2026-10-25; no blockers)
 App side (run after the M9 browser lands, before tagging m9):
