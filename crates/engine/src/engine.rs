@@ -170,6 +170,28 @@ impl Shared {
 pub struct EngineHandle {
     producer: Producer<Message>,
     shared: Arc<Shared>,
+    /// The MIDI-thread producer, until [`EngineHandle::take_midi_handle`] hands it out.
+    midi: Option<Producer<Message>>,
+}
+
+/// A second, independent lock-free queue into the engine for a MIDI input thread, so MIDI
+/// notes do not wait for the UI frame loop. Obtained once from
+/// [`EngineHandle::take_midi_handle`]; `Send`, meant to move to the MIDI thread.
+pub struct MidiHandle {
+    producer: Producer<Message>,
+}
+
+impl MidiHandle {
+    /// Sends a message from the MIDI thread. Returns `false` if the queue is full.
+    pub fn send(&mut self, msg: Message) -> bool {
+        self.producer.push(msg).is_ok()
+    }
+
+    /// Number of messages that can still be queued.
+    #[must_use]
+    pub fn free_slots(&self) -> usize {
+        self.producer.slots()
+    }
 }
 
 impl EngineHandle {
@@ -182,6 +204,11 @@ impl EngineHandle {
     #[must_use]
     pub fn position(&self) -> Position {
         self.shared.read()
+    }
+
+    /// Takes the MIDI queue's producer (once). Returns `None` if it was already taken.
+    pub fn take_midi_handle(&mut self) -> Option<MidiHandle> {
+        self.midi.take().map(|producer| MidiHandle { producer })
     }
 
     /// Number of messages that can still be queued before [`send`](Self::send) starts failing.
@@ -248,6 +275,8 @@ impl TestTone {
 pub struct Engine {
     sample_rate: f32,
     consumer: Consumer<Message>,
+    /// Messages from the MIDI input thread (second SPSC queue).
+    midi_consumer: Consumer<Message>,
     tone: TestTone,
     voices: VoicePool,
     /// Current value of every [`ParamId`] (clamped), indexed by [`ParamId::index`].
@@ -294,6 +323,7 @@ pub struct Engine {
 /// allocate afterwards. `sample_rate` is in Hz (tests use 48 000).
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
+    let (midi_producer, midi_consumer) = RingBuffer::new(QUEUE_CAPACITY);
     let shared = Arc::new(Shared::default());
     let mut params = [0.0_f32; ParamId::COUNT];
     for id in ParamId::ALL {
@@ -306,10 +336,12 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
         EngineHandle {
             producer,
             shared: Arc::clone(&shared),
+            midi: Some(midi_producer),
         },
         Engine {
             sample_rate,
             consumer,
+            midi_consumer,
             tone: TestTone::new(sample_rate),
             voices: VoicePool::new(sample_rate),
             params,
@@ -649,6 +681,16 @@ impl Engine {
     /// Applies all pending messages from the UI. Called at the start of every `render`.
     pub fn process_messages(&mut self) {
         while let Ok(msg) = self.consumer.pop() {
+            self.apply_message(msg);
+        }
+        while let Ok(msg) = self.midi_consumer.pop() {
+            self.apply_message(msg);
+        }
+    }
+
+    /// Applies one message (shared by both queues).
+    fn apply_message(&mut self, msg: Message) {
+        {
             match msg {
                 Message::TestTone(on) => self.set_test_tone(on),
                 Message::MasterGain(g) => self.set_master_gain(g),

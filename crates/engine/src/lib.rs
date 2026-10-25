@@ -41,7 +41,7 @@ pub use synth::{LfoTarget, Wave};
 pub use voice::{MAX_VOICES, SynthParams, VoicePool};
 
 pub use drums::DrumRow;
-pub use engine::Position;
+pub use engine::{MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
 pub use pattern::{DrumStep, Pattern, STEPS, SynthStep};
 pub use project::{Project, ProjectError};

@@ -24,6 +24,7 @@ eframe.workspace = true
 cpal.workspace = true
 serde.workspace = true
 rfd.workspace = true
+midir.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true

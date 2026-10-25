@@ -224,3 +224,81 @@ Then start the unattended loop (self-paced, no interval):
 ```
 /loop Continue the BeatSlopper build: follow docs/PLAN.md "Loop procedure" exactly, using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state. Stop the loop when M3 is done or everything is blocked.
 ```
+
+---
+
+# Phase 2 brief (added 2026-10-24, after M3): M4 to M7
+
+The user asked to continue past the first beat: polish and MIDI first, then roll out patterns
+and song mode, a mixer view, and a piano roll, with the full test gate after each milestone.
+Everything above (architecture, real-time rules, testability rule, test gate, auto-fix policy,
+subagent strategy, state files, loop procedure) still applies. Tag each milestone (`m4`..`m7`)
+and push after every green gate. Stop the loop when M7 is done and green, or when everything
+remaining is blocked.
+
+## M4: Polish + MIDI input
+- **MIDI in:** `midir` (MIT) input on its own thread. A device selector in the transport (or a
+  small MIDI panel) lists input ports, remembers the chosen port name, reconnects on launch,
+  and shows a lamp when connected. Note on/off (velocity scaled 0..=1), note-on with velocity
+  0 = note-off, all-notes-off on disconnect. MIDI notes reach the engine through their own
+  lock-free queue (not through the UI frame loop) and also light the on-screen keys and feed
+  bass-lane note entry and record-arm overdub like the computer keyboard.
+- **Polish:** undo/redo (Ctrl+Z / Ctrl+Y) for pattern edits and parameter changes (snapshot
+  stack, cap 100); keyboard shortcuts (Space play/stop, R record arm, Ctrl+S save, Ctrl+Shift+S
+  save as, Ctrl+O open, Ctrl+E export, Ctrl+N new); value tooltips on every knob, dial and
+  slider; the brand wordmark with the mock's +0.16em tracking; window opens at the requested
+  size at 100/125/150 % display scaling (investigate and fix the eframe sizing quirk);
+  "unsaved changes" marker in the project panel; a confirm step before New/Open discards
+  unsaved changes (a small inline "Discard?" pill, not an OS modal).
+- **Tests:** MIDI parsing (status bytes, running status, velocity 0 as off, channel ignore)
+  without a device; MIDI queue messages reach the engine offline; undo/redo round trips for
+  pattern and param edits; shortcuts drive play/stop/arm (kittest); tooltips exist on controls
+  (kittest finds them); unsaved marker toggles.
+- **Done =** I can plug in a MIDI keyboard and play, undo a wrong step, use Space to start the
+  loop, and the window opens at the right size.
+
+## M5: Patterns + song mode
+- **Patterns:** up to 8 patterns per project (A..H), each the current 16-step grid (drums +
+  synth lane). Pattern length 16, 32 or 64 steps (1, 2 or 4 bars) per pattern; the grid scrolls
+  or pages by bar. Copy/paste/clear pattern; switching the edited pattern while playing is
+  instant for editing, and the *playing* pattern switches at the next bar boundary (queued,
+  with the queued pattern shown blinking).
+- **Song mode:** a chain of pattern references (e.g. A A B A C), each with repeat count 1..=8,
+  up to 64 entries; a Song/Pattern mode toggle in the transport; song position shown in the
+  chain; the sequencer follows the song when playing in song mode; export renders the whole
+  song (plus tail) or the current pattern N times.
+- **Engine:** holds all patterns and the chain; scheduling stays sample-accurate across pattern
+  and length changes; the project file gets `version 3` with migration from 2 (single pattern
+  becomes pattern A, chain [A]).
+- **Tests:** pattern switch happens exactly at the bar boundary; a 32-step pattern loops at
+  2 x bar; chain A(2) B(1) plays 48 steps in the right order (onset list); project v2 migrates;
+  export length for a song matches the chain; UI: pattern tabs switch the grid, queued pattern
+  indicator, chain editing.
+- **Done =** I can make verse/chorus patterns and chain them into a short song, and export it.
+
+## M6: Mixer view
+- **Tracks:** six channels (Kick, Snare, Clap, Closed Hat, Open Hat, Synth): level (dB), pan,
+  mute, solo, and per-channel sends to the delay and reverb (the drive stays on the synth
+  channel insert; the master chain becomes delay/reverb returns + master gain + limiter).
+  Peak meters per channel and on the master (lock-free, decaying, from the audio thread via
+  atomics). A Mixer panel toggled from the transport (replaces the FX rack area or sits as a
+  tab beside it; the FX rack keeps the effect parameters).
+- **Engine:** per-channel gain/pan smoothed, solo logic, meter publishing (atomic peak per
+  channel per block), sends summed into the shared delay/reverb; export honours the mix.
+- **Tests:** mute silences a channel, solo isolates it, pan law (-3 dB centre), send 0 means
+  no reverb on that channel, meters report the rendered peak; project v4 with migration.
+- **Done =** I can balance the beat: drop the hats, pan the clap, send only the snare to reverb.
+
+## M7: Piano roll
+- **Editor:** a piano-roll panel for the synth lane of the current pattern: time on X (steps
+  with beat lines), pitch on Y (scrollable, about 3 octaves visible), notes as rounded bars.
+  Click-drag to draw a note (snaps to 16th grid), drag to move, drag the right edge to resize,
+  Delete removes, shift-click sets accent/velocity, scroll zooms vertically. The step grid's
+  bass lane and the piano roll edit the same data.
+- **Data/engine:** the synth lane becomes a list of notes `{ start_step, length_steps, note,
+  velocity }` (polyphonic, up to 64 per pattern); the scheduler triggers note on/off at exact
+  samples; the old one-note-per-step lane maps to length 1 notes; project v5 with migration.
+- **Tests:** note on/off sample positions for a note of length 3 starting at step 2 (on at 2 x
+  spp, off at 5 x spp); overlapping notes play polyphonically; draw/move/resize/delete via
+  kittest; migration from v4.
+- **Done =** I can write a melody with held notes and chords, not only one note per step.

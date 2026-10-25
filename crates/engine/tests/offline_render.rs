@@ -298,3 +298,32 @@ fn works_at_other_sample_rates() {
         );
     }
 }
+
+#[test]
+fn midi_queue_reaches_the_engine_independently_of_the_ui_queue() {
+    use engine::{Message, ParamId};
+    let (mut handle, mut engine) = new_engine(SAMPLE_RATE);
+    let mut midi = handle.take_midi_handle().expect("first take succeeds");
+    assert!(
+        handle.take_midi_handle().is_none(),
+        "the MIDI handle is handed out once"
+    );
+    engine.set_param(ParamId::DelayMix, 0.0);
+    engine.set_param(ParamId::ReverbMix, 0.0);
+    engine.set_param(ParamId::DriveMix, 0.0);
+    assert!(midi.send(Message::NoteOn {
+        note: 69,
+        velocity: 1.0
+    }));
+    let out = render(&mut engine, ms_to_frames(50.0));
+    assert!(!is_silent(&out), "a MIDI note on must sound");
+    assert!(midi.send(Message::NoteOff { note: 69 }));
+    assert!(handle.send(Message::SetParam(ParamId::AmpRelease, 0.001)));
+    let _ = render(&mut engine, ms_to_frames(300.0));
+    let tail = render(&mut engine, ms_to_frames(50.0));
+    assert!(
+        is_silent(&tail),
+        "note off through the MIDI queue must release"
+    );
+    assert!(midi.free_slots() > 0);
+}

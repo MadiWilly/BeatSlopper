@@ -290,3 +290,39 @@ Glide is the time to cover 95 % of a pitch jump. The test tone is summed in afte
   thread (`std::thread`) with a "Exporting..." lamp, never on the UI or audio thread. Errors
   show as a short status line in the panel (no modal).
 - Persisted: last project path, repeats choice.
+
+## M4 additions (polish + MIDI)
+
+### engine
+- A second SPSC queue for MIDI: `EngineHandle::take_midi_handle() -> Option<MidiHandle>` (once);
+  `MidiHandle::send(Message) -> bool` is `Send` and lives on the MIDI input thread. The engine
+  drains the UI queue, then the MIDI queue, at the start of every `render` (`apply_message`).
+
+### app
+- `midi.rs`: `MidiInput` built on `midir` 0.11: `list_ports() -> Vec<String>`, `connect(port
+  name, MidiHandle, ui_tx: Sender<NoteEvent>) -> Result<MidiConnection, String>`, `disconnect`.
+  The midir callback parses status bytes (note on/off on any channel, running status, note-on
+  velocity 0 = off, everything else ignored), pushes `Message::NoteOn/NoteOff` to the
+  `MidiHandle` (no allocation in the callback beyond midir's own buffer), and sends a
+  `NoteEvent` copy to the UI through a `std::sync::mpsc` channel so the on-screen keys light,
+  the bass-lane note entry and record-arm overdub see MIDI notes exactly like computer keys.
+  `parse_midi(bytes, &mut RunningStatus) -> Option<NoteEvent>` is a pure function with tests.
+- Transport/MIDI panel: a `segmented` or small list of port names with a "none" entry, a lamp
+  "MIDI" lit while connected, persisted chosen port name (`midi_port`), reconnect at launch
+  (silently skipped when the port is absent), all-notes-off on disconnect.
+- Undo/redo (`undo.rs`): `Snapshot { pattern, params, bpm, swing, preset_index }`; a stack of
+  up to 100 with a redo stack; every edit that changes the snapshot pushes (knob drags coalesce
+  into one entry per drag via `drag_started/stopped`); Ctrl+Z / Ctrl+Y (also Ctrl+Shift+Z);
+  restoring a snapshot resends everything to the engine.
+- Shortcuts: Space play/stop, R record arm, Ctrl+S save, Ctrl+Shift+S save as, Ctrl+O open,
+  Ctrl+E export, Ctrl+N new (never while a text field is focused).
+- Unsaved marker: `dirty` flag set by any edit, cleared on save/open/new; project panel shows
+  "Unsaved changes"; New/Open with `dirty` first show an inline "Discard changes?" pill pair.
+- Window sizing: investigate why eframe 0.37 may open smaller than `with_inner_size` at
+  non-100 % scaling; fix (e.g. request the size again on the first frame via
+  `ViewportCommand::InnerSize`, or set `with_min_inner_size` to the default) and test at 1.5.
+
+### neu
+- `TextKind::Brand` (15 px, +0.16em tracking, weight 300) and a `brand(ui, theme, text)` helper.
+- Every knob/dial/vslider shows its formatted value and label in a tooltip on hover (egui
+  `on_hover_text` styled by `Theme::apply`: surface fill, raised shadow, no stroke).
