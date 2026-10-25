@@ -18,12 +18,80 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
+use engine::inserts::INSERT_COUNT;
+use engine::project::ProjectError;
 use engine::track::track_index;
 use engine::{ExportStats, MAX_TRACKS, ParamId, Project, TrackId, TrackState};
 
 use crate::app::{
-    AppState, EXPORT_REPEATS, PendingAction, TrackUi, default_params, track_differs_from_preset,
+    AppState, EXPORT_REPEATS, InsertUi, PendingAction, TrackUi, clean_insert_name,
+    default_insert_ui, default_params, track_differs_from_preset,
 };
+
+/// Top-level key of the app-side insert names and colours in a project file (M11): the
+/// engine's `Project` has no field for them, so the app splices a `[{ "name", "colour" }; 16]`
+/// array into the JSON on save and reads it back on load (`serde` ignores unknown keys, so
+/// the engine's loader is untouched). A file without it (an older or engine-written one)
+/// loads with the default names.
+pub const INSERT_UI_KEY: &str = "insert_ui";
+
+/// Splices `inserts` into the pretty-printed engine project `text` under [`INSERT_UI_KEY`].
+#[must_use]
+pub fn with_insert_ui(text: &str, inserts: &[InsertUi; INSERT_COUNT]) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return text.to_owned();
+    };
+    let Ok(sidecar) = serde_json::to_value(inserts.as_slice()) else {
+        return text.to_owned();
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(INSERT_UI_KEY.to_owned(), sidecar);
+    }
+    let mut out = serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.to_owned());
+    out.push('\n');
+    out
+}
+
+/// `Project::from_json` on a helper thread with an [`crate::app::ENGINE_BUILD_STACK`]-sized
+/// stack, boxed. The deserialiser's chain under `from_json` (`serde_json::Value` into a
+/// `Project` whose bank alone is 40 KiB) needs about 1.6 MiB of stack in a debug build: the
+/// test threads have 2 MiB and the main thread 1 MiB, and with the M11 inserts the project
+/// tests that load a file overflowed the former. Like `app::new_engine`, the work moves to a
+/// thread sized for it; a project open is rare, so the thread is cheap.
+fn parse_project(text: &str) -> Result<Box<Project>, ProjectError> {
+    std::thread::scope(|scope| {
+        let spawned = std::thread::Builder::new()
+            .name("beatslopper-project-parse".into())
+            .stack_size(crate::app::ENGINE_BUILD_STACK)
+            .spawn_scoped(scope, || Project::from_json(text).map(Box::new));
+        match spawned {
+            Ok(handle) => handle.join().unwrap_or_else(|_| {
+                Err(ProjectError::Io(std::io::Error::other(
+                    "the project parser panicked",
+                )))
+            }),
+            // No thread to be had: parse here and hope for the room.
+            Err(_) => Project::from_json(text).map(Box::new),
+        }
+    })
+}
+
+/// The [`INSERT_UI_KEY`] sidecar of a project file, cleaned (names trimmed and cut, colours
+/// wrapped); entries the file lacks are the defaults. `None` when the file has no sidecar.
+#[must_use]
+pub fn insert_ui_of(text: &str) -> Option<[InsertUi; INSERT_COUNT]> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let listed: Vec<InsertUi> = serde_json::from_value(value.get(INSERT_UI_KEY)?.clone()).ok()?;
+    let mut inserts = default_insert_ui();
+    for (slot, entry) in inserts.iter_mut().zip(listed) {
+        let name = clean_insert_name(&entry.name);
+        if !name.is_empty() {
+            slot.name = name;
+        }
+        slot.colour = entry.colour % engine::track::COLOUR_COUNT;
+    }
+    Some(inserts)
+}
 
 /// Default file name offered by the Save As dialog.
 pub const DEFAULT_PROJECT_FILE: &str = "beat.beatslopper.json";
@@ -208,11 +276,40 @@ impl AppState {
         }
     }
 
+    /// The project file's text: the engine project ([`AppState::build_project`]) with the
+    /// insert names and colours spliced in under [`INSERT_UI_KEY`] (M11).
+    #[must_use]
+    pub fn project_text(&self) -> String {
+        with_insert_ui(&self.build_project().to_json_pretty(), &self.insert_ui)
+    }
+
+    /// Parses a project file's `text` and applies it ([`AppState::apply_project_with_inserts`]
+    /// with the file's [`INSERT_UI_KEY`] sidecar, or the default names without one).
+    pub fn apply_project_text(&mut self, text: &str) -> Result<(), ProjectError> {
+        let project = parse_project(text)?;
+        let inserts = insert_ui_of(text).unwrap_or_else(default_insert_ui);
+        self.apply_project_with_inserts(&project, inserts);
+        Ok(())
+    }
+
     /// Replaces the UI state with `project` and resends everything to the engine. Playback
     /// state, the audio stream and the theme are untouched. One undo step (the caller decides
-    /// whether the result counts as dirty).
+    /// whether the result counts as dirty). The insert names and colours become the defaults
+    /// (an engine `Project` carries none; see [`AppState::apply_project_with_inserts`]).
     pub fn apply_project(&mut self, project: &Project) {
+        self.apply_project_with_inserts(project, default_insert_ui());
+    }
+
+    /// [`AppState::apply_project`] with the insert names and colours `inserts` (M11).
+    pub fn apply_project_with_inserts(
+        &mut self,
+        project: &Project,
+        inserts: [InsertUi; INSERT_COUNT],
+    ) {
         self.begin_edit();
+        self.insert_ui = inserts;
+        self.insert_selection.clear();
+        self.open_slot = None;
         self.bpm = if project.bpm.is_finite() {
             project.bpm.clamp(crate::app::MIN_BPM, crate::app::MAX_BPM)
         } else {
@@ -307,7 +404,7 @@ impl AppState {
     /// Saves the current state to `path`, remembers the path and clears the unsaved marker.
     /// Errors become the status line (and the project stays dirty).
     pub fn save_project_to(&mut self, path: PathBuf) -> bool {
-        match self.build_project().save(&path) {
+        match std::fs::write(&path, self.project_text()).map_err(ProjectError::from) {
             Ok(()) => {
                 self.set_status(format!("Saved {}", file_label(&path)));
                 self.remember_recent(&path);
@@ -325,9 +422,11 @@ impl AppState {
     /// Loads `path`, applies it (undoably) and remembers the path; the project is clean.
     /// Errors become the status line and leave the state alone.
     pub fn load_project_from(&mut self, path: PathBuf) -> bool {
-        match Project::load(&path) {
-            Ok(project) => {
-                self.apply_project(&project);
+        let loaded = std::fs::read_to_string(&path)
+            .map_err(ProjectError::from)
+            .and_then(|text| self.apply_project_text(&text));
+        match loaded {
+            Ok(()) => {
                 self.set_status(format!("Opened {}", file_label(&path)));
                 self.remember_recent(&path);
                 self.project_path = Some(path);
@@ -637,6 +736,14 @@ mod tests {
         assert_eq!(state.snapshot(), pre_open);
         assert_eq!(state.bpm, 70.0);
         assert_eq!(state.project_path, None);
+        // Two resends back to back (the open, then the undo) are more than the queue holds
+        // since M11 (about 570 messages each); the rest waits in the outbox.
+        loop {
+            engine.process_messages();
+            if state.flush_outbox() == 0 && state.outbox.is_empty() {
+                break;
+            }
+        }
         engine.process_messages();
         assert_eq!(engine.bpm(), 70.0);
         assert_eq!(engine.pattern(), state.pattern());
@@ -734,11 +841,10 @@ mod tests {
         assert_eq!(ExportKind::Loop { repeats: 4 }.describe(), "loop x4");
     }
 
-    #[test]
-    fn mixer_round_trips_through_the_project_and_v3_files_load_defaults() {
+    /// A state with six non-default strip values (the mixer round-trip tests' fixture).
+    fn mixed_state() -> (AppState, engine::Engine) {
         use engine::{Channel, ChannelParam, MixerState};
-
-        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        let (mut state, engine) = AppState::headless(ThemeMode::Dark);
         state.set_mixer(Channel::Kick, ChannelParam::Level, -6.0);
         state.set_mixer(Channel::Clap, ChannelParam::Pan, 0.4);
         state.set_mixer(Channel::ClosedHat, ChannelParam::Mute, 1.0);
@@ -746,7 +852,18 @@ mod tests {
         state.set_mixer(Channel::Snare, ChannelParam::ReverbSend, 0.8);
         state.set_mixer(Channel::Synth, ChannelParam::DelaySend, 0.25);
         assert_ne!(state.mixer, MixerState::default());
+        (state, engine)
+    }
 
+    // The mixer round trip is two tests (build / apply, then the file and the v3 fallback):
+    // in one function the three states, their engines and the projects on the stack plus the
+    // deserialiser's depth under `Project::from_json` (about 1.6 MiB in a debug build) sat a
+    // few KiB under a test thread's 2 MiB, and the M11 inserts tipped it over.
+    #[test]
+    fn mixer_round_trips_through_the_project() {
+        use engine::Channel;
+
+        let (state, _engine) = mixed_state();
         let project = state.build_project();
         assert_eq!(project.version, engine::project::FORMAT_VERSION);
         assert_eq!(project.mixer, state.mixer);
@@ -767,8 +884,13 @@ mod tests {
         }
         engine.process_messages();
         assert_eq!(engine.mixer(), &state.mixer, "the load resent the mixer");
+    }
 
-        // Through a file as well.
+    #[test]
+    fn mixer_round_trips_through_a_file_and_v3_files_load_defaults() {
+        use engine::{Channel, MixerState};
+
+        let (mut state, _engine) = mixed_state();
         let path = temp_path("mixer.beatslopper.json");
         assert!(state.save_project_to(path.clone()));
         let (mut from_file, _engine) = AppState::headless(ThemeMode::Dark);
@@ -783,14 +905,14 @@ mod tests {
         assert_eq!(old.version, engine::project::FORMAT_VERSION);
         assert_eq!(old.bpm, 99.0);
         assert_eq!(old.mixer, MixerState::default());
-        loaded.apply_project(&old);
-        assert_eq!(loaded.bpm, 99.0);
-        assert_eq!(loaded.mixer, MixerState::default());
-        assert_eq!(loaded.strip(Channel::Kick).level_db, 0.0);
-        assert!(!loaded.strip(Channel::ClosedHat).mute);
+        from_file.apply_project(&old);
+        assert_eq!(from_file.bpm, 99.0);
+        assert_eq!(from_file.mixer, MixerState::default());
+        assert_eq!(from_file.strip(Channel::Kick).level_db, 0.0);
+        assert!(!from_file.strip(Channel::ClosedHat).mute);
         // Undo brings the non-default mixer back.
-        assert!(loaded.undo());
-        assert_eq!(loaded.mixer, state.mixer);
+        assert!(from_file.undo());
+        assert_eq!(from_file.mixer, state.mixer);
     }
 
     /// M7: a chord and a held note survive save / open (format version 5), and a v4 file's
@@ -1015,5 +1137,139 @@ mod tests {
             "names are matched case-insensitively"
         );
         assert!(loaded.track(second).modified);
+    }
+}
+
+#[cfg(test)]
+mod insert_file_tests {
+    //! M11: inserts, slots, routes and the app-side names round-trip through the project
+    //! text (the engine JSON plus the `insert_ui` sidecar) and through a file.
+
+    use std::path::PathBuf;
+
+    use engine::{Channel, InsertParam, Project, SlotKind};
+    use neu::ThemeMode;
+
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("beatslopper-m11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    /// A state with a drum group on insert 14 (compressed, routed on to 16), a chorus on the
+    /// synth's insert, a renamed and recoloured insert and one source straight to the master.
+    fn mixed() -> AppState {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.set_route(Channel::Kick, 14);
+        state.set_route(Channel::Snare, 14);
+        state.set_route(Channel::Clap, 0);
+        state.set_slot_kind(14, 0, SlotKind::Compressor);
+        state.set_slot_param(14, 0, 0, -24.0);
+        state.set_insert(14, InsertParam::Route, 16.0);
+        state.set_insert(14, InsertParam::Level, -3.0);
+        state.set_insert(16, InsertParam::Eq3Low, 4.5);
+        state.set_slot_kind(6, 1, SlotKind::Chorus);
+        state.set_slot_param(6, 1, 2, 0.5);
+        state.set_insert(6, InsertParam::ReverbSend, 0.25);
+        state.rename_insert(14, "Drums");
+        state.set_insert_colour(14, 2);
+        state.rename_insert(16, "Bus");
+        state
+    }
+
+    #[test]
+    fn inserts_slots_routes_and_names_round_trip_through_the_project_text() {
+        let state = mixed();
+        let text = state.project_text();
+        assert!(text.contains(&format!("\"{INSERT_UI_KEY}\"")));
+        assert!(text.contains("\"Drums\""));
+        // The engine's loader ignores the sidecar and reads the rest unchanged.
+        let project = Project::from_json(&text).unwrap();
+        assert_eq!(project.mixer, state.mixer);
+        assert_eq!(project.version, engine::project::FORMAT_VERSION);
+        assert_eq!(insert_ui_of(&text).unwrap(), state.insert_ui);
+
+        let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
+        loaded.apply_project_text(&text).unwrap();
+        assert_eq!(loaded.mixer, state.mixer);
+        assert_eq!(loaded.insert_ui, state.insert_ui);
+        assert_eq!(loaded.insert_ui(14).name, "Drums");
+        assert_eq!(loaded.insert_ui(14).colour, 2);
+        assert_eq!(loaded.insert_ui(16).name, "Bus");
+        assert_eq!(loaded.mixer.route(Channel::Kick), 14);
+        assert_eq!(loaded.mixer.route(Channel::Clap), 0);
+        assert_eq!(loaded.mixer.insert(14).slot(0).kind, SlotKind::Compressor);
+        assert_eq!(loaded.mixer.insert(14).slot(0).get(0), -24.0);
+        assert_eq!(loaded.mixer.insert(14).route, 16);
+        assert_eq!(loaded.mixer.insert(6).slot(1).get(2), 0.5);
+        assert!(loaded.insert_selection.is_empty() && loaded.open_slot.is_none());
+        loop {
+            engine.process_messages();
+            if loaded.flush_outbox() == 0 && loaded.outbox.is_empty() {
+                break;
+            }
+        }
+        engine.process_messages();
+        assert_eq!(engine.mixer(), &state.mixer, "the load resent the inserts");
+        // Undo brings the pre-load names and inserts back.
+        assert!(loaded.undo());
+        assert_eq!(loaded.insert_ui, default_insert_ui());
+        assert_eq!(loaded.mixer, engine::MixerState::default());
+    }
+
+    #[test]
+    fn inserts_round_trip_through_a_file_and_an_engine_project_resets_the_names() {
+        let mut state = mixed();
+        let path = temp_path("inserts.beatslopper.json");
+        assert!(state.save_project_to(path.clone()));
+        let (mut from_file, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(from_file.load_project_from(path.clone()));
+        assert_eq!(from_file.mixer, state.mixer);
+        assert_eq!(from_file.insert_ui, state.insert_ui);
+        assert!(!from_file.dirty);
+        // A file written by the engine alone (no sidecar) loads with the default names and
+        // the file's inserts.
+        state.build_project().save(&path).unwrap();
+        assert!(from_file.load_project_from(path.clone()));
+        assert_eq!(from_file.mixer, state.mixer);
+        assert_eq!(from_file.insert_ui, default_insert_ui());
+        let _ = std::fs::remove_file(path);
+        // `apply_project` (an engine project) resets the names too.
+        let mut renamed = mixed();
+        renamed.apply_project(&state.build_project());
+        assert_eq!(renamed.insert_ui, default_insert_ui());
+        assert_eq!(renamed.mixer, state.mixer);
+    }
+
+    #[test]
+    fn the_sidecar_is_cleaned_and_tolerates_bad_input() {
+        let (state, _engine) = AppState::headless(ThemeMode::Dark);
+        let text = state.build_project().to_json_pretty();
+        assert_eq!(insert_ui_of(&text), None, "no sidecar");
+        assert_eq!(insert_ui_of("not json"), None);
+        // Short, over-long and odd entries are cleaned; missing ones are the defaults.
+        let odd = r#"{"version": 8, "insert_ui": [{"name": "  A very long insert name ", "colour": 9}, {"name": "", "colour": 1}]}"#;
+        let inserts = insert_ui_of(odd).unwrap();
+        assert_eq!(inserts[0].name, "A very long");
+        assert_eq!(inserts[0].colour, 1);
+        assert_eq!(
+            inserts[1].name, "Insert 2",
+            "an empty name keeps the default"
+        );
+        assert_eq!(inserts[1].colour, 1);
+        assert_eq!(inserts[2], InsertUi::fresh(3));
+        // A sidecar that is not an array is ignored.
+        assert_eq!(insert_ui_of(r#"{"insert_ui": 5}"#), None);
+        // Splicing into something that is not JSON leaves it alone.
+        assert_eq!(with_insert_ui("nope", &default_insert_ui()), "nope");
+        // Splicing then parsing is the identity on the project part.
+        let spliced = with_insert_ui(&text, &default_insert_ui());
+        assert_eq!(
+            Project::from_json(&spliced).unwrap(),
+            Project::from_json(&text).unwrap()
+        );
+        assert!(spliced.ends_with('\n'));
     }
 }

@@ -21,9 +21,10 @@
 
 use std::path::PathBuf;
 
+use engine::inserts::INSERT_COUNT;
 use engine::{Bank, EqState, MAX_TRACKS, MixerState, ParamId, ReverbState, TrackId};
 
-use crate::app::TrackUi;
+use crate::app::{InsertUi, TrackUi};
 
 /// Most undo steps remembered; older ones are dropped.
 pub const UNDO_CAP: usize = 100;
@@ -45,8 +46,11 @@ pub struct Snapshot {
     pub edit_track: TrackId,
     pub bpm: f32,
     pub swing: f32,
-    /// The 13 mixer strips (M6; 5 drums + 8 tracks since M10).
+    /// The 13 mixer strips (M6; 5 drums + 8 tracks since M10), plus the 16 inserts and the
+    /// source routes (M11).
     pub mixer: MixerState,
+    /// The inserts' names and colours (M11).
+    pub insert_ui: [InsertUi; INSERT_COUNT],
     /// The master EQ (plugins milestone).
     pub eq: EqState,
     /// Every reverb value (plugins milestone).
@@ -145,7 +149,9 @@ impl UndoStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{DEFAULT_BPM, default_params, default_track_params, default_tracks};
+    use crate::app::{
+        DEFAULT_BPM, default_insert_ui, default_params, default_track_params, default_tracks,
+    };
 
     fn snap(bpm: f32) -> Snapshot {
         Snapshot {
@@ -157,6 +163,7 @@ mod tests {
             bpm,
             swing: 0.0,
             mixer: MixerState::default(),
+            insert_ui: default_insert_ui(),
             eq: EqState::default(),
             reverb: ReverbState::default(),
             project_path: None,

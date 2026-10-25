@@ -23,9 +23,10 @@ egui.workspace = true
 eframe.workspace = true
 cpal.workspace = true
 serde.workspace = true
+# The project file's app-side `insert_ui` sidecar (M11) is spliced into the engine's JSON.
+serde_json.workspace = true
 rfd.workspace = true
 midir.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true
-serde_json.workspace = true

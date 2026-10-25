@@ -399,3 +399,38 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
 - Compressor: instant-attack / exponential-release peak detector with the attack applied to
   the gain reduction, so a -3 dBFS sine over a -18 dB threshold at 4:1 lands at -14.25 dBFS.
 - Insert solo and source solo are independent layers; mute beats solo on each.
+
+## 2026-10-25: M11 mixer (app)
+- **Insert names live in the app and ride in a JSON sidecar.** The engine's `Project` has
+  no field for names or colours and the engine was off limits, so the app splices an
+  `insert_ui` key into the engine's JSON on save and reads it back on load (`serde`
+  ignores unknown keys; engine-written files load with the default names). The
+  alternative, eframe storage keyed by path, would have lost the names with a moved file.
+- **Two visible inserts, four visible sources, everything else scrolls.** The panel has
+  436 x ~303 pt. A strip with a name, three slot pills, six labelled `Sm` knobs, a route
+  pill and a fader needs 108 pt of width, so the inserts dock shows two at a time; the
+  source strips are 36 pt (one `Sm` knob wide) and show four. The alternative of a
+  vertically scrolling mixer would have hidden the faders.
+- **A slot's knobs replace the strip's EQ / send grid** (3 x 2, the compressor's six
+  parameters exactly) instead of opening a pop-out window: no room under the strip, and a
+  deferred viewport per slot would have meant 48 plugin kinds in `plugins.rs`. The slot's
+  pill stays lit while its knobs are shown and the edit square toggles back.
+- **`fader_sized` in the kit.** The 140 pt fader plus its caps label did not fit under the
+  blocks above it; the insert fader takes the room left (about 88 pt of track at the design
+  size) and names itself in the head.
+- **The picker is a number grid, not a name list.** Seventeen 30 pt pills needed a scroll
+  area; four columns of 28 pt squares (names in tooltips) fit any popup and read like FL's
+  number box.
+- **Source strips show no meters and no sends.** The sends moved onto the inserts with the
+  engine's defaults; the per-source meter had no room beside two knobs at 36 pt, and the
+  insert meters are what a mix engineer watches.
+- **A freed track slot forgets its route; a duplicate keeps the source's.** FL's clone keeps
+  the mixer track; a deleted track's number box would otherwise point a later track at an
+  old group.
+- **`Project::from_json` runs on a 16 MiB helper thread** (`parse_project`): the
+  deserialiser needs ~1.6 MiB of stack in debug builds, more than the 1 MiB main thread
+  and within a few KiB of the 2 MiB test threads before M11. The same pattern as
+  `new_engine`.
+- **`HINT` lost its Ctrl+T mention** to make room for the LINK button beside the move
+  arrows (the ADD tooltip still names the shortcut). `Ctrl+L` is checked last in the
+  shortcut order so nothing above it changes.

@@ -76,8 +76,9 @@ pub use shadow::{
     soft_rect_shapes, soft_rect_shapes_with_fill,
 };
 pub use slider::{
-    FADER_TRACK, FADER_TRAVEL, SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL, SLIDER_WIDTH, SliderSpec,
-    fader, lamp, vslider, vslider_fraction_at, vslider_thumb_pos,
+    FADER_MIN_TRACK, FADER_TRACK, FADER_TRAVEL, SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL,
+    SLIDER_WIDTH, SliderSpec, fader, fader_sized, lamp, vslider, vslider_fraction_at,
+    vslider_thumb_pos,
 };
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};

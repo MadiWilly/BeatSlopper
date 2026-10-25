@@ -111,7 +111,7 @@ whenever it gains commits.
 
 ## M11: FL-style mixer (inserts, effect slots, routing)
 - [ ] engine: 16 inserts + master, source -> insert numbers, EQ3 + compressor DSP, 3 effect slots, route-to higher inserts, project v8 with v7 migration
-- [ ] app: FL mixer layout (scrollable inserts, slot pills, EQ3, route selector, rename/colour, link to new insert), insert number boxes in TRACKS and drum rows, undo
+- [x] app: FL mixer layout (scrollable inserts, slot pills, EQ3, route selector, rename/colour, link to new insert), insert number boxes in TRACKS and drum rows, undo (2026-10-25; docs/ARCHITECTURE.md "M11 as built (app)")
 - [ ] Tests per PLAN.md M11; gate green, tag m11, final summary updated
 
 ## M10 review follow-ups (reviewer pass 2026-10-25; no blockers)

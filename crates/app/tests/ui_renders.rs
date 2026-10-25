@@ -1098,20 +1098,46 @@ fn mixer_panel_renders_in_both_themes_without_editing() {
         );
         for name in names {
             harness.get_by_label(&format!("{name} pan"));
-            harness.get_by_label(&format!("{name} delay send"));
-            harness.get_by_label(&format!("{name} reverb send"));
             harness.get_by_label(&format!("{name} level"));
             harness.get_by_label(&format!("Mute {name}"));
             harness.get_by_label(&format!("Solo {name}"));
+            harness.get_by_label(&ui::mixer::source_box_name(&name));
+            // M11: the sends moved onto the inserts.
+            assert!(
+                harness
+                    .query_by_label(&format!("{name} delay send"))
+                    .is_none()
+            );
         }
         harness.get_by_label("Master");
         harness.get_by_label("Limit");
-        for legend in ui::mixer::KNOB_LEGENDS {
-            harness.get_by_label(legend);
+        // M11: sixteen insert strips, laid out whether or not they are scrolled into view.
+        for n in 1..=16u8 {
+            harness.get_by_label(&ui::mixer::insert_head_name(n, &format!("Insert {n}")));
+            harness.get_by_label(&ui::mixer::insert_control_name(
+                n,
+                engine::InsertParam::Level,
+            ));
+            harness.get_by_label(&format!("Mute insert {n}"));
+            harness.get_by_label(&format!("Solo insert {n}"));
+            harness.get_by_label(&ui::mixer::route_name(n));
+            for slot in 0..3 {
+                harness.get_by_label(&ui::mixer::slot_name(n, slot));
+                assert!(
+                    harness
+                        .query_by_label(&ui::mixer::slot_edit_name(n, slot))
+                        .is_none(),
+                    "an empty slot has no edit square"
+                );
+            }
+            for label in ["low", "mid", "mid hz", "high", "delay send", "reverb send"] {
+                harness.get_by_label(&format!("Insert {n} {label}"));
+            }
         }
-        // Six channel meters and the master's stereo meter.
-        assert_eq!(harness.get_all_by_label("Level").count(), 6);
+        // Sixteen insert meters and the master's stereo meter; no compressor, no GR bar.
+        assert_eq!(harness.get_all_by_label("Level").count(), 16);
         harness.get_by_label("Stereo level");
+        assert!(harness.query_by_label(ui::mixer::GR_METER_NAME).is_none());
         let state = harness.into_state();
         assert_eq!(state.mode, mode);
         assert_eq!(state.mixer, engine::MixerState::default());
@@ -3065,9 +3091,9 @@ fn mixer_shows_one_strip_per_active_track() {
     }
     assert!(harness.query_by_label("Track 4 level").is_none());
     assert!(harness.query_by_label("Synth level").is_none(), "renamed");
-    // Five drum meters and three track meters.
-    assert_eq!(harness.get_all_by_label("Level").count(), 8);
-    // Eight strips side by side, each in its own column.
+    // M11: the meters are the sixteen inserts'; the source strips have none.
+    assert_eq!(harness.get_all_by_label("Level").count(), 16);
+    // Eight source strips side by side, each in its own column of the source dock.
     let kick = harness.get_by_label("Kick level").rect();
     let lead = harness.get_by_label("Lead level").rect();
     let pad = harness.get_by_label("Pad level").rect();
@@ -3075,22 +3101,25 @@ fn mixer_shows_one_strip_per_active_track() {
     assert!(kick.max.x <= lead.min.x && lead.max.x <= pad.min.x && pad.max.x <= third.min.x);
     assert_eq!(lead.min.y, kick.min.y, "the same row");
     assert!(
-        third.max.x > ui::mixer::WIDTH + 40.0,
-        "eight strips overflow the panel: the body scrolls ({third:?})"
+        third.min.x >= kick.min.x + ui::mixer::SOURCE_DOCK_WIDTH,
+        "eight sources overflow the four-strip dock: it scrolls ({third:?})"
     );
+    // The inserts dock starts right of the source dock, the master right of the inserts.
+    let first_insert = harness.get_by_label("Insert 1 level").rect();
+    let stereo = harness.get_by_label("Stereo level").rect();
+    assert!(first_insert.min.x >= kick.min.x + ui::mixer::SOURCE_DOCK_WIDTH);
+    assert!(stereo.min.x > first_insert.max.x);
+    assert!(stereo.max.x <= ui::mixer::WIDTH + 40.0);
 
     // Removing a track hides its strip.
     harness.state_mut().remove_track(1);
     harness.run_steps(2);
     assert!(harness.query_by_label("Pad level").is_none());
     harness.get_by_label("Track 3 level");
-    assert_eq!(harness.get_all_by_label("Level").count(), 7);
-    // And with the default two-track mixer nothing overflows.
     harness.state_mut().remove_track(2);
     harness.run_steps(2);
-    assert_eq!(harness.get_all_by_label("Level").count(), 6);
-    let stereo = harness.get_by_label("Stereo level").rect();
-    assert!(stereo.max.x <= ui::mixer::WIDTH + 40.0);
+    assert!(harness.query_by_label("Track 3 level").is_none());
+    assert_eq!(harness.get_all_by_label("Level").count(), 16);
 }
 
 /// The roll draws the other active tracks' notes as ghosts in their colours (both themes):
@@ -3361,12 +3390,11 @@ fn mixer_master_stays_pinned_with_eight_tracks() {
     );
     assert!(
         last_eight.min.x > master_eight.min.x,
-        "eight tracks: the last strip is scrolled out past MASTER ({last_eight:?} vs \
+        "eight tracks: the last source strip is scrolled out past MASTER ({last_eight:?} vs \
          {master_eight:?})"
     );
     assert!(
-        ui::mixer::strips_width(DrumRow::COUNT + 8, ui::mixer::STRIP_WIDTH)
-            > ui::mixer::WIDTH - 40.0,
-        "thirteen strips plus the master are wider than the panel"
+        ui::mixer::sources_width(DrumRow::COUNT + 8) > ui::mixer::CONTENT_WIDTH,
+        "thirteen source strips are wider than the whole panel"
     );
 }

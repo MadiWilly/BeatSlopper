@@ -4,7 +4,9 @@
 //!
 //! One row ([`ROW_HEIGHT`]) per active track in slot order: the colour chip (a click cycles
 //! the eight swatches), the name over the preset name (truncated with an ellipsis; the full
-//! text is the tooltip), a pencil that opens the inline rename editor (a double-click on the
+//! text is the tooltip) with the mixer insert **number box** (M11: a [`BOX_SIZE`] pill
+//! reading the insert number, `M` for straight to the master, at the start of the preset
+//! line; a click opens the picker, tooltip "Mixer insert"), a pencil that opens the inline rename editor (a double-click on the
 //! row does too; Enter / focus loss commit, Escape cancels, and shortcuts and the piano keys
 //! stay quiet while it has the keyboard, like every text field), the [`SQUARE`] `M` / `S`
 //! squares and the small LEVEL knob bound to the track's mixer strip, and the `Roll` pill
@@ -16,18 +18,22 @@
 //! Below the list: `+ Add` (the primary pill: a new track with the default preset, selected),
 //! `Dup` (clone the selected track's settings, not its notes) and `Del` (an inline
 //! "Delete <name>?" confirm with YES / NO, like the PROJECT panel's discard confirm; disabled
-//! with one track), then the `▲` / `▼` move buttons for the selected track beside the one-line
-//! hint. Everything goes through `AppState` (`add_track`, `duplicate_track`, `remove_track`,
-//! `rename_track`, `set_track_colour`, `select_track`, `move_track`, `toggle_mute`,
-//! `toggle_solo`, `set_lane_view`), so undo and the engine messages are the state's business.
+//! with one track), then the `▲` / `▼` move buttons and the `Link` button (M11, FL's Ctrl+L:
+//! routes the selected track to the first free insert and shows the mixer) for the selected
+//! track beside the hint. Everything goes through `AppState` (`add_track`, `duplicate_track`,
+//! `remove_track`, `rename_track`, `set_track_colour`, `select_track`, `move_track`,
+//! `toggle_mute`, `toggle_solo`, `set_lane_view`, `set_route`, `link_track_to_free_insert`),
+//! so undo and the engine messages are the state's business.
 //!
 //! Accessible names (tests): rows [`row_name`] (`"Track row 1: Synth"`, a selected button),
 //! chips [`swatch_name`] (`"Synth swatch"`), pencils [`rename_name`] (`"Rename Synth"`), the
 //! squares [`mute_name`] / [`solo_name`] (`"Mute track Synth"`, `"Solo track Synth"`), the
 //! level knobs [`level_name`] (`"Level track Synth"`, a slider), the roll pills
-//! [`roll_name`] (`"Roll: Synth"`), the action pills [`ADD_NAME`], [`DUP_LABEL`],
-//! [`DEL_LABEL`], [`YES_LABEL`], [`NO_LABEL`], the move buttons [`MOVE_UP_NAME`] /
-//! [`MOVE_DOWN_NAME`], the question [`delete_question`] and the hint [`HINT`].
+//! [`roll_name`] (`"Roll: Synth"`), the number boxes [`insert_box_name`] (`"Insert box
+//! Synth"`; the picker's entries are `ui::mixer::pick_name`), the action pills [`ADD_NAME`],
+//! [`DUP_LABEL`], [`DEL_LABEL`], [`YES_LABEL`], [`NO_LABEL`], the move buttons
+//! [`MOVE_UP_NAME`] / [`MOVE_DOWN_NAME`], the link button [`LINK_NAME`], the question
+//! [`delete_question`] and the hint [`HINT`].
 
 use egui::epaint::text::{LayoutJob, TextFormat};
 use egui::{
@@ -38,11 +44,12 @@ use engine::mixer::{MAX_LEVEL_DB, MIN_LEVEL_DB};
 use engine::{Channel, ChannelParam, TrackId};
 use neu::{Depth, KnobSize, KnobSpec, Theme, ValueEditOutput, paint_soft_rect};
 
-use crate::app::{AppState, LaneView};
+use crate::app::{AppState, LaneView, RightPanel};
 use crate::shortcuts::Shortcut;
 use crate::ui::controls::{
     self, GROUP_GAP, PANEL_HEAD_GAP, TRACK_CHIP, TRACK_CHIP_GAP, fmt_level_db,
 };
+use crate::ui::mixer;
 
 /// Height of one track row.
 pub const ROW_HEIGHT: f32 = 34.0;
@@ -78,6 +85,15 @@ const PILL_GAP: f32 = 8.0;
 const MOVE_ROW: f32 = 28.0;
 /// Width of the hover ring around a chip.
 const CHIP_RING: f32 = 1.5;
+/// Size of the insert number box at the start of the preset line (M11).
+pub const BOX_SIZE: Vec2 = vec2(22.0, 13.0);
+/// Gap between the number box and the preset name.
+const BOX_GAP: f32 = 4.0;
+/// Width of the `Link` button in the move row.
+const LINK_WIDTH: f32 = 36.0;
+// The move row holds two 11 pt hint lines; the number box sits inside the preset line.
+const _: () = assert!(MOVE_ROW >= 2.0 * PRESET_SIZE + 4.0);
+const _: () = assert!(BOX_SIZE.y <= PRESET_SIZE + 3.0);
 /// The name's font (the kit's value level: 13 / 400).
 const NAME_SIZE: f32 = 13.0;
 /// The preset line's font (11 pt, secondary colour).
@@ -102,8 +118,12 @@ pub const NO_LABEL: &str = "No";
 pub const MOVE_UP_NAME: &str = "Move track up";
 /// Accessible name of the `▼` button.
 pub const MOVE_DOWN_NAME: &str = "Move track down";
-/// The one-line hint under the list.
-pub const HINT: &str = "Keys play the selected track · Ctrl+T adds";
+/// The hint under the list (it may wrap to two lines beside the move and link buttons).
+pub const HINT: &str = "Keys play the selected track";
+/// The `Link` button's label.
+pub const LINK_LABEL: &str = "Link";
+/// Accessible name of the `Link` button.
+pub const LINK_NAME: &str = "Link to free insert";
 
 /// Accessible name of the row of the `index`-th (0-based) active track: `"Track row 1: Synth"`.
 #[must_use]
@@ -154,6 +174,13 @@ pub fn roll_name(name: &str) -> String {
 #[must_use]
 pub fn delete_question(name: &str) -> String {
     format!("Delete {name}?")
+}
+
+/// Accessible name of a track's insert number box: `"Insert box Synth"` (the mixer's source
+/// strip box is `"Insert of Synth"`, the sequencer row's `"Row insert Bass"`).
+#[must_use]
+pub fn insert_box_name(name: &str) -> String {
+    format!("Insert box {name}")
 }
 
 /// Where the pending DEL confirm lives (`ui.data`, the slot waiting for YES / NO).
@@ -245,6 +272,7 @@ fn place<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> InnerRes
 fn row(ui: &mut Ui, state: &mut AppState, theme: &Theme, index: usize, slot: TrackId) {
     let track = state.track(slot).clone();
     let selected = state.edit_track == slot;
+    let channel = Channel::from_track(slot);
     // The row itself only paints (the well, the accent bar); its controls sit on top.
     let (rect, row) =
         ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
@@ -374,14 +402,48 @@ fn row(ui: &mut Ui, state: &mut AppState, theme: &Theme, index: usize, slot: Tra
                 );
                 paint_truncated(
                     ui,
-                    pos2(name_left, block_top + name_height),
+                    pos2(name_left + BOX_SIZE.x + BOX_GAP, block_top + name_height),
                     track.preset_name(),
                     preset_font,
                     theme.text_secondary,
-                    name_width,
+                    (name_width - BOX_SIZE.x - BOX_GAP).max(0.0),
                 );
             }
         }
+    }
+
+    // The mixer insert number box at the start of the preset line (M11). Added after the
+    // name block so it is on top of it: a click here never selects or renames.
+    let box_rect = Rect::from_min_size(
+        pos2(
+            name_left,
+            block_top + name_height + (preset_height - BOX_SIZE.y) * 0.5,
+        ),
+        BOX_SIZE,
+    );
+    let route = state.mixer.route(channel);
+    let box_response = place(ui, box_rect, |ui| {
+        neu::toggle_button_sized(ui, theme, &mixer::box_text(route), false, BOX_SIZE)
+    })
+    .inner;
+    let box_label = insert_box_name(&track.name);
+    box_response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &box_label));
+    let box_response = box_response
+        .on_hover_text(format!(
+            "Mixer insert: {} · click to pick ({} links a free one)",
+            state.route_name(route),
+            Shortcut::LinkInsert.label()
+        ))
+        .on_hover_cursor(CursorIcon::PointingHand);
+    if let Some(picked) = mixer::route_picker(
+        theme,
+        &box_response,
+        state,
+        route,
+        &mixer::source_route_choices(),
+    ) {
+        state.set_route(channel, picked);
+        state.select_insert(picked, false);
     }
 
     // Pencil: opens the rename editor.
@@ -409,7 +471,6 @@ fn row(ui: &mut Ui, state: &mut AppState, theme: &Theme, index: usize, slot: Tra
     }
 
     // M / S: the track's mixer strip.
-    let channel = Channel::from_track(slot);
     let mute = state.mixer.strip(channel).mute;
     let response = place(ui, mute_rect, |ui| {
         neu::toggle_button_sized(ui, theme, "M", mute, vec2(SQUARE, SQUARE))
@@ -633,6 +694,20 @@ fn move_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             {
                 state.move_track(state.edit_track, false);
             }
+            // LINK (M11, FL's Ctrl+L): the selected track to the first free insert.
+            let link =
+                neu::toggle_button_sized(ui, theme, LINK_LABEL, false, vec2(LINK_WIDTH, SQUARE));
+            link.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), LINK_NAME));
+            if link
+                .on_hover_text(format!(
+                    "Route the selected track to the first free mixer insert ({})",
+                    Shortcut::LinkInsert.label()
+                ))
+                .clicked()
+                && state.link_track_to_free_insert(state.edit_track).is_some()
+            {
+                state.right_panel = RightPanel::Mixer;
+            }
             ui.add(
                 egui::Label::new(
                     RichText::new(HINT)
@@ -709,6 +784,17 @@ mod tests {
         assert_eq!(level_name("Lead"), "Level track Lead");
         assert_eq!(roll_name("Lead"), "Roll: Lead");
         assert_eq!(delete_question("Lead"), "Delete Lead?");
+        assert_eq!(insert_box_name("Lead"), "Insert box Lead");
+    }
+
+    #[test]
+    fn the_move_row_fits_its_buttons_and_a_two_line_hint() {
+        // ▲ | ▼ | Link, then the hint, which may take two 11 pt lines of the rest.
+        let buttons = SQUARE + PILL_GAP + SQUARE + PILL_GAP + LINK_WIDTH + PILL_GAP;
+        let inner = crate::ui::RIGHT_COLUMN_WIDTH - 2.0 * 20.0;
+        assert!(inner - buttons >= 120.0, "hint room {}", inner - buttons);
+        // The move row holds two 11 pt lines and the box fits the preset line: `const`
+        // assertions at the top.
     }
 
     #[test]

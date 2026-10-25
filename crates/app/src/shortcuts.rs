@@ -18,6 +18,7 @@
 //! | Alt+Up / Alt+Down        | select the previous / next track (M10)   |
 //! | Ctrl+PageUp / PageDown   | previous / next preset (M9)              |
 //! | Ctrl+Shift+P             | open the preset browser, focus search    |
+//! | Ctrl+L                   | link the edit track to a free insert (M11)|
 //!
 //! Home (rewind while playing), Escape (deselect / test tone off; twice = panic; closes the
 //! preset browser) and the Up / Down / PageUp / PageDown note nudges of a selected bass
@@ -73,11 +74,13 @@ pub enum Shortcut {
     NextPreset,
     /// Ctrl+Shift+P: open the preset browser with the search field focused (M9).
     FindPreset,
+    /// Ctrl+L: route the edit track to the first free mixer insert (M11, FL's Ctrl+L).
+    LinkInsert,
 }
 
 impl Shortcut {
     /// Every shortcut, in check order.
-    pub const ALL: [Shortcut; 19] = [
+    pub const ALL: [Shortcut; 20] = [
         Shortcut::SaveAs,
         Shortcut::OpenRecent,
         Shortcut::Redo,
@@ -97,6 +100,7 @@ impl Shortcut {
         Shortcut::PrevPreset,
         Shortcut::NextPreset,
         Shortcut::FindPreset,
+        Shortcut::LinkInsert,
     ];
 
     /// The key combinations that trigger this shortcut.
@@ -130,6 +134,7 @@ impl Shortcut {
             Shortcut::PrevPreset => &[(Modifiers::COMMAND, Key::PageUp)],
             Shortcut::NextPreset => &[(Modifiers::COMMAND, Key::PageDown)],
             Shortcut::FindPreset => &[(COMMAND_SHIFT, Key::P)],
+            Shortcut::LinkInsert => &[(Modifiers::COMMAND, Key::L)],
         }
     }
 
@@ -156,6 +161,7 @@ impl Shortcut {
             Shortcut::PrevPreset => "Ctrl+PageUp",
             Shortcut::NextPreset => "Ctrl+PageDown",
             Shortcut::FindPreset => "Ctrl+Shift+P",
+            Shortcut::LinkInsert => "Ctrl+L",
         }
     }
 
@@ -401,6 +407,23 @@ mod tests {
         }
         assert_eq!(Shortcut::PrevPreset.label(), "Ctrl+PageUp");
         assert_eq!(Shortcut::FindPreset.label(), "Ctrl+Shift+P");
+    }
+
+    #[test]
+    fn ctrl_l_links_the_edit_track_to_an_insert() {
+        let mut input = input_with(
+            vec![
+                press(Modifiers::COMMAND, Key::L),
+                press(Modifiers::NONE, Key::L),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(take_shortcuts(&mut input), vec![Shortcut::LinkInsert]);
+        assert!(take_shortcuts(&mut input).is_empty(), "consumed");
+        // Plain L is a piano key.
+        assert!(input.key_pressed(Key::L));
+        assert!(!Shortcut::LinkInsert.opens_dialog());
+        assert_eq!(Shortcut::LinkInsert.label(), "Ctrl+L");
     }
 
     #[test]

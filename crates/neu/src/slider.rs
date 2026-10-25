@@ -126,7 +126,7 @@ pub fn vslider_thumb_pos(track: Rect, f: f32) -> Pos2 {
 /// The returned response's rect is the interactive column around the track
 /// ([`SLIDER_WIDTH`] x the track height); the track itself is centred in it.
 pub fn vslider(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_>) -> Response {
-    vertical_slider(ui, theme, value, spec, SLIDER_TRACK)
+    vertical_slider(ui, theme, value, spec, SLIDER_TRACK, true)
 }
 
 /// Mixer fader: the [`vslider`] control on the taller [`FADER_TRACK`] (6x140) with the same
@@ -137,7 +137,27 @@ pub fn vslider(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_
 ///
 /// The response's rect is the interactive column ([`SLIDER_WIDTH`] x [`FADER_TRACK`]`.y`).
 pub fn fader(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_>) -> Response {
-    vertical_slider(ui, theme, value, spec, FADER_TRACK)
+    vertical_slider(ui, theme, value, spec, FADER_TRACK, true)
+}
+
+/// Shortest track [`fader_sized`] accepts: the thumb plus the two end markers.
+pub const FADER_MIN_TRACK: f32 = SLIDER_THUMB + 2.0 * SLIDER_MARKER_OFFSET;
+
+/// A [`fader`] whose track is `track_height` tall (clamped to at least [`FADER_MIN_TRACK`])
+/// and, with `label` false, no caps label under the track (the value still sits above it and
+/// `spec.label` still names the control for the tooltip and accessibility): the mixer's
+/// insert strips name their fader in the strip head and fit the track to the room left
+/// under their knobs (M11).
+pub fn fader_sized(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: &mut f32,
+    spec: &SliderSpec<'_>,
+    track_height: f32,
+    label: bool,
+) -> Response {
+    let track = Vec2::new(FADER_TRACK.x, track_height.max(FADER_MIN_TRACK));
+    vertical_slider(ui, theme, value, spec, track, label)
 }
 
 /// The shared slider body: a `track_size` inset-s track in a [`SLIDER_WIDTH`] column with the
@@ -148,9 +168,15 @@ fn vertical_slider(
     value: &mut f32,
     spec: &SliderSpec<'_>,
     track_size: Vec2,
+    show_label: bool,
 ) -> Response {
     let painter = ui.painter().clone();
     let label_galley = text::layout(&painter, spec.label, TextKind::Label, theme.text_secondary);
+    let label_height = if show_label {
+        SLIDER_GAP + label_galley.size().y
+    } else {
+        0.0
+    };
     let value_height = text::layout(
         &painter,
         &spec.format(spec.clamp(*value)),
@@ -159,7 +185,7 @@ fn vertical_slider(
     )
     .size()
     .y;
-    let height = value_height + SLIDER_GAP + track_size.y + SLIDER_GAP + label_galley.size().y;
+    let height = value_height + SLIDER_GAP + track_size.y + label_height;
 
     // The column is laid out as one block; only the track column senses input.
     let (rect, block) = ui.allocate_exact_size(vec2(SLIDER_WIDTH, height), Sense::hover());
@@ -274,14 +300,16 @@ fn vertical_slider(
         if response.has_focus() {
             paint_focus_circle(&painter, thumb, SLIDER_THUMB * 0.5, theme);
         }
-        text::paint_galley(
-            &painter,
-            pos2(rect.center().x, rect.max.y),
-            Align2::CENTER_BOTTOM,
-            label_galley,
-            TextKind::Label,
-            theme.text_secondary,
-        );
+        if show_label {
+            text::paint_galley(
+                &painter,
+                pos2(rect.center().x, rect.max.y),
+                Align2::CENTER_BOTTOM,
+                label_galley,
+                TextKind::Label,
+                theme.text_secondary,
+            );
+        }
     }
 
     response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(v), spec.label));

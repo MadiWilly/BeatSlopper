@@ -255,3 +255,82 @@ fn meter_fraction_follows_the_db_curve() {
         last = f;
     }
 }
+
+/// M11: `fader_sized` fits its track to the given height (never under `FADER_MIN_TRACK`),
+/// drops the caps label when asked (the block is shorter by the label row) and still reports
+/// the value, follows the pointer and names itself for accessibility.
+#[test]
+fn fader_sized_fits_the_track_and_can_drop_its_label() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let mut harness = Harness::builder()
+            .with_size(vec2(260.0, 300.0))
+            .with_step_dt(0.01)
+            .with_max_steps(32)
+            .build_ui_state(
+                move |ui, values: &mut [f32; 3]| {
+                    let theme = Theme::for_mode(mode);
+                    theme.apply(ui.ctx());
+                    ui.add_space(20.0);
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(20.0);
+                        let a = neu::fader_sized(ui, &theme, &mut values[0], &LEVEL, 90.0, true);
+                        ui.add_space(20.0);
+                        let short = SliderSpec {
+                            label: "Short",
+                            ..LEVEL
+                        };
+                        let b = neu::fader_sized(ui, &theme, &mut values[1], &short, 90.0, false);
+                        ui.add_space(20.0);
+                        let tiny = SliderSpec {
+                            label: "Tiny",
+                            ..LEVEL
+                        };
+                        let c = neu::fader_sized(ui, &theme, &mut values[2], &tiny, 1.0, false);
+                        ui.data_mut(|d| {
+                            d.insert_temp(egui::Id::NULL.with("rects"), [a.rect, b.rect, c.rect]);
+                        });
+                    });
+                },
+                [-12.0, -12.0, -12.0],
+            );
+        harness.run();
+        let [a, b, c]: [Rect; 3] = harness
+            .ctx
+            .data(|d| d.get_temp(egui::Id::NULL.with("rects")))
+            .unwrap();
+        assert_eq!(
+            a.height(),
+            90.0,
+            "the interactive column is the track's height"
+        );
+        assert_eq!(b.height(), 90.0);
+        assert_eq!(c.height(), neu::FADER_MIN_TRACK, "a 1 pt track is clamped");
+        // Both 90 pt faders start their track at the same y (the value row above is the
+        // same); the unlabelled one has nothing under it.
+        assert_eq!(a.min.y, b.min.y);
+        let labelled = harness.get_by_label("Level");
+        let bare = harness.get_by_label("Short");
+        assert_eq!(labelled.rect().height(), 90.0);
+        assert_eq!(bare.rect().height(), 90.0);
+        harness.get_by_label("Tiny");
+
+        // The bare fader still follows the pointer: a click at its top is the maximum.
+        let top = pos2(b.center().x, b.min.y + neu::SLIDER_THUMB * 0.5);
+        harness.event(egui::Event::PointerMoved(top));
+        harness.event(egui::Event::PointerButton {
+            pos: top,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.event(egui::Event::PointerButton {
+            pos: top,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.run();
+        assert_eq!(harness.state()[1], 6.0);
+        assert_eq!(harness.state()[0], -12.0, "the neighbour is untouched");
+    }
+}

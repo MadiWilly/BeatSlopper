@@ -561,6 +561,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
             + ParamId::ALL.iter().filter(|id| id.is_global()).count()
             + 2
             + app::app::mixer_messages(&loaded.mixer).len()
+            + app::app::insert_messages(&loaded.mixer).len()
             + app::app::eq_messages(&loaded.eq).len()
             + app::app::reverb_messages(&loaded.reverb).len()
             + app::app::bank_messages(&loaded.bank, None).len();

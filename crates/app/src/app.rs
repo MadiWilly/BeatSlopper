@@ -104,6 +104,9 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
+use engine::inserts::{
+    DEFAULT_ROUTES, INSERT_COUNT, MASTER, MAX_INSERT, SLOT_COUNT, insert_number,
+};
 use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE, MAX_REPEATS, pattern_letter};
 use engine::track::{COLOUR_COUNT, MAX_NAME_LEN, default_name, track_index};
 use engine::{
@@ -111,7 +114,7 @@ use engine::{
     MAX_TRACKS, Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern,
     PatternLength, PlayMode, Position, STEPS, Strip, TrackId,
 };
-use engine::{EqParam, EqState, ReverbParam, ReverbState};
+use engine::{EqParam, EqState, InsertParam, ReverbParam, ReverbState, SlotKind};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
@@ -293,6 +296,14 @@ pub fn decay_meters(shown: &mut Meters, new: &Meters, dt_seconds: f32) {
     for (s, n) in shown.master.iter_mut().zip(new.master.iter()) {
         *s = decay_meter(*s, *n, dt_seconds);
     }
+    // M11: the insert meters and the compressor gain-reduction meters decay the same way (the
+    // reduction is in dB, so the fall is a 20 dB/s scaling of the bar, which reads fine).
+    for (s, n) in shown.insert.iter_mut().zip(new.insert.iter()) {
+        *s = decay_meter(*s, *n, dt_seconds);
+    }
+    for (s, n) in shown.insert_gr.iter_mut().zip(new.insert_gr.iter()) {
+        *s = decay_meter(*s, *n, dt_seconds);
+    }
 }
 
 /// `true` when any shown meter is still above [`METER_SILENT`] (so the UI keeps repainting).
@@ -302,6 +313,8 @@ pub fn meters_active(shown: &Meters) -> bool {
         .channel
         .iter()
         .chain(shown.master.iter())
+        .chain(shown.insert.iter())
+        .chain(shown.insert_gr.iter())
         .any(|v| *v > METER_SILENT)
 }
 
@@ -330,6 +343,65 @@ pub enum EditKey {
     EqGain,
     /// A reverb value edited from the plugin window.
     Reverb(ReverbParam),
+    /// An insert's continuous value (level, pan, a send, an EQ3 knob; M11). Mute / solo and
+    /// the route are discrete.
+    Insert(u8, InsertParam),
+    /// A fader drag that moves every selected insert together (M11, FL's "selected faders
+    /// move together"): one key for the whole group so the drag is one undo step.
+    InsertGroup,
+    /// One parameter (`index`) of an effect slot: `(insert, slot, index)` (M11).
+    Slot(u8, u8, u8),
+}
+
+/// Longest insert name, in characters (the strip's name block is about 44 pt wide at
+/// 11 pt caps; longer names end in an ellipsis and the tooltip has the rest).
+pub const MAX_INSERT_NAME_LEN: usize = 12;
+
+/// The app-side part of a mixer insert (M11): its name and colour. The engine's
+/// `InsertState` carries the audio values; these two live in the app and travel in the
+/// project file as the `insert_ui` sidecar key (see `crate::project`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InsertUi {
+    /// Display name, at most [`MAX_INSERT_NAME_LEN`] characters (`"Insert N"` by default).
+    pub name: String,
+    /// Colour swatch `0..COLOUR_COUNT` ([`Theme::track_colour`]; the same eight as the
+    /// tracks).
+    pub colour: u8,
+}
+
+impl InsertUi {
+    /// The default entry of insert number `insert` (1-based): `"Insert N"` in colour
+    /// `(N - 1) % 8`.
+    #[must_use]
+    pub fn fresh(insert: u8) -> Self {
+        Self {
+            name: default_insert_name(insert),
+            colour: insert.wrapping_sub(1) % COLOUR_COUNT,
+        }
+    }
+}
+
+/// `"Insert N"`.
+#[must_use]
+pub fn default_insert_name(insert: u8) -> String {
+    format!("Insert {insert}")
+}
+
+/// The sixteen default insert entries, indexed by `insert_index` (insert 1 first).
+#[must_use]
+pub fn default_insert_ui() -> [InsertUi; INSERT_COUNT] {
+    std::array::from_fn(|i| InsertUi::fresh(insert_number(i)))
+}
+
+/// `name` trimmed and cut to [`MAX_INSERT_NAME_LEN`] characters.
+#[must_use]
+pub fn clean_insert_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .take(MAX_INSERT_NAME_LEN)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
 }
 
 /// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
@@ -608,8 +680,22 @@ pub struct AppState {
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
-    /// sends. Edit through [`AppState::set_mixer`] so the engine follows.
+    /// sends. Edit through [`AppState::set_mixer`] so the engine follows. Since M11 it also
+    /// carries the sixteen inserts and the source routes ([`AppState::set_insert`],
+    /// [`AppState::set_slot_kind`], [`AppState::set_slot_param`], [`AppState::set_route`]).
     pub mixer: MixerState,
+    /// The sixteen inserts' names and colours (M11), indexed by `insert_index`. Edit through
+    /// [`AppState::rename_insert`] / [`AppState::set_insert_colour`] (undo steps); saved as
+    /// the project file's `insert_ui` sidecar.
+    pub insert_ui: [InsertUi; INSERT_COUNT],
+    /// The inserts selected in the MIXER panel (M11; insert numbers, the primary first).
+    /// View state: a click on an insert's head selects it alone, Shift-click adds / removes
+    /// one, and a fader drag of a selected insert moves the whole selection together. Empty
+    /// means "the edit track's insert" is the one highlighted.
+    pub insert_selection: Vec<u8>,
+    /// The effect slot whose knobs the MIXER panel shows under its strip instead of the
+    /// EQ3 / send knobs: `(insert, slot)` (M11). View state; `None` when nothing is open.
+    pub open_slot: Option<(u8, u8)>,
     /// Block peaks as last read from the engine (`EngineHandle::meters`, every frame).
     pub meters: Meters,
     /// The decayed levels the mixer draws (see [`decay_meters`]).
@@ -806,6 +892,9 @@ impl AppState {
             pending_shortcuts: Vec::new(),
             song_selected: Some(0),
             mixer: MixerState::default(),
+            insert_ui: default_insert_ui(),
+            insert_selection: Vec::new(),
+            open_slot: None,
             meters: Meters::SILENT,
             shown_meters: Meters::SILENT,
             meters_updated: None,
@@ -1049,6 +1138,7 @@ impl AppState {
         self.send(Message::SetBpm(self.bpm));
         self.send(Message::SetSwing(self.swing));
         self.resend_mixer();
+        self.resend_inserts();
         self.send_eq();
         self.send_reverb();
         self.send_bank();
@@ -1297,6 +1387,321 @@ impl AppState {
     pub fn resend_mixer(&mut self) {
         for msg in mixer_messages(&self.mixer) {
             self.send(msg);
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Inserts (M11): the FL-style mixer's insert buses, their effect slots and the source
+    // routes. Every setter clamps through the mirror, sends the engine message, marks the
+    // project dirty and records undo (discrete for mute / solo / route / slot kind, coalesced
+    // per drag for the continuous values, like `set_mixer`).
+
+    /// Sends every insert value, slot and route ([`insert_messages`]) so the engine's inserts
+    /// match the mirror.
+    pub fn resend_inserts(&mut self) {
+        for msg in insert_messages(&self.mixer) {
+            self.send(msg);
+        }
+    }
+
+    /// The name and colour of insert number `insert` (`1..=16`, wraps).
+    #[must_use]
+    pub fn insert_ui(&self, insert: u8) -> &InsertUi {
+        &self.insert_ui[engine::inserts::insert_index(insert)]
+    }
+
+    /// The display name of a route target: `"MASTER"` for `0`, else the insert's name.
+    #[must_use]
+    pub fn route_name(&self, insert: u8) -> String {
+        if insert == MASTER || insert > MAX_INSERT {
+            "MASTER".to_owned()
+        } else {
+            self.insert_ui(insert).name.clone()
+        }
+    }
+
+    /// Clamps `value` with `InsertParam::clamp` (toggles snap to 0 / 1, a route to MASTER or
+    /// a higher insert), stores it in the mirror and sends `Message::SetInsert`. Returns the
+    /// stored value. A real change is an undo step: discrete for mute / solo / route,
+    /// coalesced per drag for the rest ([`AppState::edit_insert`] adds the drag-start hint).
+    pub fn set_insert(&mut self, insert: u8, param: InsertParam, value: f32) -> f32 {
+        let value = param.clamp(insert, value);
+        if value != self.mixer.get_insert(insert, param) {
+            if param.is_toggle() || param == InsertParam::Route {
+                self.begin_edit();
+            } else {
+                self.begin_continuous_edit(EditKey::Insert(insert, param), false);
+            }
+        }
+        let stored = self.mixer.set_insert(insert, param, value);
+        self.send(Message::SetInsert {
+            insert,
+            param,
+            value: stored,
+        });
+        stored
+    }
+
+    /// [`AppState::set_insert`] from a control: `drag_started` always starts a new undo step
+    /// for a continuous value.
+    pub fn edit_insert(
+        &mut self,
+        insert: u8,
+        param: InsertParam,
+        value: f32,
+        drag_started: bool,
+    ) -> f32 {
+        if drag_started
+            && !param.is_toggle()
+            && param != InsertParam::Route
+            && param.clamp(insert, value) != self.mixer.get_insert(insert, param)
+        {
+            self.begin_continuous_edit(EditKey::Insert(insert, param), true);
+        }
+        self.set_insert(insert, param, value)
+    }
+
+    /// Flips insert `insert`'s mute (one undo step).
+    pub fn toggle_insert_mute(&mut self, insert: u8) {
+        let on = self.mixer.insert(insert).mute;
+        self.set_insert(insert, InsertParam::Mute, if on { 0.0 } else { 1.0 });
+    }
+
+    /// Flips insert `insert`'s solo (one undo step).
+    pub fn toggle_insert_solo(&mut self, insert: u8) {
+        let on = self.mixer.insert(insert).solo;
+        self.set_insert(insert, InsertParam::Solo, if on { 0.0 } else { 1.0 });
+    }
+
+    /// Loads `kind` into slot `slot` of insert `insert` (its params reset to the kind's
+    /// defaults, like loading a plugin) and sends `SetSlotKind`. One undo step; nothing
+    /// happens for the kind already loaded. A slot switched off closes its knob view.
+    pub fn set_slot_kind(&mut self, insert: u8, slot: u8, kind: SlotKind) -> SlotKind {
+        if self.mixer.insert(insert).slot(slot).kind == kind {
+            return kind;
+        }
+        self.begin_edit();
+        let stored = self.mixer.set_slot_kind(insert, slot, kind);
+        self.send(Message::SetSlotKind {
+            insert,
+            slot,
+            kind: stored,
+        });
+        self.clamp_open_slot();
+        stored
+    }
+
+    /// Sets parameter `index` of slot `slot` of insert `insert` (clamped by the kind's
+    /// table; nothing for an unused index) and sends `SetSlotParam`. A real change is a
+    /// coalesced undo step per drag ([`AppState::edit_slot_param`] adds the drag-start hint).
+    pub fn set_slot_param(&mut self, insert: u8, slot: u8, index: u8, value: f32) -> f32 {
+        let current = self.mixer.insert(insert).slot(slot);
+        let Some(param) = current.param(usize::from(index)) else {
+            return 0.0;
+        };
+        let value = param.clamp(value);
+        if value != current.get(usize::from(index)) {
+            self.begin_continuous_edit(EditKey::Slot(insert, slot, index), false);
+        }
+        let stored = self.mixer.set_slot_param(insert, slot, index, value);
+        self.send(Message::SetSlotParam {
+            insert,
+            slot,
+            index,
+            value: stored,
+        });
+        stored
+    }
+
+    /// [`AppState::set_slot_param`] from a knob: `drag_started` starts a new undo step.
+    pub fn edit_slot_param(
+        &mut self,
+        insert: u8,
+        slot: u8,
+        index: u8,
+        value: f32,
+        drag_started: bool,
+    ) -> f32 {
+        let current = self.mixer.insert(insert).slot(slot);
+        if drag_started
+            && let Some(param) = current.param(usize::from(index))
+            && param.clamp(value) != current.get(usize::from(index))
+        {
+            self.begin_continuous_edit(EditKey::Slot(insert, slot, index), true);
+        }
+        self.set_slot_param(insert, slot, index, value)
+    }
+
+    /// Routes source `channel` to insert number `insert` (`0` = straight to the master; a
+    /// number above 16 is refused and becomes the master) and sends `SetRoute`. One undo
+    /// step; returns the stored route.
+    pub fn set_route(&mut self, channel: Channel, insert: u8) -> u8 {
+        let target = MixerState::valid_source_route(insert);
+        if target == self.mixer.route(channel) {
+            return target;
+        }
+        self.begin_edit();
+        self.put_route(channel, target);
+        target
+    }
+
+    /// Renames insert `insert` (trimmed, at most [`MAX_INSERT_NAME_LEN`] characters). One
+    /// undo step; an empty or unchanged name is not an edit. Returns whether it changed.
+    pub fn rename_insert(&mut self, insert: u8, name: &str) -> bool {
+        let name = clean_insert_name(name);
+        let i = engine::inserts::insert_index(insert);
+        if name.is_empty() || name == self.insert_ui[i].name {
+            return false;
+        }
+        self.begin_edit();
+        self.insert_ui[i].name = name;
+        true
+    }
+
+    /// Sets insert `insert`'s colour swatch (wraps mod 8). One undo step; the same colour is
+    /// not an edit.
+    pub fn set_insert_colour(&mut self, insert: u8, colour: u8) -> bool {
+        let colour = colour % COLOUR_COUNT;
+        let i = engine::inserts::insert_index(insert);
+        if colour == self.insert_ui[i].colour {
+            return false;
+        }
+        self.begin_edit();
+        self.insert_ui[i].colour = colour;
+        true
+    }
+
+    /// The sources routed to insert `insert` (`1..=16`): the drum channels and the *active*
+    /// tracks' channels whose route is that number, in [`Channel::ALL`] order.
+    #[must_use]
+    pub fn insert_sources(&self, insert: u8) -> Vec<Channel> {
+        Channel::ALL
+            .iter()
+            .copied()
+            .filter(|channel| match channel.track() {
+                Some(slot) => self.track_active(slot),
+                None => true,
+            })
+            .filter(|channel| self.mixer.route(*channel) == insert)
+            .collect()
+    }
+
+    /// `true` when nothing is routed to insert `insert` and all its slots are off (the panel
+    /// draws such an insert dimmed).
+    #[must_use]
+    pub fn insert_is_idle(&self, insert: u8) -> bool {
+        self.insert_sources(insert).is_empty()
+            && self.mixer.insert(insert).slots.iter().all(|s| s.is_off())
+    }
+
+    /// The first insert number (`1..=16`) no active source is routed to, if any (FL's "link
+    /// to new insert" target).
+    #[must_use]
+    pub fn free_insert(&self) -> Option<u8> {
+        (1..=MAX_INSERT).find(|n| self.insert_sources(*n).is_empty())
+    }
+
+    /// Routes `channel` to the first free insert ([`AppState::free_insert`]) and selects
+    /// that insert in the panel. `None` (and a status line) when every insert is in use.
+    pub fn link_to_free_insert(&mut self, channel: Channel) -> Option<u8> {
+        let Some(insert) = self.free_insert() else {
+            self.set_status("All 16 inserts are in use");
+            return None;
+        };
+        self.set_route(channel, insert);
+        self.select_insert(insert, false);
+        Some(insert)
+    }
+
+    /// Ctrl+L: routes track `slot` to the first free insert ([`AppState::link_to_free_insert`]).
+    pub fn link_track_to_free_insert(&mut self, slot: TrackId) -> Option<u8> {
+        if !self.track_active(slot) {
+            return None;
+        }
+        self.link_to_free_insert(Channel::from_track(slot))
+    }
+
+    /// The insert the panel highlights: the primary selection, else the edit track's route
+    /// (`0` when that track goes straight to the master and nothing is selected).
+    #[must_use]
+    pub fn highlighted_insert(&self) -> u8 {
+        self.insert_selection
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.mixer.route(Channel::from_track(self.edit_track)))
+    }
+
+    /// Selects insert `insert` in the panel (view state, no undo step): alone, or with
+    /// `extend` (Shift-click) toggled in or out of the current selection. `0` clears it.
+    pub fn select_insert(&mut self, insert: u8, extend: bool) {
+        if insert == MASTER || insert > MAX_INSERT {
+            self.insert_selection.clear();
+            return;
+        }
+        if !extend {
+            self.insert_selection.clear();
+            self.insert_selection.push(insert);
+        } else if let Some(at) = self.insert_selection.iter().position(|n| *n == insert) {
+            self.insert_selection.remove(at);
+        } else {
+            self.insert_selection.push(insert);
+        }
+    }
+
+    /// Whether insert `insert` is in the panel's selection.
+    #[must_use]
+    pub fn is_insert_selected(&self, insert: u8) -> bool {
+        self.insert_selection.contains(&insert)
+    }
+
+    /// A fader move of insert `insert` to `value` (dB): when the insert is selected, every
+    /// other selected insert moves by the same amount (FL's "selected faders move
+    /// together"), all in one coalesced undo step; otherwise just that fader. Returns the
+    /// stored value of `insert`.
+    pub fn move_insert_fader(&mut self, insert: u8, value: f32, drag_started: bool) -> f32 {
+        if !self.is_insert_selected(insert) || self.insert_selection.len() < 2 {
+            return self.edit_insert(insert, InsertParam::Level, value, drag_started);
+        }
+        let value = InsertParam::Level.clamp(insert, value);
+        let before = self.mixer.get_insert(insert, InsertParam::Level);
+        let delta = value - before;
+        if delta == 0.0 {
+            return before;
+        }
+        self.begin_continuous_edit(EditKey::InsertGroup, drag_started);
+        for n in self.insert_selection.clone() {
+            let target = if n == insert {
+                value
+            } else {
+                self.mixer.get_insert(n, InsertParam::Level) + delta
+            };
+            let stored = self.mixer.set_insert(n, InsertParam::Level, target);
+            self.send(Message::SetInsert {
+                insert: n,
+                param: InsertParam::Level,
+                value: stored,
+            });
+        }
+        self.mixer.get_insert(insert, InsertParam::Level)
+    }
+
+    /// Opens (or closes, when already open) the knob view of slot `slot` of insert `insert`
+    /// (view state). An empty slot has no knobs to show, so it never opens.
+    pub fn toggle_open_slot(&mut self, insert: u8, slot: u8) {
+        let key = (insert, slot);
+        if self.open_slot == Some(key) || self.mixer.insert(insert).slot(slot).is_off() {
+            self.open_slot = None;
+        } else {
+            self.open_slot = Some(key);
+        }
+    }
+
+    /// Drops the open slot view when its slot is off (after an undo, a load, a kind change).
+    fn clamp_open_slot(&mut self) {
+        if let Some((insert, slot)) = self.open_slot
+            && self.mixer.insert(insert).slot(slot).is_off()
+        {
+            self.open_slot = None;
         }
     }
 
@@ -2299,6 +2704,11 @@ impl AppState {
     /// and sends every value (`SetMixer` x 6). Not an undo step of its own: the track
     /// operations call it inside theirs.
     fn put_strip(&mut self, channel: Channel, strip: Option<Strip>) {
+        // A default strip comes with the channel's default insert route (M11): a freed slot
+        // forgets where its track was routed, a fresh one starts at its home insert.
+        if strip.is_none() {
+            self.put_route(channel, DEFAULT_ROUTES[channel.index()]);
+        }
         let strip = strip.unwrap_or_else(|| Strip::for_channel(channel));
         *self.mixer.strip_mut(channel) = strip;
         for param in ChannelParam::ALL {
@@ -2308,6 +2718,17 @@ impl AppState {
                 value: strip.get(param),
             });
         }
+    }
+
+    /// Stores `insert` as `channel`'s route in the mirror and sends `SetRoute`. Not an undo
+    /// step of its own (the track operations call it inside theirs; [`AppState::set_route`]
+    /// is the user-facing edit).
+    fn put_route(&mut self, channel: Channel, insert: u8) {
+        let stored = self.mixer.set_route(channel, insert);
+        self.send(Message::SetRoute {
+            channel,
+            insert: stored,
+        });
     }
 
     /// Drops the clipboard's notes on every unused slot (a load or an undo may have switched
@@ -2359,6 +2780,9 @@ impl AppState {
         });
         let source_strip = *self.mixer.strip(Channel::from_track(from));
         self.put_strip(Channel::from_track(slot), Some(source_strip));
+        // FL's clone keeps the mixer track: the copy is routed where the source is (M11).
+        let route = self.mixer.route(Channel::from_track(from));
+        self.put_route(Channel::from_track(slot), route);
         self.select_track(slot);
         Some(slot)
     }
@@ -2556,6 +2980,7 @@ impl AppState {
             bpm: self.bpm,
             swing: self.swing,
             mixer: self.mixer,
+            insert_ui: self.insert_ui.clone(),
             eq: self.eq,
             reverb: self.reverb,
             project_path: self.project_path.clone(),
@@ -2638,6 +3063,7 @@ impl AppState {
             bpm,
             swing,
             mixer,
+            insert_ui,
             eq,
             reverb,
             project_path,
@@ -2649,6 +3075,8 @@ impl AppState {
         self.bpm = bpm;
         self.swing = swing;
         self.mixer = mixer;
+        self.insert_ui = insert_ui;
+        self.clamp_open_slot();
         self.eq = eq;
         self.reverb = reverb;
         self.project_path = project_path;
@@ -3270,6 +3698,49 @@ pub fn mixer_messages(mixer: &MixerState) -> Vec<Message> {
     out
 }
 
+/// The messages that put `mixer`'s inserts and routes into the engine (M11): per insert
+/// (1..=16) one `SetInsert` per [`InsertParam::ALL`] entry (the route last, so it lands
+/// after the levels), then per slot a `SetSlotKind` followed by one `SetSlotParam` per
+/// parameter of that kind; then one `SetRoute` per source channel. A default mixer makes
+/// `16 * (11 + 3) + 13` = 237 messages.
+#[must_use]
+pub fn insert_messages(mixer: &MixerState) -> Vec<Message> {
+    let mut out = Vec::with_capacity(INSERT_COUNT * 32 + Channel::COUNT);
+    for n in 1..=MAX_INSERT {
+        let state = mixer.insert(n);
+        for param in InsertParam::ALL {
+            out.push(Message::SetInsert {
+                insert: n,
+                param,
+                value: state.get(param),
+            });
+        }
+        for slot in 0..SLOT_COUNT as u8 {
+            let s = state.slot(slot);
+            out.push(Message::SetSlotKind {
+                insert: n,
+                slot,
+                kind: s.kind,
+            });
+            for index in 0..s.kind.param_count() as u8 {
+                out.push(Message::SetSlotParam {
+                    insert: n,
+                    slot,
+                    index,
+                    value: s.get(usize::from(index)),
+                });
+            }
+        }
+    }
+    for channel in Channel::ALL {
+        out.push(Message::SetRoute {
+            channel,
+            insert: mixer.route(channel),
+        });
+    }
+    out
+}
+
 /// The messages that put `bank`'s chain into the engine: `SetChainLen` then one
 /// `SetChainEntry` per entry (at most `MAX_CHAIN + 1`).
 #[must_use]
@@ -3644,6 +4115,11 @@ impl BeatSlopperApp {
                 state.step_preset(1);
             }
             Shortcut::FindPreset => state.open_preset_browser(true),
+            Shortcut::LinkInsert => {
+                if state.link_track_to_free_insert(state.edit_track).is_some() {
+                    state.right_panel = RightPanel::Mixer;
+                }
+            }
         }
     }
 
@@ -4198,10 +4674,13 @@ mod tests {
             + ParamId::ALL.iter().filter(|id| id.is_global()).count()
             + 2
             + mixer_messages(&state.mixer).len()
+            + insert_messages(&state.mixer).len()
             + eq_messages(&state.eq).len()
             + reverb_messages(&state.reverb).len()
             + bank_messages(&state.bank, None).len();
         assert!(expected < engine::QUEUE_CAPACITY, "{expected}");
+        // M11: the sixteen default inserts (11 values + 3 empty slots each) and 13 routes.
+        assert_eq!(insert_messages(&state.mixer).len(), 16 * 14 + 13);
         assert_eq!(free_before - state.engine.free_slots(), expected);
         assert!(state.outbox.is_empty(), "the default bank fits in one go");
         engine.process_messages();
@@ -4238,8 +4717,17 @@ mod tests {
         assert!(state.strip(Channel::OpenHat).mute);
         assert_eq!(
             state.set_mixer(Channel::Synth, ChannelParam::ReverbSend, f32::NAN),
+            0.0,
+            "non-finite resets to the channel default (neutral since M11)"
+        );
+        // M11: the sends of a mix live on the inserts; the synth's home insert (6) defaults
+        // to full delay / reverb sends and a non-finite value resets to *that* default.
+        assert_eq!(state.mixer.insert(6).reverb_send, 1.0);
+        assert_eq!(state.mixer.insert(6).delay_send, 1.0);
+        assert_eq!(
+            state.set_insert(6, InsertParam::ReverbSend, f32::NAN),
             1.0,
-            "non-finite resets to the channel default"
+            "non-finite resets to the insert default"
         );
         assert_eq!(
             state.set_mixer(Channel::Synth, ChannelParam::Solo, 1.0),
@@ -4339,7 +4827,12 @@ mod tests {
         assert!(state.undo());
         assert!(!state.strip(Channel::Synth).mute);
         assert!(state.undo());
-        assert_eq!(state.strip(Channel::Synth).reverb_send, 1.0, "the default");
+        assert_eq!(
+            state.strip(Channel::Synth).reverb_send,
+            0.0,
+            "the default (neutral since M11: the send default lives on insert 6)"
+        );
+        assert_eq!(state.mixer.insert(6).reverb_send, 1.0);
         assert_eq!(state.strip(Channel::Kick).pan, -0.6);
         assert!(state.undo()); // the -0.5 / -0.6 drag at once
         assert_eq!(state.strip(Channel::Kick).pan, 0.5);
@@ -6791,5 +7284,395 @@ mod tests {
         assert!(!TrackUi::inactive(3).active);
         assert_eq!(TrackUi::fresh(9).colour, 1, "the colour follows the slot");
         assert_eq!(default_tracks().iter().filter(|t| t.active).count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod insert_tests {
+    //! M11: the insert / slot / route helpers mirror the engine, record undo like the strip
+    //! setters, and the app-side names and colours ride along.
+
+    use super::*;
+    use engine::inserts::COMPRESSOR_PARAMS;
+
+    /// Drains the outbox into the engine until both are empty.
+    fn sync(state: &mut AppState, engine: &mut engine::Engine) {
+        loop {
+            engine.process_messages();
+            if state.flush_outbox() == 0 && state.outbox.is_empty() {
+                break;
+            }
+        }
+        engine.process_messages();
+    }
+
+    #[test]
+    fn defaults_name_and_colour_the_sixteen_inserts() {
+        let inserts = default_insert_ui();
+        assert_eq!(inserts[0].name, "Insert 1");
+        assert_eq!(inserts[15].name, "Insert 16");
+        assert_eq!(inserts[0].colour, 0);
+        assert_eq!(inserts[7].colour, 7);
+        assert_eq!(inserts[8].colour, 0, "colours wrap at eight");
+        assert_eq!(clean_insert_name("  Drums  "), "Drums");
+        assert_eq!(clean_insert_name("ABCDEFGHIJKLMNOP"), "ABCDEFGHIJKL");
+        assert_eq!(clean_insert_name("   "), "");
+        let (state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.insert_ui(6).name, "Insert 6");
+        assert_eq!(
+            state.insert_ui(0).name,
+            "Insert 16",
+            "0 wraps to the last insert"
+        );
+        assert_eq!(state.route_name(0), "MASTER");
+        assert_eq!(state.route_name(6), "Insert 6");
+        assert_eq!(state.route_name(17), "MASTER");
+    }
+
+    #[test]
+    fn set_insert_clamps_stores_and_reaches_the_engine_with_undo_like_the_strips() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(
+            state.set_insert(1, InsertParam::Level, 100.0),
+            engine::mixer::MAX_LEVEL_DB
+        );
+        assert_eq!(state.set_insert(2, InsertParam::Pan, -7.0), -1.0);
+        assert_eq!(state.set_insert(3, InsertParam::Mute, 0.7), 1.0);
+        assert!(state.mixer.insert(3).mute);
+        assert_eq!(state.set_insert(4, InsertParam::Eq3Low, -40.0), -15.0);
+        assert_eq!(state.set_insert(4, InsertParam::Eq3MidFreq, 5.0), 100.0);
+        assert!(state.dirty);
+        // Mute / solo / route are discrete; a level drag coalesces.
+        assert_eq!(state.undo.len(), 5);
+        for v in 1..=10 {
+            state.set_insert(1, InsertParam::Level, -(v as f32));
+        }
+        assert_eq!(state.undo.len(), 6, "one drag, one step");
+        state.toggle_insert_solo(5);
+        assert!(state.mixer.insert(5).solo);
+        assert_eq!(state.undo.len(), 7);
+        state.edit_insert(1, InsertParam::Level, -20.0, true);
+        state.edit_insert(1, InsertParam::Level, -21.0, false);
+        assert_eq!(
+            state.undo.len(),
+            8,
+            "drag_started cuts a new step, the drag continues"
+        );
+        // The same value again is not an edit.
+        state.set_insert(1, InsertParam::Level, -21.0);
+        state.toggle_insert_mute(3);
+        state.toggle_insert_mute(3);
+        assert_eq!(state.undo.len(), 10);
+
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(engine.mixer().insert(1).level_db, -21.0);
+        assert!(engine.mixer().insert(5).solo);
+
+        // Undo walks the inserts back and resends them: the last two steps were the mute
+        // off (9) and on again (10), before them the -20 / -21 drag.
+        assert!(state.mixer.insert(3).mute);
+        assert!(state.undo());
+        assert!(!state.mixer.insert(3).mute);
+        assert!(state.undo());
+        assert!(state.mixer.insert(3).mute);
+        assert_eq!(state.mixer.insert(1).level_db, -21.0);
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(1).level_db, -10.0);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+    }
+
+    #[test]
+    fn slot_kind_and_params_mirror_the_engine_and_undo_restores_a_slot_change() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(
+            state.set_slot_kind(6, 0, SlotKind::Compressor),
+            SlotKind::Compressor
+        );
+        assert_eq!(state.undo.len(), 1);
+        assert_eq!(
+            state.mixer.insert(6).slot(0).params,
+            SlotKind::Compressor.default_params(),
+            "a fresh load takes the kind's defaults"
+        );
+        // The same kind again is not an edit.
+        state.set_slot_kind(6, 0, SlotKind::Compressor);
+        assert_eq!(state.undo.len(), 1);
+        // A parameter: clamped by the table, coalesced per drag; an unused index does nothing.
+        assert_eq!(
+            state.set_slot_param(6, 0, 0, -100.0),
+            COMPRESSOR_PARAMS[0].min
+        );
+        for v in 1..=5 {
+            state.set_slot_param(6, 0, 1, v as f32);
+        }
+        assert_eq!(state.mixer.insert(6).slot(0).get(1), 5.0);
+        assert_eq!(state.undo.len(), 3, "threshold, then one ratio drag");
+        assert_eq!(
+            state.set_slot_param(6, 1, 0, 0.5),
+            0.0,
+            "an empty slot has no params"
+        );
+        assert_eq!(state.undo.len(), 3);
+        state.edit_slot_param(6, 0, 1, 8.0, true);
+        assert_eq!(state.undo.len(), 4);
+        state.edit_slot_param(6, 0, 1, 9.0, false);
+        assert_eq!(state.undo.len(), 4);
+
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(engine.mixer().insert(6).slot(0).kind, SlotKind::Compressor);
+        assert_eq!(engine.mixer().insert(6).slot(0).get(1), 9.0);
+
+        // The open knob view follows the slot: off closes it, an undo that empties it too.
+        state.toggle_open_slot(6, 0);
+        assert_eq!(state.open_slot, Some((6, 0)));
+        state.toggle_open_slot(6, 1);
+        assert_eq!(state.open_slot, None, "an empty slot never opens");
+        state.toggle_open_slot(6, 0);
+        state.set_slot_kind(6, 0, SlotKind::Off);
+        assert_eq!(state.open_slot, None);
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(6).slot(0).kind, SlotKind::Compressor);
+        assert_eq!(state.mixer.insert(6).slot(0).get(1), 9.0);
+        state.toggle_open_slot(6, 0);
+        while state.undo() {}
+        assert_eq!(state.mixer.insert(6).slot(0).kind, SlotKind::Off);
+        assert_eq!(state.open_slot, None, "undone to empty: the view closes");
+        assert_eq!(state.mixer, MixerState::default());
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &MixerState::default());
+    }
+
+    #[test]
+    fn routes_follow_the_engine_rule_and_travel_with_track_operations() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.mixer.route(Channel::Kick), 1);
+        assert_eq!(state.mixer.route(Channel::Synth), 6);
+        assert_eq!(state.set_route(Channel::Kick, 14), 14);
+        assert_eq!(state.set_route(Channel::Snare, 14), 14);
+        assert_eq!(
+            state.set_route(Channel::Clap, 0),
+            0,
+            "straight to the master"
+        );
+        assert_eq!(
+            state.set_route(Channel::OpenHat, 40),
+            0,
+            "out of range: the master"
+        );
+        assert_eq!(state.undo.len(), 4);
+        assert_eq!(state.set_route(Channel::Kick, 14), 14);
+        assert_eq!(state.undo.len(), 4, "the same route is not an edit");
+        assert_eq!(
+            state.insert_sources(14),
+            vec![Channel::Kick, Channel::Snare]
+        );
+        assert!(state.insert_sources(1).is_empty());
+        assert!(state.insert_is_idle(1));
+        assert!(!state.insert_is_idle(14));
+        state.set_slot_kind(1, 2, SlotKind::Drive);
+        assert!(!state.insert_is_idle(1), "a loaded slot is not idle");
+
+        // An insert's own route: only the master or a higher number.
+        assert_eq!(state.set_insert(14, InsertParam::Route, 16.0), 16.0);
+        assert_eq!(
+            state.set_insert(14, InsertParam::Route, 3.0),
+            0.0,
+            "refused: lower"
+        );
+        assert_eq!(state.mixer.insert(14).route, 0);
+        assert_eq!(
+            state.set_insert(14, InsertParam::Route, 14.0),
+            0.0,
+            "refused: itself"
+        );
+
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(engine.mixer().route(Channel::Kick), 14);
+        assert_eq!(engine.mixer().route(Channel::Clap), 0);
+
+        // A duplicate keeps the source's route; a removed slot forgets its route; a swap
+        // carries the route with the track.
+        state.set_route(Channel::Synth, 9);
+        let copy = state.duplicate_track(0).unwrap();
+        assert_eq!(state.mixer.route(Channel::from_track(copy)), 9);
+        state.move_track(copy, true);
+        assert_eq!(state.mixer.route(Channel::Track(0)), 9);
+        assert_eq!(state.mixer.route(Channel::Track(1)), 9);
+        state.set_route(Channel::Track(1), 12);
+        state.remove_track(1);
+        assert_eq!(
+            state.mixer.route(Channel::Track(1)),
+            DEFAULT_ROUTES[Channel::Track(1).index()],
+            "a freed slot is back at its home insert"
+        );
+        let fresh = state.add_track().unwrap();
+        assert_eq!(fresh, 1);
+        assert_eq!(state.mixer.route(Channel::Track(1)), 7);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+    }
+
+    #[test]
+    fn link_routes_to_the_first_free_insert() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        // Drums hold 1..=5, the one track 6: 7 is the first free insert.
+        assert_eq!(state.free_insert(), Some(7));
+        assert_eq!(state.link_track_to_free_insert(0), Some(7));
+        assert_eq!(state.mixer.route(Channel::Synth), 7);
+        assert_eq!(
+            state.insert_selection,
+            vec![7],
+            "the linked insert is selected"
+        );
+        assert_eq!(state.highlighted_insert(), 7);
+        assert_eq!(state.free_insert(), Some(6), "6 is free again");
+        assert_eq!(
+            state.link_track_to_free_insert(3),
+            None,
+            "an inactive track"
+        );
+        // Thirteen sources can never fill sixteen inserts: with every track active at its
+        // home insert (6..=13) the first free one is 14, and moving the kick there frees 1.
+        for _ in 1..MAX_TRACKS {
+            state.add_track();
+        }
+        state.set_route(Channel::Synth, 6);
+        assert_eq!(state.free_insert(), Some(14));
+        state.set_route(Channel::Kick, 14);
+        assert_eq!(state.free_insert(), Some(1));
+        assert_eq!(state.link_to_free_insert(Channel::Kick), Some(1));
+        assert_eq!(state.mixer.route(Channel::Kick), 1);
+        assert!(state.status_text().is_none());
+    }
+
+    #[test]
+    fn shift_selected_faders_move_together_in_one_undo_step() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        // Selection: a plain click selects alone, Shift toggles, 0 clears.
+        state.select_insert(2, false);
+        state.select_insert(3, true);
+        state.select_insert(4, true);
+        assert_eq!(state.insert_selection, vec![2, 3, 4]);
+        assert!(state.is_insert_selected(3));
+        state.select_insert(3, true);
+        assert_eq!(state.insert_selection, vec![2, 4]);
+        state.set_insert(4, InsertParam::Level, -10.0);
+        state.last_continuous_edit = None;
+        let steps = state.undo.len();
+        // A fader move of a selected insert moves the selection by the same delta, as one
+        // coalesced undo step.
+        assert_eq!(state.move_insert_fader(2, -6.0, true), -6.0);
+        assert_eq!(state.mixer.insert(4).level_db, -16.0);
+        state.move_insert_fader(2, -8.0, false);
+        assert_eq!(state.mixer.insert(4).level_db, -18.0);
+        assert_eq!(state.undo.len(), steps + 1, "one group drag, one step");
+        // The others clamp too.
+        assert_eq!(
+            state.move_insert_fader(2, -100.0, false),
+            engine::mixer::MIN_LEVEL_DB
+        );
+        assert_eq!(
+            state.mixer.insert(4).level_db,
+            engine::mixer::MIN_LEVEL_DB,
+            "clamped: -18 - 52 is below the floor"
+        );
+        // A non-selected insert moves alone, with its own step.
+        state.move_insert_fader(9, -3.0, true);
+        assert_eq!(state.mixer.insert(9).level_db, -3.0);
+        assert_eq!(state.mixer.insert(2).level_db, engine::mixer::MIN_LEVEL_DB);
+        assert_eq!(state.undo.len(), steps + 2);
+        // Undo takes the whole group drag back at once.
+        assert!(state.undo());
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(2).level_db, 0.0);
+        assert_eq!(state.mixer.insert(4).level_db, -10.0);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        state.select_insert(0, false);
+        assert!(state.insert_selection.is_empty());
+        assert_eq!(
+            state.highlighted_insert(),
+            state.mixer.route(Channel::from_track(state.edit_track))
+        );
+        // A lone selection moves alone.
+        state.select_insert(5, false);
+        state.move_insert_fader(5, -4.0, true);
+        assert_eq!(state.mixer.insert(5).level_db, -4.0);
+        assert_eq!(state.mixer.insert(2).level_db, 0.0);
+    }
+
+    #[test]
+    fn rename_and_colour_are_undo_steps_and_resend_all_covers_the_inserts() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(state.rename_insert(6, "  Drums "));
+        assert_eq!(state.insert_ui(6).name, "Drums");
+        assert!(!state.rename_insert(6, "Drums"), "unchanged");
+        assert!(!state.rename_insert(6, "   "), "empty");
+        assert!(state.rename_insert(6, "ABCDEFGHIJKLMNOP"));
+        assert_eq!(state.insert_ui(6).name, "ABCDEFGHIJKL");
+        assert!(state.set_insert_colour(6, 11));
+        assert_eq!(state.insert_ui(6).colour, 3);
+        assert!(!state.set_insert_colour(6, 3));
+        assert_eq!(state.undo.len(), 3);
+        assert!(state.undo());
+        assert_eq!(
+            state.insert_ui(6).colour,
+            5,
+            "the default colour of insert 6"
+        );
+        assert!(state.undo());
+        assert_eq!(state.insert_ui(6).name, "Drums");
+        assert!(state.redo());
+        assert_eq!(state.insert_ui(6).name, "ABCDEFGHIJKL");
+
+        // A resend puts every insert, slot and route into a fresh engine.
+        state.set_slot_kind(3, 1, SlotKind::Chorus);
+        state.set_slot_param(3, 1, 0, 2.5);
+        state.set_route(Channel::Clap, 3);
+        state.set_insert(3, InsertParam::Route, 16.0);
+        let (mut other, mut fresh) = AppState::headless(ThemeMode::Dark);
+        other.mixer = state.mixer;
+        other.resend_all();
+        sync(&mut other, &mut fresh);
+        assert_eq!(fresh.mixer(), &state.mixer);
+        assert_eq!(fresh.mixer().insert(3).slot(1).kind, SlotKind::Chorus);
+        assert_eq!(fresh.mixer().insert(3).slot(1).get(0), 2.5);
+        assert_eq!(fresh.mixer().route(Channel::Clap), 3);
+        assert_eq!(fresh.mixer().insert(3).route, 16);
+        let messages = insert_messages(&state.mixer);
+        assert_eq!(
+            messages.len(),
+            16 * 14 + 3 + 13,
+            "plus the chorus's three params"
+        );
+        assert!(messages.contains(&Message::SetRoute {
+            channel: Channel::Clap,
+            insert: 3
+        }));
+    }
+
+    #[test]
+    fn insert_meters_decay_and_keep_the_panel_repainting() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        let mut loud = Meters::SILENT;
+        loud.insert[5] = 0.8;
+        loud.insert_gr[5] = 6.0;
+        state.update_meters_with(loud, 0.0);
+        assert_eq!(state.shown_meters.insert[5], 0.8);
+        assert_eq!(state.shown_meters.insert_gr[5], 6.0);
+        assert!(state.meters_active());
+        state.update_meters_with(Meters::SILENT, 1.0);
+        assert!(
+            (state.shown_meters.insert[5] - 0.08).abs() < 1e-6,
+            "-20 dB after 1 s"
+        );
+        assert!(state.shown_meters.insert_gr[5] < 6.0);
+        assert!(state.meters_active());
+        state.update_meters_with(Meters::SILENT, 10.0);
+        assert!(!state.meters_active());
     }
 }

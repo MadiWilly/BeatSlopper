@@ -1732,3 +1732,176 @@ before. An insert at its defaults (slots off, flat EQ, 0 dB, centre) is bit-tran
 - Gate: `cargo fmt -p engine`, `cargo clippy -p engine --all-targets -- -D warnings`,
   `cargo test -p engine` (422: 197 unit + 225 integration, up from 401; the 2 ignored release
   perf gates both ok).
+
+## M11 as built (app)
+
+The app side of the FL-style mixer: the MIXER panel's FL layout over the M11 engine, the
+insert number boxes in the TRACKS panel and the sequencer rows, LINK / Ctrl+L, and the
+app-side insert names and colours. Everything below lives in `crates/app` except the one
+kit addition (`neu::fader_sized`). The engine is untouched.
+
+### State (`app.rs`)
+- `pub struct InsertUi { pub name: String, pub colour: u8 }` (`Clone`, `PartialEq`, serde):
+  `InsertUi::fresh(insert)` = `"Insert N"` in colour `(N - 1) % 8` (the track swatches,
+  `Theme::track_colour`); `default_insert_name`, `default_insert_ui() -> [InsertUi; 16]`
+  (indexed by `insert_index`, insert 1 first), `clean_insert_name` (trim, at most
+  `MAX_INSERT_NAME_LEN` = 12 chars).
+- `AppState.insert_ui: [InsertUi; 16]`; view state `insert_selection: Vec<u8>` (insert
+  numbers, the primary first; empty = nothing explicitly selected) and `open_slot:
+  Option<(u8, u8)>` (the slot whose knobs the strip grid shows). `AppState.mixer` is the
+  engine's `MixerState`, so it already carries `inserts` and `routes`.
+- Setters, all through the mirror then the message, dirty, undo (discrete for mute / solo /
+  route / slot kind / rename / colour, coalesced per drag for the rest, exactly like
+  `set_mixer`): `set_insert(n, InsertParam, v) -> f32` and `edit_insert(.., drag_started)`
+  (`EditKey::Insert(n, param)`), `toggle_insert_mute(n)` / `toggle_insert_solo(n)`,
+  `set_slot_kind(n, slot, kind) -> SlotKind` (the kind already loaded is not an edit; a
+  slot switched off closes its knob view), `set_slot_param(n, slot, index, v) -> f32` and
+  `edit_slot_param` (`EditKey::Slot(n, slot, index)`; an unused index changes nothing),
+  `set_route(channel, n) -> u8` (`MixerState::valid_source_route`; the same route is not an
+  edit), `rename_insert(n, &str) -> bool`, `set_insert_colour(n, colour) -> bool`.
+- Reads: `insert_ui(n)`, `route_name(n)` (`"MASTER"` for 0 or out of range, else the
+  name), `insert_sources(n) -> Vec<Channel>` (the drums and the *active* tracks routed
+  there), `insert_is_idle(n)` (no sources, every slot off: drawn dimmed), `free_insert()
+  -> Option<u8>` (the first number no active source is routed to; thirteen sources can
+  never fill sixteen inserts), `highlighted_insert()` (the primary selection, else the edit
+  track's route), `is_insert_selected(n)`.
+- Selection and group moves: `select_insert(n, extend)` (plain = alone, `extend` =
+  Shift-click toggles membership, `0` clears), `move_insert_fader(n, value, drag_started)
+  -> f32` (when `n` is selected with others, every selected insert moves by the same dB
+  delta, clamped each, under one coalesced `EditKey::InsertGroup` step; else
+  `edit_insert(.., Level, ..)`), `toggle_open_slot(n, slot)` (an empty slot never opens),
+  `clamp_open_slot()` (drops the view when its slot is off: after undo, load, a kind
+  change).
+- Link: `link_to_free_insert(channel) -> Option<u8>` (`set_route` + `select_insert`; a
+  status line when nothing is free), `link_track_to_free_insert(slot)` (the edit track for
+  `Shortcut::LinkInsert`, Ctrl+L, which also shows the MIXER tab).
+- Track operations: `put_strip(channel, None)` also puts the channel's `DEFAULT_ROUTES`
+  entry back through `put_route` (a removed track forgets its route, a fresh one starts at
+  its home insert); `duplicate_track` copies the source's route (FL's clone keeps the mixer
+  track); `move_track` already swaps routes through `MixerState::swap`.
+- Messages: `insert_messages(&MixerState) -> Vec<Message>`: per insert one `SetInsert` per
+  `InsertParam::ALL` entry, then per slot `SetSlotKind` plus one `SetSlotParam` per
+  parameter of that kind, then one `SetRoute` per channel (a default mixer: `16 * 14 + 13`
+  = 237). `resend_inserts()` sends them; `resend_all()` calls it after `resend_mixer()` (a
+  full resend is about 570 messages now; the outbox absorbs two back to back).
+- Meters: `decay_meters` / `meters_active` cover `Meters::insert` and `insert_gr` (the
+  gain reduction in dB decays like a level: a 20 dB/s scaling of the bar).
+- Undo: `Snapshot.insert_ui`; `restore` puts the names back and clamps the open slot.
+
+### Project file (`project.rs`)
+- The engine's `Project` has no field for the names, so the app splices a sidecar: the
+  file is `project_text()` = `with_insert_ui(&build_project().to_json_pretty(),
+  &insert_ui)`, the engine JSON with a top-level `"insert_ui": [{ "name", "colour" } x 16]`
+  key (`INSERT_UI_KEY`); `Project::from_json` ignores unknown keys, so engine-written files
+  and the engine's own loader are untouched. `insert_ui_of(text) -> Option<[InsertUi; 16]>`
+  reads it back (names cleaned, colours wrapped, missing entries the defaults; `None`
+  without the key or when it is not an array). `apply_project_text(&str)` =
+  `parse_project` + `apply_project_with_inserts(&project, inserts)`; `apply_project(&Project)`
+  is the same with the default names (an engine project carries none). `save_project_to`
+  writes `project_text()`, `load_project_from` reads the text and applies it; both keep
+  their status / recent / dirty behaviour. A load clears the insert selection and the open
+  slot.
+- `parse_project(text) -> Result<Box<Project>, ProjectError>` runs `Project::from_json` on
+  a helper thread with `ENGINE_BUILD_STACK` (16 MiB): the deserialiser's chain under
+  `from_json` needs about 1.6 MiB of stack in a debug build (measured: the `serde_json`
+  `Value` to `Project` descent over a 40 KiB bank), the test threads have 2 MiB and the main
+  thread 1 MiB, and with the M11 inserts the project tests that load a file overflowed. The
+  old `mixer_round_trips_through_the_project_and_v3_files_load_defaults` test is now two
+  tests for the same reason (three states, engines and projects in one frame).
+
+### MIXER panel (`ui/mixer.rs`)
+Three docks in the 436 pt content width (`CONTENT_WIDTH`), laid out by hand from one
+origin in the ~303 pt of body the top row leaves at 1280 x 1140; checked by
+`the_docks_fit_the_panel_width` (widths) and `the_strip_blocks_leave_the_fader_a_track`
+(heights) plus four `const` assertions:
+- **Sources** (`SOURCE_DOCK_WIDTH` = 4 x `SOURCE_STRIP_WIDTH` 36 = 144, horizontal
+  `ScrollArea` `mixer_sources`): one strip per `visible_channels` entry: the track's colour
+  chip row, the caps label (`strip_label`, truncated, full name in the tooltip), the
+  **number box** (`BOX_SIZE` 28 x 16, `box_text`: the insert number or `M`; a click selects
+  that insert and opens the picker, the wheel steps the number), LEVEL and PAN `Sm` knobs,
+  the 28 pt `M` / `S`. No sends (they live on the inserts) and no meter.
+- **Inserts** (`INSERTS_DOCK_WIDTH` = 436 - 144 - 4 - 52 = 236, `ScrollArea`
+  `mixer_inserts`; all sixteen strips are laid out, two are in view): `INSERT_STRIP_WIDTH`
+  108 = the 3 x 2 knob grid (`GRID_WIDTH` 106) plus a point each side. Top to bottom with
+  `BLOCK_GAP` 2: the head row (`ROW_H` 16: accent bar when highlighted, inset-s well when
+  selected, colour chip (click cycles), `N · name` caps label truncated (click selects,
+  Shift-click extends, double-click renames through `neu::begin_edit` / `show_edit`, id
+  `rename_id(n)`, `is_renaming`), pencil); three slot rows (`SLOT_PILL_WIDTH` 88 x 16 pill
+  reading `EMPTY_SLOT_LABEL` `- - -` or the kind's label, lit while its knobs are open; a
+  click opens an `egui::Popup::menu` of the six kinds; a loaded slot adds the 16 pt
+  `SLOT_EDIT` square with a knob glyph that toggles `open_slot`); the grid (`GRID_HEIGHT`
+  90: two rows of three `Sm` knobs with 9 pt caps labels under them, `GRID_LABELS` LOW /
+  MID / HIGH / FREQ / DLY / REV editing `GRID_PARAMS`, or the open slot's `SlotKind::params()`
+  with their `label`s, `slot_fmt` picking the formatter by unit); the ROUTE pill
+  (`route_text`: `To MASTER` / `To N`; the picker offers `insert_route_choices(n)` = the
+  master and every higher insert only); the fader row (the rest of the height: `M` / `S`
+  column, `neu::fader_sized` with its track fitted to the room and no caps label, the
+  post-fader `neu::meter` in the fader column's margin, and a `GR_WIDTH` 3 pt
+  gain-reduction bar (`gr_meter`, filled from the top over `GR_FULL_DB` 24 dB) when a
+  compressor is loaded). A fader change goes through `move_insert_fader`. Idle inserts draw
+  their name and chip at `DIMMED_OPACITY`.
+- **Master** (`MASTER_WIDTH` 52, pinned right of both scroll areas): the MASTER gain knob
+  level with the faders' value row, LIMIT, the stereo meter to the faders' bottom.
+- `route_picker(theme, anchor, state, current, choices) -> Option<u8>` (pub; the TRACKS and
+  sequencer boxes reuse it): an `egui::Popup::menu` under the anchor with a `Master` pill
+  (when offered) and the inserts as rows of `PICK_COLUMNS` 4 `PICK_SQUARE` 28 pt number
+  squares (the insert's name is the tooltip), the current one lit. A grid, not a list: the
+  17-entry list needed a scroll area whose far entries a test click could not reach.
+- Accessible names: sources `"<name> level"` / `"<name> pan"` / `"Mute <name>"` / `"Solo
+  <name>"` (unchanged), `source_box_name` `"Insert of Kick"`; inserts `insert_head_name`
+  `"Insert 6: Drums"`, `insert_swatch_name` `"Insert 6 swatch"`, `insert_rename_name`
+  `"Rename insert 6"`, `slot_name` `"Insert 6 slot 1"`, `slot_edit_name` `"Edit insert 6
+  slot 1"`, `kind_pick_name` `"Slot kind Comp"`, `insert_control_name` (`"Insert 6 low"`,
+  `"Insert 6 mid"`, `"Insert 6 mid hz"`, `"Insert 6 high"`, `"Insert 6 delay send"`,
+  `"Insert 6 reverb send"`, `"Insert 6 level"`, `"Mute insert 6"`, `"Solo insert 6"`),
+  `slot_control_name` `"Insert 6 slot 1 thresh"`, `route_name` `"Route of insert 6"`,
+  `pick_name` `"Pick MASTER"` / `"Pick insert 7"`, the meters `"Level"` (16) and
+  `GR_METER_NAME` `"Gain reduction"`, `"Master"`, `"Limit"`, `"Stereo level"`.
+
+### TRACKS panel and sequencer rows
+- `ui/tracks.rs`: the preset line starts with the insert number box (`BOX_SIZE` 22 x 13,
+  `insert_box_name` `"Insert box Synth"`, tooltip "Mixer insert: ..."; added after the name
+  block so it is on top of it, a click never selects or renames); the preset name is
+  truncated to the room left. The move row gains the `Link` button (`LINK_LABEL`,
+  `LINK_NAME` `"Link to free insert"`, 36 x 20): `link_track_to_free_insert(edit_track)`
+  and the MIXER tab. `HINT` is `"Keys play the selected track"` (Ctrl+T stays in the ADD
+  tooltip) so it fits beside the three buttons in two 11 pt lines.
+- `ui/sequencer.rs`: every row's name cell ends in a `ROW_BOX_SIZE` 20 x 14 number box
+  (`row_box_name` `"Row insert Kick"` / `"Row insert Bass"`; the bass row's channel is the
+  edit track through `qol::row_channel`); the solo dot stops short of it.
+- Shortcut `LinkInsert` = Ctrl+L (`shortcuts.rs`, checked last; plain L stays a piano key).
+
+### Kit (`neu`)
+- `neu::fader_sized(ui, theme, value, spec, track_height, label)` and `FADER_MIN_TRACK`
+  (28): the fader on a track of the given height (clamped), optionally without the caps
+  label under it; the shared `vertical_slider` body takes the track size and the label
+  flag. Kittest in `neu/tests/mixer_widgets.rs`.
+
+### Tests
+- `app.rs` `insert_tests` (8): defaults and name cleaning; `set_insert` clamps, stores,
+  reaches the engine with the strips' undo granularity; slot kind / params mirror the
+  engine and undo restores a slot change (the open view closes with it); routes follow
+  the engine rule and travel with duplicate / move / remove / add; link finds the first free
+  insert; Shift-selected faders move together in one undo step; rename / colour undo and a
+  `resend_all` into a fresh engine; insert meters decay. `project.rs` `insert_file_tests`
+  (3): inserts, slots, routes and names through the project text and a file (engine mirror
+  after the load, undo), an engine-only file loads the default names, the sidecar is
+  cleaned and tolerates bad input. `ui/mixer.rs` (6): names, the width budget, the height
+  budget, route choices, slot formatters. `ui/tracks.rs`: the move row budget.
+  `shortcuts.rs`: Ctrl+L.
+- `tests/mixer_panel.rs` (10, kittest): the number box routes a source and the engine
+  mirror follows; a slot pill loads an effect whose knobs replace the grid (count =
+  `params().len()`), the edit square toggles back, undo takes it back; a slot knob edit
+  reaches the engine; the ROUTE pill offers only the master and higher inserts (and the
+  state refuses a lower one); head clicks select, Shift extends, selected faders move
+  together; the pencil renames inline and the name survives the project text (Escape
+  cancels); meters and the GR bar render in both themes; Ctrl+L links the edit track and
+  shows the mixer (Ctrl+Z undoes); the TRACKS row and sequencer row boxes route, and LINK
+  works from the footer; the mixer stays inside its slot at 1280 x 1140 with four tracks.
+  `tests/ui_renders.rs`: the three mixer tests updated to the docks (sixteen `Level`
+  meters, the pinned MASTER, the scrolling source dock); the whole-sequencer tests with the
+  mixer shown are unchanged and green. `tests/plugins_ui.rs`: the resend count includes
+  `insert_messages`.
+- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (863 passed, 2 ignored: app 321 = 207 unit + 1 + 10 + 12 + 6 +
+  9 + 76, engine 422, neu 120), `cargo run -p app -- --smoke-test` ok.

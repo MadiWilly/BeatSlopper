@@ -1078,11 +1078,30 @@ fn grid_row(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
     );
 }
 
-/// The caps row name, vertically centred in a [`NAME_WIDTH`] column. A double-click mutes
-/// the row's mixer channel (shift + double-click: solo); a muted row's name dims to
-/// [`MUTED_ALPHA`], a soloed row gets a [`SOLO_DOT`] in the accent colour after its name.
+/// Size of the mixer insert number box at the right end of a row's name cell (M11).
+pub const ROW_BOX_SIZE: Vec2 = vec2(20.0, 14.0);
+
+/// Accessible name of a row's insert number box: `"Row insert Kick"` (the TRACKS panel's
+/// box for the same track is `"Insert box <name>"`).
+#[must_use]
+pub fn row_box_name(text: &str) -> String {
+    format!("Row insert {text}")
+}
+
+/// The caps row name, vertically centred in a [`NAME_WIDTH`] column, with the row's mixer
+/// insert number box ([`ROW_BOX_SIZE`], M11: a click opens the picker) at the column's
+/// right end. A double-click on the name mutes the row's mixer channel (shift +
+/// double-click: solo); a muted row's name dims to [`MUTED_ALPHA`], a soloed row gets a
+/// [`SOLO_DOT`] in the accent colour after its name.
 fn name_cell(ui: &mut Ui, state: &mut AppState, theme: &Theme, text: &str, row: PaintRow) {
     let (rect, response) = ui.allocate_exact_size(vec2(NAME_WIDTH, ROW_HEIGHT), Sense::click());
+    let box_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.max.x - ROW_BOX_SIZE.x,
+            rect.center().y - ROW_BOX_SIZE.y * 0.5,
+        ),
+        ROW_BOX_SIZE,
+    );
     if response.double_clicked() {
         if press_modifiers(ui).shift {
             state.toggle_row_solo(row);
@@ -1110,7 +1129,7 @@ fn name_cell(ui: &mut Ui, state: &mut AppState, theme: &Theme, text: &str, row: 
         );
         if soloed {
             let dot = egui::pos2(
-                (text_rect.max.x + KNOB_GAP).min(rect.max.x - SOLO_DOT * 0.5),
+                (text_rect.max.x + KNOB_GAP).min(box_rect.min.x - SOLO_DOT),
                 rect.center().y,
             );
             ui.painter()
@@ -1128,6 +1147,44 @@ fn name_cell(ui: &mut Ui, state: &mut AppState, theme: &Theme, text: &str, row: 
             "{state_text}Double-click: mute · Shift + double-click: solo"
         ))
         .widget_info(|| WidgetInfo::labeled(Role::Button, true, text));
+
+    // The insert number box (M11), added after the cell so it is on top of it.
+    let channel = crate::qol::row_channel(row, state.edit_track);
+    let route = state.mixer.route(channel);
+    let box_response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(box_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                neu::toggle_button_sized(
+                    ui,
+                    theme,
+                    &crate::ui::mixer::box_text(route),
+                    false,
+                    ROW_BOX_SIZE,
+                )
+            },
+        )
+        .inner;
+    let box_label = row_box_name(text);
+    box_response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &box_label));
+    let box_response = box_response
+        .on_hover_text(format!(
+            "Mixer insert: {} · click to pick",
+            state.route_name(route)
+        ))
+        .on_hover_cursor(CursorIcon::PointingHand);
+    if let Some(picked) = crate::ui::mixer::route_picker(
+        theme,
+        &box_response,
+        state,
+        route,
+        &crate::ui::mixer::source_route_choices(),
+    ) {
+        state.set_route(channel, picked);
+        state.select_insert(picked, false);
+    }
 }
 
 /// The modifiers of a press this frame: the raw modifier state, or the modifiers carried by
