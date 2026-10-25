@@ -107,8 +107,11 @@ fn custom_project_round_trips_through_json() {
 #[test]
 fn json_layout_is_as_documented() {
     let json = Project::default().to_json_pretty();
+    assert!(
+        json.contains(&format!("\"version\": {FORMAT_VERSION}")),
+        "{json}"
+    );
     for field in [
-        "\"version\": 5",
         "\"notes\": [",
         "\"start\": 0",
         "\"pitch\": 36",
@@ -439,7 +442,6 @@ fn v2_json() -> String {
 fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     let p = Project::from_json(&v2_json()).expect("v2 file loads");
     assert_eq!(p.version, FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 5);
     assert_eq!(p.bpm, 101.0);
     assert_eq!(p.swing, 0.1);
     assert_eq!(p.preset_index, 2);
@@ -476,7 +478,8 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     // legacy field; that file round-trips.
     assert_eq!(p.mixer, MixerState::default());
     let v5 = p.to_json_pretty();
-    assert!(v5.starts_with("{\n  \"version\": 5,"));
+    let head = format!("{{\n  \"version\": {FORMAT_VERSION},");
+    assert!(v5.starts_with(&head));
     assert!(v5.contains("\"bank\""));
     assert!(v5.contains("\"mixer\""));
     assert!(v5.contains("\"notes\""));

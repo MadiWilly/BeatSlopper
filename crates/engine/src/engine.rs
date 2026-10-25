@@ -83,12 +83,13 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::drums::{DrumKit, DrumRow};
 use crate::dsp::db_to_gain;
-use crate::fx::{FxChain, Limiter};
+use crate::fx::{EqParam, EqState, FxChain, Limiter, ParametricEq, ReverbParam, ReverbState};
 use crate::mixer::{Channel, ChannelParam, MixerState};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::pattern::{
     Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, Note, PATTERN_COUNT, Pattern, PlayMode, STEPS,
 };
+use crate::spectrum::{SpectrumReader, SpectrumTap, spectrum_pair};
 use crate::synth::SineOsc;
 use crate::transport::Transport;
 use crate::voice::{MAX_VOICES, SynthParams, VoicePool};
@@ -258,6 +259,28 @@ pub enum Message {
         /// New value (dB for `Level`, `-1..=1` for `Pan`, `0..=1` otherwise).
         value: f32,
     },
+    /// Set one value of a master EQ band (plugins milestone); clamped by the band, smoothed
+    /// over `fx::eq::EQ_SMOOTH_MS`.
+    SetEq {
+        /// Band index `0..BAND_COUNT` (wraps).
+        band: u8,
+        /// Which value.
+        param: EqParam,
+        /// New value (Hz / dB / Q, `0`/`1` for `On`, a kind index for `Kind`).
+        value: f32,
+    },
+    /// Switch the whole master EQ on or off (faded).
+    SetEqOn(bool),
+    /// Master EQ output gain in dB (`-18..=18`).
+    SetEqGain(f32),
+    /// Set one reverb value (plugins milestone). `Size` / `Damping` / `Mix` are the same
+    /// values as `ParamId::ReverbSize` / `ReverbDamping` / `ReverbMix`; either path updates both views.
+    SetReverb {
+        /// Which value.
+        param: ReverbParam,
+        /// New value (clamped by [`ReverbParam::clamp`]).
+        value: f32,
+    },
 }
 
 /// Block peak levels (linear, `0.0` = silence) as last published by the audio thread.
@@ -384,6 +407,8 @@ pub(crate) struct Shared {
     meter_channel: [AtomicU32; Channel::COUNT],
     /// Master block peaks (left, right) as `f32` bit patterns.
     meter_master: [AtomicU32; 2],
+    /// Block peak of the reverb return (plugins milestone) as an `f32` bit pattern.
+    meter_reverb: AtomicU32,
 }
 
 impl Shared {
@@ -394,6 +419,15 @@ impl Shared {
         for (slot, &v) in self.meter_master.iter().zip(&meters.master) {
             slot.store(v.to_bits(), Ordering::Relaxed);
         }
+    }
+
+    pub(crate) fn publish_reverb_level(&self, peak: f32) {
+        self.meter_reverb.store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn read_reverb_level(&self) -> f32 {
+        let v = f32::from_bits(self.meter_reverb.load(Ordering::Relaxed));
+        if v.is_finite() && v > 0.0 { v } else { 0.0 }
     }
 
     pub(crate) fn read_meters(&self) -> Meters {
@@ -438,6 +472,8 @@ pub struct EngineHandle {
     shared: Arc<Shared>,
     /// The MIDI-thread producer, until [`EngineHandle::take_midi_handle`] hands it out.
     midi: Option<Producer<Message>>,
+    /// Reader of the master-output spectrum ring (plugins milestone).
+    spectrum: SpectrumReader,
 }
 
 /// A second, independent lock-free queue into the engine for a MIDI input thread, so MIDI
@@ -481,6 +517,20 @@ impl EngineHandle {
     /// Takes the MIDI queue's producer (once). Returns `None` if it was already taken.
     pub fn take_midi_handle(&mut self) -> Option<MidiHandle> {
         self.midi.take().map(|producer| MidiHandle { producer })
+    }
+
+    /// A reader of the master-output spectrum ring (plugins milestone): the last
+    /// [`crate::spectrum::SPECTRUM_SIZE`] mono output samples, lock-free. Cheap to clone.
+    #[must_use]
+    pub fn spectrum(&self) -> SpectrumReader {
+        self.spectrum.clone()
+    }
+
+    /// Block peak of the reverb return (post return level) of the last rendered block,
+    /// linear (plugins milestone; the UI applies its own decay).
+    #[must_use]
+    pub fn reverb_level(&self) -> f32 {
+        self.shared.read_reverb_level()
     }
 
     /// Number of messages that can still be queued before [`send`](Self::send) starts failing.
@@ -672,6 +722,15 @@ pub struct Engine {
     /// Notes currently held from the keyboard (`note_on` without `note_off`); the sequencer
     /// never releases these.
     kbd_held: [bool; 128],
+    /// Master parametric EQ (plugins milestone): after the effect returns, before the master
+    /// gain and the limiter.
+    eq: ParametricEq,
+    /// Every reverb value (plugins milestone); size / damping / mix mirror `params`.
+    reverb_state: ReverbState,
+    /// Master-output spectrum ring writer (plugins milestone).
+    spectrum: SpectrumTap,
+    /// Block peak of the reverb return.
+    reverb_peak: f32,
 }
 
 /// Creates an engine and its UI-side handle.
@@ -699,11 +758,13 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let bar_len = bar_len_samples(samples_per_step);
     let mixer = MixerState::default();
     let strips = Channel::ALL.map(|ch| StripDsp::new(sample_rate, &mixer, ch));
+    let (spectrum_tap, spectrum_reader) = spectrum_pair();
     (
         EngineHandle {
             producer,
             shared: Arc::clone(&shared),
             midi: Some(midi_producer),
+            spectrum: spectrum_reader,
         },
         Engine {
             sample_rate,
@@ -743,6 +804,10 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             seq_active: [None; MAX_VOICES],
             seq_next_off: u64::MAX,
             kbd_held: [false; 128],
+            eq: ParametricEq::new(sample_rate),
+            reverb_state: ReverbState::default(),
+            spectrum: spectrum_tap,
+            reverb_peak: 0.0,
         },
     )
 }
@@ -827,10 +892,83 @@ impl Engine {
             }
             ParamId::MasterGain => self.set_master_gain(value),
             ParamId::LimiterOn => self.limiter_on = value >= 0.5,
+            // The reverb's size / damping / mix are shared with the plugin's `ReverbState`.
+            ParamId::ReverbSize => {
+                self.reverb_state.size = value;
+                self.fx.set_param(id, value);
+            }
+            ParamId::ReverbDamping => {
+                self.reverb_state.damping = value;
+                self.fx.set_param(id, value);
+            }
+            ParamId::ReverbMix => {
+                self.reverb_state.mix = value;
+                self.fx.set_param(id, value);
+            }
             id if id.is_fx() => self.fx.set_param(id, value),
             // M8 sidechain ducker (`fx/ducker.rs`): stored in `params` only until it is wired.
             ParamId::SidechainAmount | ParamId::SidechainRelease => {}
             _ => {}
+        }
+    }
+
+    // --- plugins: master EQ and reverb (plugins milestone) --------------------------------
+
+    /// The master EQ's target state (what the UI mirrors).
+    #[must_use]
+    pub fn eq(&self) -> &EqState {
+        self.eq.state()
+    }
+
+    /// Sets one value of EQ band `band` (wraps into `0..BAND_COUNT`); clamped and smoothed.
+    /// Returns the stored value.
+    pub fn set_eq(&mut self, band: u8, param: EqParam, value: f32) -> f32 {
+        self.eq.set(usize::from(band), param, value)
+    }
+
+    /// Switches the master EQ on or off (faded).
+    pub fn set_eq_on(&mut self, on: bool) {
+        self.eq.set_on(on);
+    }
+
+    /// Sets the master EQ output gain in dB (clamped, smoothed). Returns the stored value.
+    pub fn set_eq_gain(&mut self, gain_db: f32) -> f32 {
+        self.eq.set_gain_db(gain_db)
+    }
+
+    /// Replaces the whole EQ (project load): values are normalised and the smoothers snap.
+    pub fn set_eq_state(&mut self, state: &EqState) {
+        self.eq.set_state(state);
+    }
+
+    /// Every reverb value (size / damping / mix agree with the `ParamId` view).
+    #[must_use]
+    pub fn reverb(&self) -> &ReverbState {
+        &self.reverb_state
+    }
+
+    /// Sets one reverb value (clamped). Size, damping and mix also update the matching
+    /// `ParamId` so both views agree; the rest go straight to the reverb. Returns the stored
+    /// value.
+    pub fn set_reverb(&mut self, param: ReverbParam, value: f32) -> f32 {
+        let v = self.reverb_state.set(param, value);
+        match param {
+            ReverbParam::Size => self.set_param(ParamId::ReverbSize, v),
+            ReverbParam::Damping => self.set_param(ParamId::ReverbDamping, v),
+            ReverbParam::Mix => self.set_param(ParamId::ReverbMix, v),
+            ReverbParam::PreDelay => self.fx.reverb_mut().set_pre_delay_ms(v),
+            ReverbParam::Width => self.fx.reverb_mut().set_width(v),
+            ReverbParam::LowCut => self.fx.reverb_mut().set_low_cut_hz(v),
+            ReverbParam::HighCut => self.fx.reverb_mut().set_high_cut_hz(v),
+        }
+        // `set_param` re-clamps with the ParamId range (identical to the state's).
+        self.reverb_state.get(param)
+    }
+
+    /// Replaces every reverb value (project load).
+    pub fn set_reverb_state(&mut self, state: &ReverbState) {
+        for p in ReverbParam::ALL {
+            self.set_reverb(p, state.get(p));
         }
     }
 
@@ -1541,6 +1679,16 @@ impl Engine {
             } => {
                 self.set_mixer(channel, param, value);
             }
+            Message::SetEq { band, param, value } => {
+                self.set_eq(band, param, value);
+            }
+            Message::SetEqOn(on) => self.set_eq_on(on),
+            Message::SetEqGain(db) => {
+                self.set_eq_gain(db);
+            }
+            Message::SetReverb { param, value } => {
+                self.set_reverb(param, value);
+            }
         }
     }
 
@@ -1587,17 +1735,24 @@ impl Engine {
         let (stereo_frames, _) = body.as_chunks_mut::<2>();
         let limiter_on = self.limiter_on;
         self.meters = Meters::SILENT;
+        self.reverb_peak = 0.0;
         let mut rows = [0.0_f32; DrumRow::COUNT];
         let mut inputs = [0.0_f32; Channel::COUNT];
         for [l, r] in stereo_frames {
             self.sequencer_tick();
             // Five drum rows plus the synth (through its drive insert) feed the mixer; the
-            // diagnostic test tone bypasses mixer and effects.
+            // diagnostic test tone bypasses mixer, effects and the master EQ.
             self.drums.tick_rows(&mut rows);
             inputs[..DrumRow::COUNT].copy_from_slice(&rows);
             inputs[Channel::Synth.index()] = self.fx.drive().process(self.voices.tick());
             let buses = self.mix_frame(&inputs);
             let (fl, fr) = self.fx.process_bus(buses.dry, buses.delay, buses.reverb);
+            let (wl, wr) = self.fx.last_reverb_wet();
+            let wet = wl.abs().max(wr.abs());
+            if wet > self.reverb_peak {
+                self.reverb_peak = wet;
+            }
+            let (fl, fr) = self.eq.process(fl, fr);
             let tone = self.tone.tick();
             let gain = self.master_gain.tick();
             let (pl, pr) = ((fl + tone) * gain, (fr + tone) * gain);
@@ -1615,9 +1770,12 @@ impl Engine {
             if ar > self.meters.master[1] {
                 self.meters.master[1] = ar;
             }
+            self.spectrum.push((*l + *r) * 0.5);
         }
         tail.fill(0.0);
+        self.spectrum.publish();
         self.shared.publish_meters(&self.meters);
+        self.shared.publish_reverb_level(self.reverb_peak);
         self.publish();
     }
 }

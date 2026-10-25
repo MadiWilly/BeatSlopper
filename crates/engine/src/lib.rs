@@ -22,6 +22,8 @@
 //!   offline WAV export.
 //! - [`mixer`]: the six channel strips (level, pan, mute, solo, delay/reverb sends) and the
 //!   pan law; [`engine::Meters`] carries the per-block peaks to the UI.
+//! - [`spectrum`]: the lock-free master-output tap and FFT analyser behind the EQ plugin's
+//!   display; `fx::eq` and `fx::reverb` hold the plugin states ([`EqState`], [`ReverbState`]).
 
 #![warn(missing_docs)]
 
@@ -35,6 +37,7 @@ pub mod params;
 pub mod pattern;
 pub mod presets;
 pub mod project;
+pub mod spectrum;
 pub mod synth;
 pub mod transport;
 pub mod voice;
@@ -54,3 +57,6 @@ pub use pattern::{
     Pattern, PatternLength, PlayMode, STEPS, SynthStep,
 };
 pub use project::{Project, ProjectError};
+
+pub use fx::{EqBand, EqKind, EqParam, EqState, ReverbParam, ReverbState};
+pub use spectrum::{Analyzer, SPECTRUM_BINS, SPECTRUM_SIZE, SpectrumReader};

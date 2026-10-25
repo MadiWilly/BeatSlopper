@@ -19,6 +19,7 @@ pub mod controls;
 pub mod fx_rack;
 pub mod keyboard;
 pub mod mixer;
+pub mod plugins;
 pub mod project_bar;
 pub mod sequencer;
 pub mod song;
