@@ -940,8 +940,11 @@ impl Engine {
                 self.fx.set_param(id, value);
             }
             id if id.is_fx() => self.fx.set_param(id, value),
-            // M8 sidechain ducker (`fx/ducker.rs`): stored in `params` only until it is wired.
-            ParamId::SidechainAmount | ParamId::SidechainRelease => {}
+            // M8 sidechain ducker (`fx/ducker.rs`) on the synth insert, triggered by the kick.
+            ParamId::SidechainAmount | ParamId::SidechainRelease => self.fx.set_ducker(
+                self.params[ParamId::SidechainAmount.index()],
+                self.params[ParamId::SidechainRelease.index()],
+            ),
             _ => {}
         }
     }
@@ -1596,6 +1599,10 @@ impl Engine {
             if let Some(velocity) = drums[row.index()].velocity() {
                 self.drums.trigger(row, velocity);
                 self.hit_bits |= 1 << row.index();
+                if row == DrumRow::Kick {
+                    // Sidechain pump (M8): every kick hit dips the synth insert.
+                    self.fx.ducker_trigger();
+                }
             }
         }
         // Notes are sorted by start, so the matching ones are contiguous; the scan over at
@@ -1735,17 +1742,18 @@ impl Engine {
     /// the dry bus, adds its post-fader sends to the delay and reverb buses and tracks the
     /// per-channel block peak (post-fader, pre-pan).
     #[inline]
-    fn mix_frame(&mut self, inputs: &[f32; Channel::COUNT]) -> Buses {
+    fn mix_frame(&mut self, inputs: &[(f32, f32); Channel::COUNT]) -> Buses {
         let mut buses = Buses::default();
         for (i, strip) in self.strips.iter_mut().enumerate() {
-            let x = inputs[i];
-            let post = if x.is_finite() {
-                x * strip.gain.tick()
-            } else {
-                0.0
-            };
+            let (xl, xr) = inputs[i];
+            let g = strip.gain.tick();
+            let post_l = if xl.is_finite() { xl * g } else { 0.0 };
+            let post_r = if xr.is_finite() { xr * g } else { 0.0 };
+            // The pan gains act on the pair, so a mono source (`xl == xr`) mixes exactly as
+            // before M8 and a stereo one (the synth insert's chorus) keeps its width.
             let (pl, pr) = (strip.pan_l.tick(), strip.pan_r.tick());
-            let (l, r) = (post * pl, post * pr);
+            let (l, r) = (post_l * pl, post_r * pr);
+            let post = post_l.abs().max(post_r.abs());
             buses.dry.0 += l;
             buses.dry.1 += r;
             let ds = strip.delay_send.tick();
@@ -1754,9 +1762,8 @@ impl Engine {
             let rs = strip.reverb_send.tick();
             buses.reverb.0 += l * rs;
             buses.reverb.1 += r * rs;
-            let a = post.abs();
-            if a > self.meters.channel[i] {
-                self.meters.channel[i] = a;
+            if post > self.meters.channel[i] {
+                self.meters.channel[i] = post;
             }
         }
         buses
@@ -1776,14 +1783,17 @@ impl Engine {
         self.meters = Meters::SILENT;
         self.reverb_peak = 0.0;
         let mut rows = [0.0_f32; DrumRow::COUNT];
-        let mut inputs = [0.0_f32; Channel::COUNT];
+        let mut inputs = [(0.0_f32, 0.0_f32); Channel::COUNT];
         for [l, r] in stereo_frames {
             self.sequencer_tick();
-            // Five drum rows plus the synth (through its drive insert) feed the mixer; the
-            // diagnostic test tone bypasses mixer, effects and the master EQ.
+            // Five drum rows (mono) plus the synth through its M8 insert (drive -> lo-fi ->
+            // chorus -> sidechain ducker, stereo) feed the mixer; the diagnostic test tone
+            // bypasses mixer, effects and the master EQ.
             self.drums.tick_rows(&mut rows);
-            inputs[..DrumRow::COUNT].copy_from_slice(&rows);
-            inputs[Channel::Synth.index()] = self.fx.drive().process(self.voices.tick());
+            for (input, row) in inputs.iter_mut().zip(rows.iter()) {
+                *input = (*row, *row);
+            }
+            inputs[Channel::Synth.index()] = self.fx.process_synth_insert(self.voices.tick());
             let buses = self.mix_frame(&inputs);
             let (fl, fr) = self.fx.process_bus(buses.dry, buses.delay, buses.reverb);
             let (wl, wr) = self.fx.last_reverb_wet();
