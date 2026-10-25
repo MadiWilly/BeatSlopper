@@ -2100,8 +2100,8 @@ fn synth_panel_shows_the_m8_groups_in_both_themes() {
     }
 }
 
-/// The lowest `RadioButton` named `label`: the MODE group's "Pluck" item, not the "Pluck"
-/// preset in the panel head.
+/// The lowest `RadioButton` named `label`: the MODE group's "Pluck" item (before M9 the
+/// panel head's preset row had a "Pluck" item too; the browser's entries are buttons).
 fn lowest_radio<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kittest::Node<'h> {
     harness
         .get_all_by_label(label)
@@ -2950,12 +2950,30 @@ fn synth_head_names_the_edit_track_and_follows_add_and_select() {
         "a fresh track is not modified"
     );
 
-    // The preset row applies to the edit track (track 2); track 1 keeps its preset.
-    radio(&harness, "Keys").click();
+    // The preset strip applies to the edit track (track 2); track 1 keeps its preset: the
+    // browser's "Keys" entry (M9; the head shows the name), then `<` steps back to "Pad".
+    harness.get_by_label(&ui::preset_browser::head_name("Bass"));
+    harness
+        .get_by_label(ui::preset_browser::BROWSE_LABEL)
+        .click();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Keys")
+        .click();
     harness.run_steps(2);
     assert_eq!(harness.state().track(1).preset, 5);
     assert_eq!(harness.state().track(0).preset, 0);
     assert_eq!(harness.state().preset_index(), 5);
+    harness.get_by_label(&ui::preset_browser::head_name("Keys"));
+    harness
+        .get_by_label(ui::preset_browser::CLOSE_LABEL)
+        .click();
+    harness.run_steps(2);
+    harness.get_by_label(ui::preset_browser::PREV_LABEL).click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().preset_index(), 4, "Pad");
+    harness.get_by_label(&ui::preset_browser::head_name("Pad"));
+    assert_eq!(harness.state().track(0).preset, 0);
 
     // A knob move lights the MOD lamp; selecting track 1 shows its own state again.
     harness.state_mut().set_param(engine::ParamId::Glide, 0.4);

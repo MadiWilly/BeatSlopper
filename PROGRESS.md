@@ -101,7 +101,7 @@ whenever it gains commits.
 
 ## M9: Preset library + browser (EDM + Joji-style lofi)
 - [x] engine: 80+ categorised presets with tags, search helpers, per-preset tests (91 presets, 2026-10-25)
-- [ ] app: preset browser (category, list, search, prev/next, modified marker, persisted name)
+- [x] app: preset browser (category, list, search, prev/next, modified marker, persisted name; 2026-10-25, uncommitted: the loop re-runs the gate and commits)
 - [ ] Tests per PLAN.md M9; gate green, tag m9, final summary updated
 
 ## M10: Instrument tracks (layer synths into rolls; done 2026-10-25, tag m10)

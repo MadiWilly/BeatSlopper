@@ -3,9 +3,11 @@
 //! and envelope, pitch envelope, velocity routing).
 //!
 //! Layout follows `design/preview-a.html` `<section class="panel synth">`: a panel head with
-//! the title on the left and the preset `segmented` on the right, then `.synth-body`. The body
-//! is a vertical `ScrollArea` of three rows of top-aligned columns; the first row is the M2
-//! mock and always fits the top row of the page unscrolled, the M8 rows scroll into view:
+//! the title on the left and the preset strip on the right (M9, `ui/preset_browser.rs`:
+//! `<` name `>` BROWSE and the MODIFIED lamp; the preset `segmented` of M2 is gone), then
+//! `.synth-body`, or the preset browser in its place while it is open. The body is a
+//! vertical `ScrollArea` of three rows of top-aligned columns; the first row is the M2 mock
+//! and always fits the top row of the page unscrolled, the M8 rows scroll into view:
 //!
 //! 1. OSC: two groups (`OSC 1`, `OSC 2`), each a head row (label + wave `segmented`) over a
 //!    knob row (DETUNE bipolar in cents, MIX in %, PULSE width in %).
@@ -37,6 +39,7 @@ use crate::ui::controls::{
     self, GROUP_GAP, KNOB_BLOCK, KNOB_GAP, Knob, PANEL_HEAD_GAP, fmt_cents, fmt_hz, fmt_ms,
     fmt_percent, fmt_percent_signed, fmt_rate_hz, fmt_ratio, fmt_semitones,
 };
+use crate::ui::preset_browser;
 
 /// Waveform names in `Osc1Wave` / `Osc2Wave` index order.
 pub const WAVE_NAMES: [&str; 4] = ["Sine", "Saw", "Square", "Tri"];
@@ -78,13 +81,17 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         ui.set_min_size(ui.available_size());
         head(ui, state, theme);
         ui.add_space(PANEL_HEAD_GAP);
-        body(ui, state, theme);
+        if state.preset_browser_open {
+            preset_browser::show(ui, state, theme);
+        } else {
+            body(ui, state, theme);
+        }
     });
 }
 
-/// Names of every preset, in selector order.
+/// Names of every preset, in browser order (the unified list of `crate::presets`).
 pub fn preset_names() -> Vec<&'static str> {
-    presets::ALL.iter().map(|preset| preset.name).collect()
+    presets::all().map(|preset| preset.name).collect()
 }
 
 /// The panel title for the edit track: `"Synth · <track name>"` (M10).
@@ -97,8 +104,8 @@ pub fn head_title(state: &AppState) -> String {
 /// moved after the preset was applied (M10).
 pub const MODIFIED_LABEL: &str = "Modified";
 
-/// The head: [`head_title`] with the edit track's colour chip on the left, the preset
-/// selector and the MOD lamp flush right.
+/// The head: [`head_title`] with the edit track's colour chip on the left, the preset strip
+/// ([`preset_browser::head_strip`]: `<` name `>` BROWSE) and the MOD lamp flush right.
 fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.set_min_height(controls::ROW_HEIGHT);
@@ -109,24 +116,11 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             .on_hover_text("The selected track; every control here edits it");
         controls::right_aligned(ui, "synth_preset", |ui| {
             ui.spacing_mut().item_spacing.x = controls::HEAD_GAP;
-            preset_selector(ui, state, theme);
+            preset_browser::head_strip(ui, state, theme);
             neu::slider::lamp(ui, theme, state.preset_modified(), MODIFIED_LABEL)
                 .on_hover_text("Lit once a knob moved after the preset was applied");
         });
     });
-}
-
-/// The preset `segmented`: a change applies the preset to the edit track (its per-track
-/// parameters back to the defaults plus the preset's values, all sent).
-fn preset_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let names = preset_names();
-    let before = state.preset_index().min(names.len().saturating_sub(1));
-    let mut selected = before;
-    neu::segmented::segmented(ui, theme, &mut selected, &names)
-        .on_hover_text("Preset for the selected track");
-    if selected != before {
-        state.apply_preset(selected);
-    }
 }
 
 /// The scrolling body: the M2 row first, then the two M8 rows.

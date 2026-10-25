@@ -23,6 +23,7 @@ pub mod fx_rack;
 pub mod keyboard;
 pub mod mixer;
 pub mod plugins;
+pub mod preset_browser;
 pub mod project_bar;
 pub mod recent_panel;
 pub mod sequencer;

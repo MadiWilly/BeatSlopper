@@ -190,15 +190,14 @@ impl AppState {
         state
     }
 
-    /// The UI mirror of a loaded track entry: the preset is found by name (else by matching
-    /// the parameters against every preset, else preset 0) and the modified marker is set
-    /// when the parameters differ from that preset's.
+    /// The UI mirror of a loaded track entry: the preset is found by name in the unified
+    /// list (`crate::presets`, case-insensitive; else by matching the parameters against
+    /// every preset, else preset 0) and the modified marker is set when the parameters
+    /// differ from that preset's.
     fn track_ui_from_state(state: &TrackState, params: &[f32; ParamId::COUNT]) -> TrackUi {
-        let by_name = crate::presets::ALL
-            .iter()
-            .position(|preset| preset.name == state.preset);
+        let by_name = crate::presets::index_of(&state.preset);
         let by_params =
-            || (0..crate::presets::ALL.len()).find(|&i| !track_differs_from_preset(params, i));
+            || (0..crate::presets::count()).find(|&i| !track_differs_from_preset(params, i));
         let preset = by_name.or_else(by_params).unwrap_or(0);
         TrackUi {
             name: crate::app::clean_track_name(&state.name),
@@ -871,7 +870,10 @@ mod tests {
         state.apply_preset(1);
         state.rename_track(0, "Sub");
         let second = state.add_track().unwrap();
-        state.apply_preset(4);
+        // A library preset (M9) by name; the file stores the name.
+        assert!(state.apply_preset_named("Nylon Guitar"));
+        let nylon = crate::presets::index_of("Nylon Guitar").unwrap();
+        assert!(nylon >= crate::presets::CLASSIC.len());
         state.set_param(ParamId::FilterCutoff, 2222.0);
         state.rename_track(second, "Pad");
         state.set_track_colour(second, 5);
@@ -891,7 +893,10 @@ mod tests {
         assert_eq!(project.tracks[0].preset, "Sub");
         assert_eq!(project.tracks[1].name, "Pad");
         assert_eq!(project.tracks[1].colour, 5);
-        assert_eq!(project.tracks[1].preset, "Pad", "kept although modified");
+        assert_eq!(
+            project.tracks[1].preset, "Nylon Guitar",
+            "kept although modified"
+        );
         assert_eq!(project.track_param(1, ParamId::FilterCutoff), 2222.0);
         assert!(
             project
@@ -920,7 +925,8 @@ mod tests {
         assert!(!loaded.track(0).modified);
         assert_eq!(loaded.track(1).name, "Pad");
         assert_eq!(loaded.track(1).colour, 5);
-        assert_eq!(loaded.track(1).preset, 4);
+        assert_eq!(loaded.track(1).preset, nylon);
+        assert_eq!(loaded.track(1).preset_name(), "Nylon Guitar");
         assert!(
             loaded.track(1).modified,
             "the cutoff moved since the preset"
@@ -973,5 +979,39 @@ mod tests {
         assert_eq!(loaded.param(ParamId::FilterCutoff), 500.0);
         assert_eq!(loaded.param(ParamId::DelayMix), 0.3);
         assert_eq!(loaded.edit_notes(), &[Note::new(0, 2, 40, 0.9)]);
+    }
+
+    /// An unknown preset name in a file (a preset of a later build, a typo) falls back:
+    /// an unmodified track is matched by its parameters, a modified one lands on preset 0
+    /// with the modified marker; a known name is found whatever its case.
+    #[test]
+    fn unknown_preset_names_fall_back_on_load() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.apply_preset_named("Sub");
+        let second = state.add_track().unwrap();
+        assert!(state.apply_preset_named("Toy Piano"));
+        state.set_param(ParamId::FilterCutoff, 2222.0);
+        let mut project = state.build_project();
+        assert_eq!(project.tracks[0].preset, "Sub");
+        assert_eq!(project.tracks[1].preset, "Toy Piano");
+        project.tracks[0].preset = "mystery".to_owned();
+        project.tracks[1].preset = "Mystery Preset".to_owned();
+
+        let (mut loaded, _engine) = AppState::headless(ThemeMode::Dark);
+        loaded.apply_project(&project);
+        assert_eq!(loaded.track(0).preset, 1, "Sub, found by its parameters");
+        assert!(!loaded.track(0).modified);
+        assert_eq!(loaded.track(second).preset, 0);
+        assert!(loaded.track(second).modified);
+        assert_eq!(loaded.track_param(second, ParamId::FilterCutoff), 2222.0);
+
+        project.tracks[1].preset = "TOY PIANO".to_owned();
+        loaded.apply_project(&project);
+        assert_eq!(
+            loaded.track(second).preset_name(),
+            "Toy Piano",
+            "names are matched case-insensitively"
+        );
+        assert!(loaded.track(second).modified);
     }
 }

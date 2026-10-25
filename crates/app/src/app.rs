@@ -14,8 +14,8 @@
 //! edits it through [`AppState::set_param`], which clamps, stores and sends
 //! `Message::SetParam`; [`AppState::apply_preset`] resets to defaults, overlays a preset and
 //! sends every value. After the audio stream starts, every parameter and the tempo are sent
-//! once so the engine matches the UI. The chosen preset index is persisted next to the theme
-//! override and re-applied on the next launch.
+//! once so the engine matches the UI. The chosen preset's *name* is persisted next to the
+//! theme override ([`PRESET_NAME_KEY`], M9) and re-applied to track 0 on the next launch.
 //!
 //! Sequencer (M3/M5): [`AppState::bank`] is the UI's source of truth for the eight patterns,
 //! the song chain, the play mode and the selected (edit) pattern; [`AppState::pattern`] is
@@ -136,8 +136,12 @@ use neu::{VisualInput, VisualPreset};
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
 
-/// eframe storage key for the selected preset index (M10: the edit track's preset; on the
-/// next launch it is re-applied to track 0).
+/// eframe storage key for the selected preset *name* (M9: the edit track's preset; on the
+/// next launch it is re-applied to track 0). Replaces [`PRESET_INDEX_KEY`].
+pub const PRESET_NAME_KEY: &str = "preset_name";
+
+/// eframe storage key of the pre-M9 preset index (the classics' order, which the unified
+/// list keeps); still read as a fallback when no name is stored, never written.
 pub const PRESET_INDEX_KEY: &str = "preset_index";
 
 /// eframe storage key for the last project path.
@@ -352,8 +356,8 @@ pub fn default_params() -> [f32; ParamId::COUNT] {
 #[must_use]
 pub fn preset_params(index: usize) -> [f32; ParamId::COUNT] {
     let mut params = default_params();
-    let index = index.min(presets::ALL.len().saturating_sub(1));
-    if let Some(preset) = presets::ALL.get(index) {
+    let index = index.min(presets::count().saturating_sub(1));
+    if let Some(preset) = presets::get(index) {
         for (id, value) in preset.values {
             params[id.index()] = id.clamp(*value);
         }
@@ -397,7 +401,8 @@ pub struct TrackUi {
     pub colour: u8,
     /// Whether the slot holds a track (inactive slots are hidden everywhere).
     pub active: bool,
-    /// Index into [`presets::ALL`] of the preset shown as selected for this track.
+    /// Index into the unified preset list ([`crate::presets`]: the eight classics, then the
+    /// M9 library) of the preset shown as selected for this track.
     pub preset: usize,
     /// `true` once a per-track parameter moved after the preset was applied (the MOD lamp).
     pub modified: bool,
@@ -428,9 +433,7 @@ impl TrackUi {
     /// Name of this track's preset.
     #[must_use]
     pub fn preset_name(&self) -> &'static str {
-        presets::ALL
-            .get(self.preset)
-            .map_or("", |preset| preset.name)
+        presets::name(self.preset)
     }
 }
 
@@ -707,6 +710,19 @@ pub struct AppState {
     /// MIDI note-offs applied through [`AppState::poll_midi`] (diagnostics).
     pub midi_note_off_count: u64,
 
+    // ---- Preset browser (M9; view state, not undoable, not persisted) ----
+    /// Whether the SYNTH panel shows the preset browser over its oscillator groups (BROWSE
+    /// toggles it, Escape and CLOSE shut it).
+    pub preset_browser_open: bool,
+    /// The browser's category filter (`None` = every category); also the range of the
+    /// `<` / `>` buttons and the Ctrl+PageUp / Ctrl+PageDown shortcuts.
+    pub preset_category: Option<presets::Category>,
+    /// The browser's search text (name or tag substring).
+    pub preset_query: String,
+    /// A pending request to give the search field keyboard focus (Ctrl+Shift+P, BROWSE);
+    /// the browser clears it once the field took the focus.
+    pub preset_search_focus: bool,
+
     // ---- Visualizers ----
     /// Index into [`neu::PRESETS`] of the chosen visualizer preset (persisted).
     pub visual_preset: usize,
@@ -838,6 +854,10 @@ impl AppState {
             midi_failed_port: None,
             midi_note_on_count: 0,
             midi_note_off_count: 0,
+            preset_browser_open: false,
+            preset_category: None,
+            preset_query: String::new(),
+            preset_search_focus: false,
             visual_preset: DEFAULT_VISUAL_PRESET,
             visual_full: false,
             scope,
@@ -1349,7 +1369,7 @@ impl AppState {
     /// reset the same way (presets carry reverb and delay values, as before M10). Every
     /// global value and the edit track's values are sent. One undo step.
     pub fn apply_preset(&mut self, index: usize) {
-        let index = index.min(presets::ALL.len().saturating_sub(1));
+        let index = index.min(presets::count().saturating_sub(1));
         self.begin_edit();
         let values = preset_params(index);
         let track = self.edit_track;
@@ -1375,7 +1395,66 @@ impl AppState {
         self.resend_track_params(track);
     }
 
-    /// Index into [`presets::ALL`] of the edit track's preset.
+    /// Applies the preset called `name` (ASCII case-insensitive, see [`presets::index_of`])
+    /// to the edit track like [`apply_preset`](Self::apply_preset). `false` (nothing
+    /// changes) for an unknown name.
+    pub fn apply_preset_named(&mut self, name: &str) -> bool {
+        match presets::index_of(name) {
+            Some(index) => {
+                self.apply_preset(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The presets the `<` / `>` buttons and the preset shortcuts step through: every preset
+    /// of the browser's category filter ([`AppState::preset_category`]; the search text does
+    /// not narrow the stepping), as unified indices.
+    #[must_use]
+    pub fn preset_filter(&self) -> Vec<usize> {
+        presets::by_category(self.preset_category).collect()
+    }
+
+    /// The browser's list: [`preset_filter`](Self::preset_filter) narrowed by the search
+    /// text ([`AppState::preset_query`]).
+    #[must_use]
+    pub fn preset_matches(&self) -> Vec<usize> {
+        presets::filtered(self.preset_category, &self.preset_query)
+    }
+
+    /// Steps the edit track's preset `delta` places (`-1` previous, `1` next) within
+    /// [`preset_filter`](Self::preset_filter), wrapping at both ends (a preset outside the
+    /// filter steps to its first / last entry), and applies it. `false` when the filter is
+    /// empty.
+    pub fn step_preset(&mut self, delta: i32) -> bool {
+        let filter = self.preset_filter();
+        match presets::step(&filter, self.preset_index(), delta) {
+            Some(index) => {
+                self.apply_preset(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Opens the preset browser over the SYNTH panel's body; with `focus_search` the search
+    /// field takes the keyboard once it is drawn (Ctrl+Shift+P).
+    pub fn open_preset_browser(&mut self, focus_search: bool) {
+        self.preset_browser_open = true;
+        if focus_search {
+            self.preset_search_focus = true;
+        }
+    }
+
+    /// Closes the preset browser (Escape, CLOSE, BROWSE again). The category filter and the
+    /// search text are kept for the next time.
+    pub fn close_preset_browser(&mut self) {
+        self.preset_browser_open = false;
+        self.preset_search_focus = false;
+    }
+
+    /// Index into the unified preset list ([`crate::presets`]) of the edit track's preset.
     #[must_use]
     pub fn preset_index(&self) -> usize {
         self.edit_track_ui().preset
@@ -2718,6 +2797,9 @@ impl AppState {
             if escape && self.visual_full {
                 self.visual_full = false;
             }
+            if escape && self.preset_browser_open {
+                self.close_preset_browser();
+            }
             let nothing_focused = ctx.memory(|m| m.focused().is_none());
             if nothing_focused
                 && self.playing
@@ -3229,6 +3311,9 @@ impl BeatSlopperApp {
             .flatten()
             .map(ThemeMode::from);
         let mode = resolve_theme_mode(theme_override, cc.egui_ctx.system_theme());
+        let preset_name: Option<String> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<String>(s, PRESET_NAME_KEY));
         let preset_index: Option<usize> = cc
             .storage
             .and_then(|s| eframe::get_value::<usize>(s, PRESET_INDEX_KEY));
@@ -3284,8 +3369,14 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<f32>(s, ROLL_EXTRA_WIDTH_KEY));
         state.set_roll_extra_width(roll_extra_width.unwrap_or(0.0));
-        if let Some(index) = preset_index {
-            // Re-apply the remembered preset so the sound matches the highlighted name.
+        // Re-apply the remembered preset so the sound matches the shown name: by name (M9),
+        // else by the pre-M9 index (the classics' order, which the unified list keeps). An
+        // unknown name is ignored.
+        let remembered = preset_name
+            .as_deref()
+            .and_then(presets::index_of)
+            .or(preset_index);
+        if let Some(index) = remembered {
             state.apply_preset(index);
         }
         state.project_path = project_path;
@@ -3529,6 +3620,13 @@ impl BeatSlopperApp {
             Shortcut::NextTrack => {
                 state.select_adjacent_track(1);
             }
+            Shortcut::PrevPreset => {
+                state.step_preset(-1);
+            }
+            Shortcut::NextPreset => {
+                state.step_preset(1);
+            }
+            Shortcut::FindPreset => state.open_preset_browser(true),
         }
     }
 
@@ -3597,7 +3695,11 @@ impl App for BeatSlopperApp {
     fn save(&mut self, storage: &mut dyn Storage) {
         let stored: Option<StoredThemeMode> = self.state.theme_override.map(Into::into);
         eframe::set_value(storage, THEME_OVERRIDE_KEY, &stored);
-        eframe::set_value(storage, PRESET_INDEX_KEY, &self.state.preset_index());
+        eframe::set_value(
+            storage,
+            PRESET_NAME_KEY,
+            &self.state.preset_name().to_owned(),
+        );
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
@@ -3796,8 +3898,9 @@ mod tests {
 
     #[test]
     fn every_preset_sends_all_params_and_stays_in_range() {
-        assert_eq!(presets::ALL.len(), 8);
-        for (i, preset) in presets::ALL.iter().enumerate() {
+        assert_eq!(presets::CLASSIC.len(), 8);
+        assert_eq!(presets::count(), 8 + engine::presets::LIBRARY_COUNT);
+        for (i, preset) in presets::all().enumerate() {
             let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
             // Dirty a value first so we can see the preset reset it.
             state.set_param(ParamId::Glide, 0.9);
@@ -3840,11 +3943,71 @@ mod tests {
     fn preset_index_is_clamped_to_the_list() {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
         state.apply_preset(usize::MAX);
-        assert_eq!(state.preset_index(), presets::ALL.len() - 1);
-        assert_eq!(
-            state.preset_name(),
-            presets::ALL[presets::ALL.len() - 1].name
+        assert_eq!(state.preset_index(), presets::count() - 1);
+        assert_eq!(state.preset_name(), presets::name(presets::count() - 1));
+    }
+
+    #[test]
+    fn presets_apply_by_name_and_step_within_the_category_filter() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(state.apply_preset_named("lofi piano"));
+        assert_eq!(state.preset_name(), "Lofi Piano");
+        assert!(!state.preset_modified());
+        assert!(
+            !state.apply_preset_named("No Such Preset"),
+            "unknown names change nothing"
         );
+        assert_eq!(state.preset_name(), "Lofi Piano");
+
+        // No filter: the whole unified list, wrapping at both ends.
+        state.apply_preset(0);
+        assert!(state.step_preset(-1));
+        assert_eq!(state.preset_index(), presets::count() - 1);
+        assert!(state.step_preset(1));
+        assert_eq!(state.preset_index(), 0);
+        assert!(state.step_preset(1));
+        assert_eq!(state.preset_index(), 1);
+
+        // A category filter: only its presets, in order, wrapping; a preset outside the
+        // filter steps to its first / last entry.
+        state.preset_category = Some(presets::Category::LofiKeys);
+        let keys = state.preset_filter();
+        assert_eq!(
+            keys,
+            presets::by_category(Some(presets::Category::LofiKeys)).collect::<Vec<_>>()
+        );
+        assert!(state.step_preset(1));
+        assert_eq!(state.preset_index(), keys[0], "from Sub into the filter");
+        assert!(state.step_preset(-1));
+        assert_eq!(state.preset_index(), keys[keys.len() - 1], "wraps back");
+        assert!(state.step_preset(1));
+        assert_eq!(state.preset_index(), keys[0]);
+        for &expected in &keys[1..] {
+            assert!(state.step_preset(1));
+            assert_eq!(state.preset_index(), expected);
+        }
+        // The search text narrows the list, not the stepping.
+        state.preset_query = "piano".to_owned();
+        assert_eq!(state.preset_filter(), keys);
+        let matches = state.preset_matches();
+        assert!(matches.len() < keys.len());
+        assert!(
+            matches
+                .iter()
+                .all(|&i| presets::name(i).to_ascii_lowercase().contains("piano")
+                    || presets::get(i).unwrap().has_tag("piano"))
+        );
+        // Every step is one undo step on the edit track.
+        assert!(state.undo());
+        assert_eq!(state.preset_index(), keys[keys.len() - 2]);
+
+        // The browser's view state.
+        assert!(!state.preset_browser_open);
+        state.open_preset_browser(true);
+        assert!(state.preset_browser_open && state.preset_search_focus);
+        state.close_preset_browser();
+        assert!(!state.preset_browser_open && !state.preset_search_focus);
+        assert_eq!(state.preset_query, "piano", "the filter is kept");
     }
 
     #[test]

@@ -16,10 +16,14 @@
 //! | Ctrl+T                   | add an instrument track (M10)            |
 //! | Ctrl+Shift+D             | duplicate the edit track (M10)           |
 //! | Alt+Up / Alt+Down        | select the previous / next track (M10)   |
+//! | Ctrl+PageUp / PageDown   | previous / next preset (M9)              |
+//! | Ctrl+Shift+P             | open the preset browser, focus search    |
 //!
-//! Home (rewind while playing), Escape (deselect / test tone off; twice = panic) and the
-//! Up / Down / PageUp / PageDown note nudges of a selected bass step are handled in
-//! `AppState::handle_keyboard`, because they depend on focus and selection state.
+//! Home (rewind while playing), Escape (deselect / test tone off; twice = panic; closes the
+//! preset browser) and the Up / Down / PageUp / PageDown note nudges of a selected bass
+//! step are handled in `AppState::handle_keyboard`, because they depend on focus and
+//! selection state. The preset steps are Ctrl+PageUp / PageDown because Ctrl+Up / Down are
+//! the tempo nudge (the plan's Ctrl+Up / Down were taken by the QOL pass first).
 //!
 //! `Ctrl` is egui's `COMMAND` (Cmd on macOS). The keys are *consumed* so nothing else in the
 //! frame sees them: Space and R are not piano keys and the piano ignores Ctrl combinations
@@ -63,11 +67,17 @@ pub enum Shortcut {
     PrevTrack,
     /// Alt+Down: the next active track (M10).
     NextTrack,
+    /// Ctrl+PageUp: the previous preset of the browser's category filter, wrapping (M9).
+    PrevPreset,
+    /// Ctrl+PageDown: the next preset of the browser's category filter, wrapping (M9).
+    NextPreset,
+    /// Ctrl+Shift+P: open the preset browser with the search field focused (M9).
+    FindPreset,
 }
 
 impl Shortcut {
     /// Every shortcut, in check order.
-    pub const ALL: [Shortcut; 16] = [
+    pub const ALL: [Shortcut; 19] = [
         Shortcut::SaveAs,
         Shortcut::OpenRecent,
         Shortcut::Redo,
@@ -84,6 +94,9 @@ impl Shortcut {
         Shortcut::AddTrack,
         Shortcut::PrevTrack,
         Shortcut::NextTrack,
+        Shortcut::PrevPreset,
+        Shortcut::NextPreset,
+        Shortcut::FindPreset,
     ];
 
     /// The key combinations that trigger this shortcut.
@@ -114,6 +127,9 @@ impl Shortcut {
             Shortcut::AddTrack => &[(Modifiers::COMMAND, Key::T)],
             Shortcut::PrevTrack => &[(Modifiers::ALT, Key::ArrowUp)],
             Shortcut::NextTrack => &[(Modifiers::ALT, Key::ArrowDown)],
+            Shortcut::PrevPreset => &[(Modifiers::COMMAND, Key::PageUp)],
+            Shortcut::NextPreset => &[(Modifiers::COMMAND, Key::PageDown)],
+            Shortcut::FindPreset => &[(COMMAND_SHIFT, Key::P)],
         }
     }
 
@@ -137,6 +153,9 @@ impl Shortcut {
             Shortcut::AddTrack => "Ctrl+T",
             Shortcut::PrevTrack => "Alt+Up",
             Shortcut::NextTrack => "Alt+Down",
+            Shortcut::PrevPreset => "Ctrl+PageUp",
+            Shortcut::NextPreset => "Ctrl+PageDown",
+            Shortcut::FindPreset => "Ctrl+Shift+P",
         }
     }
 
@@ -335,6 +354,53 @@ mod tests {
         ] {
             assert!(!shortcut.opens_dialog());
         }
+    }
+
+    #[test]
+    fn preset_shortcuts_step_and_find_without_taking_the_tempo_nudge() {
+        let mut input = input_with(
+            vec![
+                press(Modifiers::COMMAND, Key::PageUp),
+                press(Modifiers::COMMAND, Key::PageDown),
+                press(COMMAND_SHIFT, Key::P),
+                press(Modifiers::COMMAND, Key::ArrowUp),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            take_shortcuts(&mut input),
+            vec![
+                Shortcut::BpmUp,
+                Shortcut::PrevPreset,
+                Shortcut::NextPreset,
+                Shortcut::FindPreset,
+            ]
+        );
+        assert!(take_shortcuts(&mut input).is_empty(), "consumed");
+        // Plain PageUp / PageDown nudge a selected note by an octave; plain P is a piano key;
+        // Ctrl+P alone is nothing.
+        let mut input = input_with(
+            vec![
+                press(Modifiers::NONE, Key::PageUp),
+                press(Modifiers::NONE, Key::PageDown),
+                press(Modifiers::NONE, Key::P),
+                press(Modifiers::COMMAND, Key::P),
+            ],
+            Modifiers::NONE,
+        );
+        assert!(take_shortcuts(&mut input).is_empty());
+        assert!(input.key_pressed(Key::PageUp));
+        assert!(input.key_pressed(Key::PageDown));
+        assert!(input.key_pressed(Key::P));
+        for shortcut in [
+            Shortcut::PrevPreset,
+            Shortcut::NextPreset,
+            Shortcut::FindPreset,
+        ] {
+            assert!(!shortcut.opens_dialog());
+        }
+        assert_eq!(Shortcut::PrevPreset.label(), "Ctrl+PageUp");
+        assert_eq!(Shortcut::FindPreset.label(), "Ctrl+Shift+P");
     }
 
     #[test]

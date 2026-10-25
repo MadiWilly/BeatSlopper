@@ -463,7 +463,7 @@ fn rack_knob_and_window_knob_drive_one_reverb_state() {
     let steps_before_preset = harness.state().state().undo.len();
 
     // A synth preset writes size / damping / mix: the window follows, the extras stay.
-    let synth = app::presets::ALL[4];
+    let synth = app::presets::get(4).expect("Pad");
     harness.state_mut().state_mut().apply_preset(4);
     harness.step();
     {

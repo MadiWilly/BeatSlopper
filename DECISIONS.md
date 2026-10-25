@@ -322,3 +322,21 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
   `max(1e-4, 2 x bed)`; presets without vinyl noise keep the strict 1e-4. Tagging ~35 lofi
   presets "drone" would have been wrong, and the DSP was out of that task's scope.
   `Preset::has_vinyl_noise()` exposes the fact to the UI.
+
+## 2026-10-25: M9 preset browser (app)
+- The app's preset universe is one unified index: the eight classics (`engine::presets::ALL`,
+  `app::presets::CLASSIC`) then the 91-entry `LIBRARY` (99). Preset 0 stays "Bass" (a
+  fresh track must not hiss), every pre-M9 index keeps its meaning, and the classics were
+  not folded into the engine library: `ALL` feeds a dozen engine tests and the v6 project
+  migration, and the library's render / decay tests would otherwise judge the M2 sounds.
+- The browser replaces the SYNTH panel's *body* while open (same panel, same size) rather
+  than a popup `Area` or a row-wide overlay: nothing on the page moves, the FX rack stays
+  usable, and the 1280 x 1140 whole-sequencer tests hold with it open and closed.
+- Preset stepping is Ctrl+PageUp / Ctrl+PageDown (the plan's Ctrl+Up / Down are the QOL
+  tempo nudge, kept); Ctrl+Shift+P opens the browser with the search focused. Stepping
+  walks the category filter only; the search text narrows the list, not the step order.
+- The last preset is persisted by name (`preset_name`); the old `preset_index` is read as
+  a fallback once and never written again. The project file was already name-based.
+- Category chips use short labels (`Lo Keys · Lo Gtr · Lo Pads · Leads · Bass · Plucks ·
+  EDM Pads · Risers`) so nine fit the panel at the minimum width; "FX" was avoided because
+  the FX rack's tab is a radio item named "FX".

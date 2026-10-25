@@ -1349,3 +1349,128 @@ ROLL view); `ADD_LABEL` `"+ Add"` with `ADD_NAME` `"Add track"`; `DUP_LABEL` `"D
 - Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace` (app 173 unit + 1 + 12 plugins + 8 tracks + 74 renders),
   `--smoke-test` ok.
+
+## M9 as built (app browser)
+
+The SYNTH panel's 8-item preset `segmented` is gone; `crates/app/src/ui/preset_browser.rs`
+puts a preset strip in the panel head and a browser over the panel body. Everything is in
+`crates/app`; the engine's `presets.rs` is untouched (its `ALL` / `LIBRARY` split stays).
+
+### The unified list (`crates/app/src/presets.rs`)
+- The app addresses presets by one index into `CLASSIC ++ LIBRARY`: the eight M2 classics
+  (`engine::presets::ALL`, re-exported as `presets::CLASSIC`) first, so preset 0 is still
+  "Bass" (a fresh track's sound, no vinyl bed) and every index the pre-M9 code, tests and
+  v6 files used keeps its meaning, then the 91 library entries in library order (99 in
+  all). Helpers: `count()`, `all()`, `get(i)`, `name(i)`, `index_of(name)` (ASCII
+  case-insensitive, whole list), `matches(preset, query)` (name or tag substring, like the
+  engine's `search`), `by_category(Option<Category>)` (unified indices; `None` = all),
+  `filtered(category, query)` (the browser's list) and `step(filter, current, delta)`
+  (wraps; a `current` outside the filter steps to its first / last entry).
+- Folding the classics into the engine `LIBRARY` was considered and dropped: `ALL` is used
+  by a dozen engine tests and the v6 project migration, the library's per-category render
+  / decay tests would then judge the M2 sounds, and the classics are reachable through the
+  same unified index anyway. A category filter therefore shows the engine's `by_category`
+  entries plus the classics of that category (Lofi Keys +1 "Keys", EDM Leads +1 "Lead",
+  EDM Bass +3 "Bass" / "Sub" / "Acid", EDM Plucks +2 "Pluck" / "Bell", EDM Pads +1 "Pad").
+
+### State (`app.rs`)
+- `TrackUi.preset: usize` is now an index into the unified list (`preset_name()` =
+  `presets::name`); `preset_params` / `preset_track_params` / `track_differs_from_preset`
+  and `apply_preset(index)` clamp to `presets::count()`.
+- New: `apply_preset_named(&str) -> bool` (unknown name = no change),
+  `preset_filter() -> Vec<usize>` (the category filter only), `preset_matches()` (filter +
+  search text), `step_preset(delta) -> bool` (previous / next within the filter, wrapping,
+  one undo step like `apply_preset`), `open_preset_browser(focus_search)`,
+  `close_preset_browser()`.
+- Browser view state (not undoable, not persisted): `preset_browser_open`,
+  `preset_category: Option<Category>`, `preset_query: String`, `preset_search_focus`
+  (a one-shot focus request the search field consumes). `handle_keyboard` closes the
+  browser on Escape when no text field has the keyboard (the browser itself closes on
+  Escape from inside the search field, see below).
+- Persistence: `PRESET_NAME_KEY` (`"preset_name"`) stores the edit track's preset name;
+  at start-up the name is re-applied to track 0, falling back to the old
+  `PRESET_INDEX_KEY` index when no name is stored (the classics' order is unchanged), and
+  an unknown name is ignored. `PRESET_INDEX_KEY` is never written any more.
+- `project.rs`: `track_ui_from_state` finds the preset by name in the unified list
+  (case-insensitive), else by matching the per-track parameters against every preset,
+  else 0 with `modified` set, as before. `TrackState.preset` already carried the name, so
+  the file format is unchanged.
+
+### Layout (`ui/preset_browser.rs`, `ui/synth_panel.rs`)
+- Head strip (`head_strip`, flush right before the MODIFIED lamp): `<` pill
+  (`PREV_LABEL`), the name well (`NAME_WIDTH` = 128, inset-s pill, 13 pt, ellipsised, the
+  full name and category as tooltip; a click opens the browser), `>` pill (`NEXT_LABEL`),
+  the `BROWSE` toggle pill (`BROWSE_LABEL`, lit while open). `<` / `>` call
+  `step_preset`, so they walk the category filter and wrap.
+- The browser (`show`) replaces the panel *body* (the oscillator groups) while open, inside
+  the same `neu::panel`, so the panel keeps the size the page gives it and nothing below
+  moves (an `egui::Area` popup would have had to fight the main area's scroll and the
+  window's bottom edge; an overlay over the whole SYNTH | FX row would have hidden the FX
+  rack for no reason). Top to bottom with the group gap: the category `segmented`
+  (`CATEGORY_LABELS` = `All · Lo Keys · Lo Gtr · Lo Pads · Leads · Bass · Plucks · EDM Pads
+  · Risers`, about 500 pt, fits the 704 pt panel at the minimum window width; "FX" was
+  avoided because the FX rack's `FX | Mixer` tab is a radio item of that name); the search
+  row: the search field (`SEARCH_WIDTH` = 220, an `egui::TextEdit` on the kit's inset-s
+  editor pill with the accent caret and the `SEARCH_HINT` placeholder, `SEARCH_CHAR_LIMIT`
+  = 32), the match count (`count_text`: `"12 of 99"`) and the `CLOSE` pill flush right;
+  then the list in a vertical `ScrollArea` (`"preset_browser_list"`), `columns_for(width)`
+  columns of at least `COLUMN_MIN_WIDTH` (200) pt (three at 1280 wide), `ROW_HEIGHT` (26)
+  rows: name left (13 pt, primary when selected or hovered, else secondary), tags right
+  (11 pt secondary: `vinyl` where `has_vinyl_noise()`, `drone` where `is_drone()`, the
+  category label in the `All` view; `entry_tags`), the selected entry on an inset-s well
+  (`ROW_RADIUS` 8) with a 6 pt accent dot. A click applies the preset to the selected
+  track and keeps the browser open. `NO_MATCH` shows for an empty list.
+- Closing: Escape (checked by the browser itself, so it also works while the search field
+  has the keyboard: egui drops the field's focus on Escape and `handle_keyboard` skips
+  Escape while a field is focused), `CLOSE`, `BROWSE` again. The category and the search
+  text are kept for the next time.
+- Focus: while the search field has the keyboard `ctx.text_edit_focused()` is true, so
+  `take_shortcuts` returns nothing (Space, R, the preset steps, every Ctrl combination)
+  and `handle_keyboard` releases the piano, exactly like the TRACKS rename field.
+
+### Shortcuts (`shortcuts.rs`)
+- `Shortcut::PrevPreset` = Ctrl+PageUp, `NextPreset` = Ctrl+PageDown (`step_preset(-1 /
+  1)`: the browser's category filter, wrapping; the search text does not narrow the
+  stepping), `FindPreset` = Ctrl+Shift+P (`open_preset_browser(true)`: opens the browser
+  with the search field focused; the old text stays and typing appends). The plan's Ctrl+Up
+  / Ctrl+Down were taken by the QOL tempo nudge first (DECISIONS.md), so the preset steps
+  use the page keys; plain PageUp / PageDown remain the selected note's octave nudge. Every
+  earlier binding is unchanged.
+
+### Accessible names
+`head_name(preset)` = `"Preset: Lofi Piano"` (the name well, a button); `PREV_LABEL` `"<"`
+/ `NEXT_LABEL` `">"`; `BROWSE_LABEL` `"Browse"` (`toggled` = open); `CLOSE_LABEL`
+`"Close"`; the category items are radio buttons named by `CATEGORY_LABELS`; the search
+field is the panel's only `TextInput`; every list entry is a button named after the preset
+(`toggled` = selected). Note for tests: the sequencer's bass lane also has a button named
+"Bass", so the whole-app tests scan entries inside `top_row_rect`.
+
+### Tests
+- `crates/app/src/presets.rs` (4): the unified order and lookups, category counts =
+  engine `by_category` + classics, search like the engine's, `step` wrap semantics.
+  `ui/preset_browser.rs` (3): category items round-trip and stay short, `entry_tags`,
+  `columns_for`. `app.rs`: `every_preset_sends_all_params_and_stays_in_range` now runs
+  over all 99; `apply_preset_named` / `step_preset` / filter / view state. `project.rs`:
+  the two-track round trip uses "Nylon Guitar" by name; unknown names fall back (by
+  parameters, else 0 + modified) and known names match case-insensitively.
+  `shortcuts.rs`: the three new bindings beside the tempo nudge.
+- `tests/preset_browser.rs` (6, kittest): the list shows all 99 in unified order and each
+  category exactly (both themes); an entry applies to the selected track, the head follows,
+  the other track keeps its preset, select shows the other track's preset, CLOSE / BROWSE /
+  the name well open and close; search narrows (`piano`, a category on top, `808` by tag,
+  nothing) and Escape from the field closes keeping the text; `<` / `>` wrap over the
+  whole list and inside Lofi Guitars, the MODIFIED lamp lights on a knob move and clears
+  on `>`; through the whole app Ctrl+PageDown / PageUp step and wrap, the tempo nudge is
+  untouched, Ctrl+Shift+P opens with the field focused, typed letters and Space neither
+  play nor start the loop, the preset step shortcut is quiet while typing, Escape closes
+  and Space plays again; at 1280 x 1140 the whole sequencer stays visible with the browser
+  open and closed, the top row keeps its height and gets no wider (the closed panel's LFO
+  DEPTH readout already overhangs by 5 pt on `main`, an M8 artefact), the category row,
+  field, CLOSE and the entries sit inside the SYNTH panel in more than one column.
+- `tests/ui_renders.rs`: `synth_head_names_the_edit_track_and_follows_add_and_select`
+  picks "Keys" through the browser and steps back with `<`. `tests/plugins_ui.rs` reads
+  the "Pad" preset with `presets::get(4)`.
+- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` (app 183 unit + 1 + 12 plugins + 6 browser + 8 tracks + 74
+  renders; engine 185 + 1 ignored and its integration suites; neu 55 + 37), `--smoke-test`
+  ok.
