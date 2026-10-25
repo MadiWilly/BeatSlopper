@@ -2243,6 +2243,8 @@ impl AppState {
             bpm: self.bpm,
             time,
         }
+    }
+
     /// The keyboard of another window of the app (the roll's own window): its shortcuts are
     /// queued in [`Self::pending_shortcuts`] for the app's next tick and its keys play the
     /// piano right away ([`Self::handle_keyboard`]). Call it inside that window's viewport
