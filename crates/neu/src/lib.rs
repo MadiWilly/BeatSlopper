@@ -42,7 +42,10 @@ pub use button::{
     Icon, SMALL_DEPTH_MAX, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon,
     stepper_button, theme_toggle, toggle_button, toggle_button_sized,
 };
-pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc, tooltip_text};
+pub use knob::{
+    DIMMED_OPACITY, DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, knob_dimmed, paint_arc,
+    tooltip_text,
+};
 pub use meter::{
     METER_FLOOR_DB, METER_HOT_LEVEL, METER_HOT_SEPARATOR, METER_HOT_TOP, METER_TRACK,
     STEREO_METER_SIZE, STEREO_METER_TRACK_WIDTH, meter, meter_fraction, stereo_meter,
@@ -57,7 +60,7 @@ pub use piano_roll::{
     KEY_COLUMN_WIDTH, NOTE_RADIUS, PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote,
     black_row_tint, cell_at, grid_rect, is_black_key, note_rect, piano_roll, row_rect,
 };
-pub use segmented::segmented;
+pub use segmented::{SEGMENTED_CHIP_HEIGHT, SEGMENTED_HEIGHT, chip_rect, segmented};
 pub use shadow::{
     Depth, FOCUS_RING, FOCUS_RING_GAP, paint_focus_circle, paint_focus_rect, paint_soft_circle,
     paint_soft_circle_with_fill, paint_soft_rect, paint_soft_rect_with_fill, soft_circle_shapes,
@@ -69,7 +72,7 @@ pub use slider::{
 };
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};
-pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode};
+pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode, contrast_ratio};
 pub use visualizer::{
     OFF_PRESET, PRESETS, Palette, VisualInput, VisualPreset, VisualStyle, Visualizer, bars,
     particles, radial, scope, vector, visualizer as show_visualizer, waves,

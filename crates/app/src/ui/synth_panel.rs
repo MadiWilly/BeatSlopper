@@ -55,10 +55,19 @@ pub const FILTER_TYPES: [&str; 3] = ["LP", "BP", "HP"];
 pub const COL_GAP_MAX: f32 = 26.0;
 /// Smallest gap the columns compress to when the panel is narrow.
 pub const COL_GAP_MIN: f32 = 8.0;
-/// Gap between the A D S R sliders (`.sliders{gap:8px}`).
-const SLIDER_GAP: f32 = 8.0;
+/// Gap between the A D S R sliders: the mock's 8 widened to 12 so the 13 pt values
+/// ("600 ms") of neighbouring 36 pt columns never touch.
+pub const SLIDER_GAP: f32 = 12.0;
 /// Gap between the rows of the body (the group gap, like `.osc .group + .group`).
 const ROW_GAP: f32 = GROUP_GAP;
+/// A body row that cannot show at least this much (a head row, the group gap and a knob
+/// block) before the panel's fold starts at the fold instead, so no head row is ever
+/// orphaned from its knobs by the scroll edge (see [`page_break`]).
+pub const MIN_ROW_VISIBLE: f32 = controls::ROW_HEIGHT + GROUP_GAP + 92.0;
+/// Index of "Square" in [`WAVE_NAMES`]: the only wave the PULSE knobs act on.
+const SQUARE: usize = 2;
+/// Tooltip note on a dimmed PULSE knob.
+pub const PULSE_DIMMED_NOTE: &str = "Square wave only";
 /// Width of a two-knob row: the filter column's width, used to centre the cutoff dial.
 const TWO_KNOBS: f32 = KNOB_BLOCK * 2.0 + KNOB_GAP;
 
@@ -110,17 +119,37 @@ fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 amp_column(ui, state, theme);
                 lfo_column(ui, state, theme);
             });
+            page_break(ui);
             row(ui, "synth_row_2", 3, |ui| {
                 unison_group(ui, state, theme);
                 mod_group(ui, state, theme);
                 mode_group(ui, state, theme);
             });
+            page_break(ui);
             row(ui, "synth_row_3", 3, |ui| {
                 filter_env_group(ui, state, theme);
                 pitch_env_group(ui, state, theme);
                 velocity_group(ui, state, theme);
             });
         });
+}
+
+/// Room left under the fold for the glow of a pushed row's selection chips (the on-glow
+/// blur reaches about 21 pt past a chip), so not even their halo peeks over the edge.
+const PAGE_BREAK_GLOW: f32 = 24.0;
+
+/// Keeps the next body row off the fold: if it would start inside the scroll viewport with
+/// less than [`MIN_ROW_VISIBLE`] showing (its head row cut off from its knobs), or just
+/// under the edge with its chips' glow reaching in, it is pushed down to start
+/// [`PAGE_BREAK_GLOW`] under the viewport's bottom edge, so it scrolls into view whole. The
+/// measure is taken from the content's top, so it does not change while scrolling.
+fn page_break(ui: &mut Ui) {
+    let viewport = ui.clip_rect().height();
+    let next_top = ui.cursor().min.y - ui.max_rect().min.y + ui.spacing().item_spacing.y;
+    let rest = viewport - next_top;
+    if rest > -PAGE_BREAK_GLOW && rest < MIN_ROW_VISIBLE {
+        ui.add_space(rest + PAGE_BREAK_GLOW);
+    }
 }
 
 /// A row of `columns` top-aligned columns whose gap compresses from [`COL_GAP_MAX`] down to
@@ -193,18 +222,22 @@ fn osc_column(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// One oscillator group: `[wave, detune, mix, pulse]`.
+/// One oscillator group: `[wave, detune, mix, pulse]`. The PULSE knob is dimmed (still
+/// live) unless the wave is Square, the only wave it shapes.
 fn osc_group(ui: &mut Ui, state: &mut AppState, theme: &Theme, name: &str, ids: [ParamId; 4]) {
     let [wave, detune, mix, pulse] = ids;
     controls::group_head(ui, theme, name, |ui| {
         controls::segmented(ui, state, theme, wave, &WAVE_NAMES);
     });
+    let square = state.param(wave).round() as usize == SQUARE;
     knob_row(ui, |ui| {
         Knob::new(detune, fmt_cents)
             .bipolar()
             .show(ui, state, theme);
         Knob::new(mix, fmt_percent).show(ui, state, theme);
-        Knob::new(pulse, fmt_percent).show(ui, state, theme);
+        Knob::new(pulse, fmt_percent)
+            .dimmed_when(!square, PULSE_DIMMED_NOTE)
+            .show(ui, state, theme);
     });
 }
 

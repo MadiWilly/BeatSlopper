@@ -30,7 +30,7 @@ use egui::{
 };
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_soft_circle};
+use crate::shadow::{Depth, paint_focus_circle, paint_soft_circle};
 use crate::text::{self, TextKind};
 
 /// Knob size: `Md` (cap 40, arc 50, block 52) or `Sm` (cap 26, arc 34).
@@ -249,16 +249,37 @@ pub fn tooltip_text(label: &str, value: &str) -> String {
     }
 }
 
+/// Opacity of a dimmed knob (see [`knob_dimmed`]).
+pub const DIMMED_OPACITY: f32 = 0.5;
+
 /// A rotary knob bound to `value`. `changed()` when the value moved; double-click resets.
 ///
 /// Block: the caps label above, the arc ring with its raised cap and accent pointer, the
 /// formatted value below. Hovering shows a [`tooltip_text`] tooltip (styled by
 /// [`Theme::apply`]). A `Sm` knob with an empty label shows neither label nor value in the
-/// block and relies on the tooltip alone (the sequencer row knobs).
+/// block and relies on the tooltip alone (the sequencer row knobs). While the knob has
+/// keyboard focus its cap wears the kit's 1.5 pt accent focus ring.
 pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) -> Response {
+    knob_dimmed(ui, theme, value, spec, None)
+}
+
+/// [`knob`] that can be shown *dimmed*: with `dimmed` set to a reason (e.g. "Square wave
+/// only"), the whole block is painted at [`DIMMED_OPACITY`] with the pointer in the secondary
+/// text colour instead of the accent, and the tooltip reads `"label: value · reason"`. The
+/// knob stays fully interactive; dimming only says the parameter has no effect right now.
+pub fn knob_dimmed(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: &mut f32,
+    spec: &KnobSpec<'_>,
+    dimmed: Option<&str>,
+) -> Response {
     let size = spec.size;
     let labelled = !spec.label.is_empty();
-    let painter = ui.painter().clone();
+    let mut painter = ui.painter().clone();
+    if dimmed.is_some() {
+        painter.multiply_opacity(DIMMED_OPACITY);
+    }
     let label_galley =
         labelled.then(|| text::layout(&painter, spec.label, TextKind::Label, theme.text_secondary));
     let value_height = if labelled {
@@ -305,7 +326,9 @@ pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) ->
 
         let (inner, outer) = size.pointer_span();
         let dir = angle_dir(spec.angle_deg(v));
-        let color = if hovered {
+        let color = if dimmed.is_some() {
+            theme.text_secondary
+        } else if hovered {
             theme.accent_hover
         } else {
             theme.accent
@@ -315,6 +338,9 @@ pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) ->
         painter.line_segment([a, b], Stroke::new(POINTER_WIDTH, color));
         painter.circle_filled(a, POINTER_WIDTH * 0.5, color);
         painter.circle_filled(b, POINTER_WIDTH * 0.5, color);
+        if response.has_focus() {
+            paint_focus_circle(&painter, centre, size.cap() * 0.5, theme);
+        }
 
         if let Some(galley) = label_galley {
             text::paint_galley(
@@ -337,11 +363,17 @@ pub fn knob(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &KnobSpec<'_>) ->
     }
 
     declare_slider(ui, &response, spec, v);
-    response.on_hover_text(tooltip_text(spec.label, &spec.format(v)))
+    let mut tooltip = tooltip_text(spec.label, &spec.format(v));
+    if let Some(reason) = dimmed {
+        tooltip.push_str(" · ");
+        tooltip.push_str(reason);
+    }
+    response.on_hover_text(tooltip)
 }
 
 /// The concentric-ring dial (master volume, filter cutoff). Same interaction and
-/// [`tooltip_text`] hover tooltip as [`knob`].
+/// [`tooltip_text`] hover tooltip as [`knob`]; the focus ring goes around the outermost
+/// raised ring.
 ///
 /// `Lg` lays the text block (label over a 15 pt value, right-aligned, at least 58 wide) to the
 /// left of the 96 pt ring with a 14 pt gap; `Sm` stacks the centred text above the 72 pt ring
@@ -440,6 +472,9 @@ pub fn dial(
             theme.accent
         };
         painter.circle_filled(dot, size.dot() * 0.5, color);
+        if response.has_focus() {
+            paint_focus_circle(&painter, centre, size.rings()[0] * 0.5, theme);
+        }
 
         text::paint_galley(
             &painter,

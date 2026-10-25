@@ -342,6 +342,15 @@ mod tests {
     }
 
     #[test]
+    fn labels_on_the_playhead_tint_meet_aa() {
+        // Bass-lane note names (secondary text) on a tinted playhead-column cell.
+        for theme in [Theme::dark(), Theme::light()] {
+            let ratio = crate::theme::contrast_ratio(theme.text_secondary, playhead_tint(&theme));
+            assert!(ratio >= 4.5, "{:?}: {ratio:.2}:1", theme.mode);
+        }
+    }
+
+    #[test]
     fn tint_sits_between_surface_and_shadow() {
         for theme in [Theme::dark(), Theme::light()] {
             let tint = playhead_tint(&theme);

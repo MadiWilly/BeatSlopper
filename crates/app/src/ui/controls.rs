@@ -148,6 +148,9 @@ pub struct Knob {
     pub bipolar: bool,
     pub size: KnobSize,
     pub fmt: fn(f32) -> String,
+    /// Shown dimmed (still interactive) with this reason in the tooltip, when the parameter
+    /// has no effect in the current setting (e.g. PULSE with a non-square wave).
+    pub dimmed: Option<&'static str>,
 }
 
 impl Knob {
@@ -161,7 +164,16 @@ impl Knob {
             bipolar: false,
             size: KnobSize::Md,
             fmt,
+            dimmed: None,
         }
+    }
+
+    /// Dims the knob (see [`neu::knob_dimmed`]) while `condition` holds, with `reason` added
+    /// to the tooltip.
+    #[must_use]
+    pub fn dimmed_when(mut self, condition: bool, reason: &'static str) -> Self {
+        self.dimmed = condition.then_some(reason);
+        self
     }
 
     /// Overrides the caps label.
@@ -212,7 +224,7 @@ impl Knob {
     pub fn show(self, ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Response {
         let before = state.param(self.id);
         let mut value = before;
-        let response = neu::knob(ui, theme, &mut value, &self.spec());
+        let response = neu::knob_dimmed(ui, theme, &mut value, &self.spec(), self.dimmed);
         commit(state, self.id, before, value, &response);
         response
     }
@@ -511,6 +523,12 @@ mod tests {
                 .small()
                 .size,
             KnobSize::Sm
+        );
+        let pulse = Knob::new(ParamId::Osc1Pulse, fmt_percent);
+        assert_eq!(pulse.dimmed_when(false, "Square wave only").dimmed, None);
+        assert_eq!(
+            pulse.dimmed_when(true, "Square wave only").dimmed,
+            Some("Square wave only")
         );
     }
 }

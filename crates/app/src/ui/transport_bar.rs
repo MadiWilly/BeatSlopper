@@ -121,7 +121,7 @@ fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
         ui.spacing_mut().item_spacing.y = theme.space_1;
         neu::brand(ui, theme, "BeatSlopper");
         match audio_error {
-            None => label(ui, theme, "M5 · SOFT CONSOLE"),
+            None => label(ui, theme, "M8 · SOFT CONSOLE"),
             Some(err) if err.contains("stream error") => label(ui, theme, "AUDIO STREAM ERROR"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };

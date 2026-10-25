@@ -78,9 +78,11 @@ struct Params {
     osc1_wave: usize,
     osc1_detune: f32,
     osc1_mix: f32,
+    osc1_pulse: f32,
     osc2_wave: usize,
     osc2_detune: f32,
     osc2_mix: f32,
+    osc2_pulse: f32,
     cutoff: f32,
     res: f32,
     env: f32,
@@ -109,9 +111,11 @@ impl Default for Params {
             osc1_wave: 0,
             osc1_detune: 0.0,
             osc1_mix: 70.0,
-            osc2_wave: 1,
+            osc1_pulse: 50.0,
+            osc2_wave: 2,
             osc2_detune: 12.0,
             osc2_mix: 45.0,
+            osc2_pulse: 35.0,
             cutoff: 2400.0,
             res: 22.0,
             env: 40.0,
@@ -264,6 +268,9 @@ struct Gallery {
     clicks: u32,
     octave: i32,
     swing: i32,
+    /// The segmented demo row: a unison voice count and a two-item tab.
+    unison: usize,
+    lane_view: usize,
     params: Params,
     /// Notes held by the computer-keyboard mapping (shown lit) plus the mouse.
     held: [bool; 128],
@@ -322,6 +329,8 @@ impl Gallery {
             clicks: 0,
             octave: 4,
             swing: 54,
+            unison: 2,
+            lane_view: 0,
             params: Params::default(),
             held,
             labels: Self::labels_for_octave(4),
@@ -460,7 +469,7 @@ impl eframe::App for Gallery {
                             // The mock's `.brand`: the wordmark with +0.16em tracking.
                             neu::brand(ui, &theme, "BeatSlopper");
                             ui.add_space(24.0);
-                            neu::label(ui, &theme, "M7 · Soft Console gallery");
+                            neu::label(ui, &theme, "M8 · Soft Console gallery");
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -510,6 +519,24 @@ impl eframe::App for Gallery {
                             }
                             neu::toggle_button(ui, &theme, "Armed", self.armed);
                             neu::value(ui, &theme, &format!("clicks {}", self.clicks));
+                        });
+                        ui.add_space(14.0);
+                        // Segmented selectors: the sliding accent chip (the unison 1..7 row,
+                        // the widest in the app), a two-item tab and a disabled one.
+                        ui.horizontal(|ui| {
+                            neu::label(ui, &theme, "Segmented");
+                            neu::segmented(
+                                ui,
+                                &theme,
+                                &mut self.unison,
+                                &["1", "2", "3", "4", "5", "6", "7"],
+                            );
+                            neu::segmented(ui, &theme, &mut self.lane_view, &["Grid", "Roll"]);
+                            ui.add_enabled_ui(false, |ui| {
+                                let mut fixed = 1;
+                                neu::segmented(ui, &theme, &mut fixed, &["Project", "Chain"]);
+                            });
+                            neu::label(ui, &theme, "disabled");
                         });
                     });
 
@@ -692,6 +719,14 @@ impl Gallery {
                             },
                         );
                         neu::knob(ui, theme, &mut p.osc1_mix, &pct_knob("Mix", 70.0));
+                        // PULSE only shapes the square wave: dimmed (still live) otherwise.
+                        neu::knob_dimmed(
+                            ui,
+                            theme,
+                            &mut p.osc1_pulse,
+                            &pct_knob("Pulse", 50.0),
+                            (p.osc1_wave != 2).then_some("Square wave only"),
+                        );
                     });
                     ui.add_space(10.0);
                     group_head(ui, theme, "Osc 2", &mut p.osc2_wave, &WAVES);
@@ -712,6 +747,13 @@ impl Gallery {
                             },
                         );
                         neu::knob(ui, theme, &mut p.osc2_mix, &pct_knob("Mix", 45.0));
+                        neu::knob_dimmed(
+                            ui,
+                            theme,
+                            &mut p.osc2_pulse,
+                            &pct_knob("Pulse", 50.0),
+                            (p.osc2_wave != 2).then_some("Square wave only"),
+                        );
                     });
                 });
 
