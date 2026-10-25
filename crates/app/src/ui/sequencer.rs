@@ -24,8 +24,9 @@
 //!
 //! Interactions: click toggles a drum step, shift-click turns it on and flips the accent;
 //! a bass cell click selects the step for note entry (click again to deselect), shift-click
-//! flips its accent (or gives an empty step a note). The state methods on `AppState` do the
-//! work and send the engine messages.
+//! flips its accent (or gives an empty step a note). Right-click clears a cell: a drum step
+//! goes off (accent too), a bass step becomes a rest and loses its selection. The state
+//! methods on `AppState` do the work and send the engine messages.
 //!
 //! Piano roll (M7): the head's `GRID | ROLL` tab ([`LANE_VIEW_TABS`], [`AppState::lane_view`])
 //! swaps the grid area for `neu::piano_roll` over the edit pattern's whole note list (every
@@ -563,7 +564,9 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
             response.widget_info(|| {
                 WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.on, &name)
             });
-            if response.clicked() {
+            if response.secondary_clicked() {
+                state.clear_drum_step(row, step);
+            } else if response.clicked() {
                 let shift = controls::click_shift(ui);
                 state.toggle_drum_step(row, step, shift);
             }
@@ -598,7 +601,9 @@ fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             response.widget_info(|| {
                 WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.note.is_some(), &name)
             });
-            if response.clicked() {
+            if response.secondary_clicked() {
+                state.clear_synth_step(step);
+            } else if response.clicked() {
                 let shift = controls::click_shift(ui);
                 state.click_synth_step(step, shift);
             }

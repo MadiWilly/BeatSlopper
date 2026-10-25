@@ -1042,6 +1042,16 @@ impl AppState {
         }
     }
 
+    /// A right-click on a drum cell: clears the step (off, no accent). Nothing at all (no undo
+    /// step, no message) when the step is already clear.
+    pub fn clear_drum_step(&mut self, row: DrumRow, step: usize) {
+        let step = step % self.pattern().len();
+        let current = self.pattern().drums[row.index()][step];
+        if current.on || current.accent {
+            self.set_drum_step(row, step, false, false);
+        }
+    }
+
     /// Sets one bass-lane step (step index wraps into `0..length`).
     pub fn set_synth_step(&mut self, step: usize, note: Option<u8>, accent: bool) {
         let step = step % self.pattern().len();
@@ -1071,6 +1081,19 @@ impl AppState {
             self.selected_step = None;
         } else {
             self.selected_step = Some(step);
+        }
+    }
+
+    /// A right-click on a bass cell: the step becomes a rest and, if selected, loses its
+    /// selection. An already-empty step is left alone (no undo step, no message).
+    pub fn clear_synth_step(&mut self, step: usize) {
+        let step = step % self.pattern().len();
+        if self.selected_step == Some(step) {
+            self.selected_step = None;
+        }
+        let current = self.pattern().synth[step];
+        if current.note.is_some() || current.accent {
+            self.set_synth_step(step, None, false);
         }
     }
 

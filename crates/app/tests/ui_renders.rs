@@ -343,6 +343,47 @@ fn clicking_a_step_cell_toggles_it() {
     assert_eq!(harness.state().pattern().clone(), expected);
 }
 
+/// Right-click clears a cell: a drum step goes off (accent too), a bass step becomes a rest
+/// and loses its selection. One undo step each; an already-clear cell is left alone.
+#[test]
+fn right_clicking_a_step_cell_clears_it() {
+    let mut harness = sequencer_harness();
+    let kick = DrumRow::Kick.index();
+    let demo = Pattern::demo();
+    assert!(demo.drums[kick][0].on && demo.drums[kick][0].accent);
+    assert!(!harness.state().dirty);
+
+    harness.get_by_label("Kick step 1").click_secondary();
+    harness.step();
+    let cell = harness.state().pattern().drums[kick][0];
+    assert!(!cell.on && !cell.accent, "{cell:?}");
+    assert!(harness.state().dirty);
+
+    // Right-clicking an already-clear cell changes nothing (and is not an undo step).
+    harness.get_by_label("Kick step 2").click_secondary();
+    harness.step();
+    let mut expected = demo.clone();
+    expected.drums[kick][0] = Default::default();
+    assert_eq!(harness.state().pattern().clone(), expected);
+
+    // A selected bass step with a note: the note goes, so does the selection.
+    harness.get_by_label("Bass step 5").click();
+    harness.step();
+    assert_eq!(harness.state().selected_step, Some(4));
+    harness.get_by_label("Bass step 5").click_secondary();
+    harness.step();
+    assert_eq!(harness.state().pattern().synth[4], SynthStep::default());
+    assert_eq!(harness.state().selected_step, None);
+    expected.set_synth_step(4, None, false);
+    assert_eq!(harness.state().pattern().clone(), expected);
+
+    // Two edits, two undo steps: back to the demo pattern.
+    assert!(harness.state_mut().undo());
+    assert!(harness.state_mut().undo());
+    assert_eq!(harness.state().pattern().clone(), demo);
+    assert!(!harness.state_mut().undo(), "nothing more to undo");
+}
+
 #[test]
 fn clear_pills_clear_a_row_and_everything() {
     let mut harness = sequencer_harness();
