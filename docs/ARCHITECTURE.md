@@ -1171,3 +1171,90 @@ part 2 and is not here. Everything below lives in `crates/app`.
   the 1280 x 1140 whole-sequencer visibility with three tracks in the mixer.
 - Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace` (app 258, engine 379 + 1 ignored, neu 118), `--smoke-test` ok.
+
+
+## M9 as built (engine presets)
+
+Everything lives in `crates/engine/src/presets.rs` (data only, no new DSP) and
+`crates/engine/tests/presets.rs`; the app and neu crates are untouched by this pass (the M9
+app agent replaces the synth panel's 8-item row with a browser over `LIBRARY`).
+
+### API (`engine::presets`)
+- `pub enum Category { LofiKeys, LofiGuitars, LofiPads, EdmLeads, EdmBass, EdmPlucks,
+  EdmPads, Risers }` (`Copy`, `Eq`, `Hash`): `Category::ALL: [Category; 8]` (browser order),
+  `label() -> &'static str` ("Lofi Keys", "Lofi Guitars", "Lofi Pads", "EDM Leads", "EDM
+  Bass", "EDM Plucks", "EDM Pads", "Risers & FX"), `index() -> usize` (position in `ALL`),
+  `from_index(usize) -> Category` (wraps).
+- `pub struct Preset { name: &'static str, category: Category, tags: &'static [&'static
+  str], values: &'static [(ParamId, f32)] }`. Unchanged: `apply(&mut Engine)` (resets every
+  parameter, global ones included, then applies; track ids land on the edit track),
+  `apply_to_track(&mut Engine, TrackId)` (track ids only, globals untouched), `value(ParamId)
+  -> f32` (listed value clamped, else the default). New: `has_tag(&str) -> bool` (ASCII
+  case-insensitive), `is_drone() -> bool` (tag `"drone"`), `has_vinyl_noise() -> bool`
+  (`LofiNoise > 0 && LofiMix > 0`: the track hisses even with no note), `lists(ParamId) ->
+  bool`.
+- `pub const ALL: &[Preset]`: the original eight (Bass, Sub, Lead, Pluck, Pad, Keys, Acid,
+  Bell) with their M2 names and values, now carrying a category and tags; **not** part of
+  `LIBRARY` (the app's `presets::ALL.len() == 8` assertion still holds).
+- `pub static LIBRARY: &[Preset]` (91 entries, grouped contiguously in `Category::ALL`
+  order), `pub const LIBRARY_COUNT: usize` (91).
+- `by_category(Category) -> impl Iterator<Item = &'static Preset>` (library order),
+  `find(&str) -> Option<&'static Preset>` (ASCII case-insensitive; `LIBRARY` first, then
+  `ALL`), `index_of(&str) -> Option<usize>` (index into `LIBRARY`; `None` for the original
+  eight), `search(&str) -> Vec<&'static Preset>` (case-insensitive substring on the name and
+  every tag, trimmed; empty query = the whole library; library order).
+- Tags in use: mood (`warm`, `dark`, `bright`, `soft`, `dreamy`, `aggressive`), genre
+  (`lofi`, `edm`, `trap`, `house`, `trance`, `dubstep`, `dnb`, `future bass`, `synthwave`,
+  `joji`), type (`ep`, `piano`, `keys`, `guitar`, `pad`, `lead`, `bass`, `sub`, `808`,
+  `pluck`, `riser`, `fx`, `drone`, `noise`, `vinyl`, `sidechain`).
+
+### Library (91 presets: 11 per category, 12 in Lofi Guitars, EDM Bass and Risers & FX)
+- **Lofi Keys:** Dusty Rhodes, Bedroom Keys, Tape Wurli, Lofi Piano, Cassette Keys, Rainy
+  Day EP, Glass EP, Toy Piano, Organ Dust, Music Box, Vapor Keys.
+- **Lofi Guitars:** Nylon Guitar, Bedroom Strat, Muted Pluck Gtr, Jazz Hollowbody, Tape
+  Telecaster, Ukulele Lofi, Harp Dust, Koto Lofi, Slow Swell Gtr, Bass Guitar Lofi, Dream
+  Clean, Tremolo Dirt (12).
+- **Lofi Pads:** Night Drive Pad, Warm Tape Pad, VHS Strings, Underwater Choir, Dusty Organ
+  Pad, Bedroom Strings, Hollow Moon, Lofi Flute Pad, Grainy Pad, Sunset Drive, Wobble Pad.
+- **EDM Leads:** Festival Saw, Supersaw Lead, Laser Lead, Hoover, Future Bass Chord, Trance
+  Lead, Square Lead, FM Bell Lead, Screech Lead, Pluck Lead, Big Room Lead.
+- **EDM Bass:** Trap 808, 808 Sub, Reese Bass, Neuro Growl, Wobble Bass, Deep House Sub,
+  Future House Bass, Fat Mono, FM Bass, Dub Sub, Tape 303, Distorted 808 (12).
+- **EDM Plucks:** Glass Pluck, Progressive Pluck, Trance Pluck, Pizzicato, Kalimba, Marimba,
+  House Stab, Water Drop, 8-Bit Pluck, Harp Pluck, Rain Pluck.
+- **EDM Pads:** Big Pad, Anthem Pad, Analog Strings, Deep Pad, Trance Gate, Hollow Pad,
+  Future Pad, Sine Bed, Choir Pad, Dark Pad, Shimmer Pad.
+- **Risers & FX:** White Riser, Pink Riser, Sweep Up, Downlifter, Impact Sub Drop, Dub Echo
+  (drone), Infinite Hall (drone), Alarm Trill, Wind, Vinyl Crackle (drone), Laser Zap,
+  Thunder Boom (12).
+
+Every library preset lists every insert id (drive, lo-fi, chorus, sidechain) and the sends
+(delay/reverb; globals, applied by `apply` but ignored by `apply_to_track`). Data is written
+with the file-local `values![Osc1Wave: 1.0, ...]` macro (expands to `&[(P::Osc1Wave, 1.0),
+...]`; rustfmt leaves it alone). Design rules used: amp release ends the voice at -80 dB
+after `AmpRelease` s; a synced delay at 120 BPM must repeat 64/32/16/8 times in 8 s, so
+feedback stays `<= 0.7 / 0.6 / 0.5 / 0.3` for delay times 0/1/2/3; the reverb comb feedback
+is `0.7 + 0.28 x size`, so sizes `<= 0.9` die within 8 s and `1.0` does not. The three
+drones are the presets whose *global* delay/reverb (or the vinyl bed) outlast 8 s.
+
+### Tests (`tests/presets.rs`, 20; `cargo test -p engine` = 401)
+- Per category (8 tests, parallel): >= 10 presets; each applies, a 1 s C4 note renders
+  finite and non-silent (RMS > 1e-3), peak <= 1.0 after the limiter, and after release a
+  full 1 s window drops below `max(1e-4, 2 x noise bed)` within 8 s, where the noise bed is
+  the preset's own no-note render (the lo-fi insert's vinyl hiss is not gated by the voices,
+  so presets with `has_vinyl_noise()` decay to their bed, not to zero); a `drone` must still
+  be above 1e-4 after 8 s.
+- Library shape: >= 80 entries grouped by category; names unique across `LIBRARY` + `ALL`
+  (`ALL` keeps its eight names in order); every value finite, in range, listed once, never
+  `MasterGain`/`LimiterOn`; every preset lists `DriveMix`, `LofiMix`, `ChorusMix`,
+  `SidechainAmount`; pairwise >= 4 differing `is_track()` values (`LIBRARY` + `ALL`).
+- Helpers: `find`/`index_of` agree (case-insensitive); `search("piano")` finds "Lofi Piano"
+  and "Toy Piano" and only piano-named/tagged presets; empty query = everything; order kept;
+  `apply_to_track(.., 2)` sets every track id to `preset.value(id)` and leaves the globals
+  and track 0 alone.
+- Character: "Nylon Guitar" is pluck mode and its tail (<= 1.5 s) is shorter than "Night
+  Drive Pad"'s; "Trap 808" at C2 has < 5 % of its energy above 200 Hz (naive Hann DFT);
+  "Festival Saw"/"Supersaw Lead" are seven-voice saws and the lead is > 2x brighter than
+  the lofi pad (`brightness`); every Lofi Keys preset has `LofiMix > 0`, `LofiBits < 16`
+  and vinyl noise, and bypassing the lo-fi changes "Dusty Rhodes"; "White Riser" is noise
+  that swells (late RMS > 2x early) and brightens; the three drones keep sounding.
