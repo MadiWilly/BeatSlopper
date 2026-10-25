@@ -19,6 +19,9 @@
 //!   [`meter_fraction`]) and the square [`toggle_button_sized`] for mute / solo.
 //! * M7 editor: the [`piano_roll`] (notes as rounded bars on a step x pitch grid, with draw /
 //!   move / resize / delete gestures and the geometry helpers [`cell_at`], [`note_rect`]).
+//! * QOL pass: [`value_edit`], the typed value entry (click a readout or right-click a
+//!   control, type `128 bpm` / `-6 dB` / `2.4k`, Enter) and the wheel nudge shared by every
+//!   knob, dial, slider and stepper ([`readout`], [`parse_value`], [`wheel_notches`]).
 
 pub mod button;
 pub mod knob;
@@ -33,6 +36,7 @@ pub mod step_cell;
 pub mod stepper;
 pub mod text;
 pub mod theme;
+pub mod value_edit;
 
 pub use button::{
     Icon, SMALL_DEPTH_MAX, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon,
@@ -66,6 +70,10 @@ pub use slider::{
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};
 pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode};
+pub use value_edit::{
+    ValueEditOutput, begin_edit, cancel_edit, floating_edit, is_editing, parse_int, parse_number,
+    parse_value, readout, show_edit, value_for_display, wheel_notches, wheel_steps,
+};
 
 pub use step_cell::{
     ACCENT_MARKER, BEAT_NUMBER_HEIGHT, PLAYHEAD_DOT_CURRENT, PLAYHEAD_DOT_IDLE,

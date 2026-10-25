@@ -219,13 +219,19 @@ fn stepper_steps_and_clamps() {
     );
     harness.run();
     assert_eq!(harness.state().changes, 0);
-    harness.get_by_label("2");
+    assert_eq!(
+        harness.get_by_label("Octave value").value().as_deref(),
+        Some("2")
+    );
 
     harness.get_by_label("Increase").click();
     harness.run();
     assert_eq!(harness.state().value, 3);
     assert_eq!(harness.state().changes, 1);
-    harness.get_by_label("3");
+    assert_eq!(
+        harness.get_by_label("Octave value").value().as_deref(),
+        Some("3")
+    );
 
     // Clamped at the top: no change reported.
     harness.get_by_label("Increase").click();
@@ -256,10 +262,16 @@ fn stepper_with_formats_the_value() {
         54,
     );
     harness.run();
-    harness.get_by_label("54%");
+    assert_eq!(
+        harness.get_by_label("Swing value").value().as_deref(),
+        Some("54%")
+    );
     harness.get_by_label("Swing");
     harness.get_by_label("Decrease").click();
     harness.run();
     assert_eq!(*harness.state(), 53);
-    harness.get_by_label("53%");
+    assert_eq!(
+        harness.get_by_label("Swing value").value().as_deref(),
+        Some("53%")
+    );
 }
