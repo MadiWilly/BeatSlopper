@@ -1349,3 +1349,204 @@ ROLL view); `ADD_LABEL` `"+ Add"` with `ADD_NAME` `"Add track"`; `DUP_LABEL` `"D
 - Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace` (app 173 unit + 1 + 12 plugins + 8 tracks + 74 renders),
   `--smoke-test` ok.
+
+## M11 as built (engine)
+
+Everything below lives in `crates/engine`; the app and neu crates are untouched by this pass
+(the app does not compile against it until adapted). `tests/fixtures/v7_demo.json` (the
+pre-M11 `Project::default()` as a v7 file) renders bit for bit as before
+(`tests/inserts.rs`, `v7_project_migrates_and_renders_sample_identical`: FNV-1a hash and
+per-100 ms RMS captured pre-M11; they equal the v6 reference in `tests/tracks.rs`).
+
+### The model (FL Studio's)
+
+`source -> source strip (level, pan, mute, solo; FL's channel-rack knobs) -> insert bus
+(mixer.routes[channel], 1..=16, or 0 = straight to the master sum) -> insert (slot 1 -> slot 2
+-> slot 3 -> built-in EQ3 -> fader (level x mute/solo among the inserts, smoothed) -> pan ->
+post-fader delay / reverb sends) -> insert.route (0 = master, else a HIGHER insert number)`.
+Inserts are processed in ascending number order, so a route to a higher insert lands on a bus
+that has not been processed yet: groups and sub-groups work, feedback is impossible by
+construction. The shared delay / reverb returns, master EQ, master gain and limiter follow as
+before. An insert at its defaults (slots off, flat EQ, 0 dB, centre) is bit-transparent.
+
+### `inserts.rs` (new; re-exported at the crate root)
+- `pub const INSERT_COUNT: usize = 16`, `SLOT_COUNT: usize = 3`, `SLOT_PARAMS: usize = 6`,
+  `MASTER: u8 = 0`, `MAX_INSERT: u8 = 16`, `DEFAULT_ROUTES: [u8; Channel::COUNT]` (drums
+  1..=5, tracks 6..=13).
+- Insert numbers are **1-based** in every API (`insert: u8`). `pub const fn insert_index(insert:
+  u8) -> usize` wraps: `(insert + 15) % 16`, so `0` and `16` both address the last insert and
+  `17` the first (the master has no insert state); `insert_number(index: usize) -> u8` is the
+  inverse; `slot_index(slot: u8) -> usize` wraps into `0..3`. An unchecked message index can
+  therefore never panic.
+- `pub struct SlotParam { pub key: &'static str, pub label: &'static str, pub unit: &'static
+  str, pub min: f32, pub max: f32, pub default: f32 }` with `range()`, `clamp(value)`
+  (non-finite = default). The tables, in `params` index order:
+  - `COMPRESSOR_PARAMS: [SlotParam; 6]`: `threshold` "Thresh" dB -60..=0 (-18), `ratio`
+    "Ratio" ":1" 1..=20 (4), `attack` "Attack" ms 0.1..=100 (10), `release` "Release" ms
+    10..=1000 (100), `makeup` "Makeup" dB 0..=24 (0), `mix` "Mix" 0..=1 (1).
+  - `DRIVE_PARAMS: [SlotParam; 2]`: `amount` "Drive" 0..=1 (0.35), `mix` "Mix" 0..=1 (1).
+  - `LOFI_PARAMS: [SlotParam; 4]`: `bits` "Bits" 4..=16 (8), `rate` "Rate" "x" 1..=16 (2),
+    `tone` "Tone" Hz 1000..=20000 (10000), `mix` "Mix" 0..=1 (1). (Wobble and vinyl noise
+    stay at zero in a slot.)
+  - `CHORUS_PARAMS: [SlotParam; 3]`: `rate` "Rate" Hz 0.1..=5 (0.8), `depth` "Depth" 0..=1
+    (0.3), `mix` "Mix" 0..=1 (1).
+  - `EQ3_PARAMS: [SlotParam; 4]`: `low` "Low" dB -15..=15 (0), `mid` "Mid" dB -15..=15 (0),
+    `mid_freq` "Mid Hz" Hz 100..=10000 (1000), `high` "High" dB -15..=15 (0).
+- `pub enum SlotKind { Off, Compressor, Drive, Lofi, Chorus, Eq3 }` (serde snake_case,
+  `Default` = `Off`): `ALL: [SlotKind; 6]`, `index()`, `from_index(usize)` (clamps),
+  `from_value(f32)` (rounds; non-finite = Off), `label()` ("Off", "Comp", "Drive", "Lo-fi",
+  "Chorus", "EQ3"), `key()`, `params() -> &'static [SlotParam]` (empty for Off),
+  `param_count()`, `default_params() -> [f32; 6]`.
+- `pub struct SlotState { pub kind: SlotKind, pub params: [f32; SLOT_PARAMS] }` (serde,
+  `#[serde(default)]`, `Copy`, `Default` = `SlotState::OFF`): `new(kind)` (the kind's
+  defaults), `set_kind(kind)` (resets the params to the new kind's defaults), `param(index)
+  -> Option<&'static SlotParam>`, `get(index) -> f32` (`0.0` for an unused index), `set(index,
+  value) -> f32` (clamped; an unused index changes nothing and returns `0.0`), `normalise()`,
+  `is_off()`.
+- `pub enum InsertParam { Level, Pan, Mute, Solo, DelaySend, ReverbSend, Eq3Low, Eq3Mid,
+  Eq3MidFreq, Eq3High, Route }` (serde snake_case): `ALL: [InsertParam; 11]`, `range()`
+  (`Level` -60..=6 dB, `Pan` -1..=1, toggles and sends 0..=1, `Eq3*` gains -15..=15 dB,
+  `Eq3MidFreq` 100..=10000 Hz, `Route` 0..=16), `default_value(insert: u8)` (sends from
+  `default_sends`, mid 1000 Hz, else 0), `is_toggle()`, `key()` (`"level_db"`, `"pan"`,
+  `"mute"`, `"solo"`, `"delay_send"`, `"reverb_send"`, `"eq3_low"`, `"eq3_mid"`,
+  `"eq3_mid_freq"`, `"eq3_high"`, `"route"`), `label()` ("Level", "Pan", "M", "S", "Delay",
+  "Reverb", "Low", "Mid", "Mid Hz", "High", "To"), `clamp(insert, value)` (toggles snap to
+  0/1, `Route` rounds and applies `InsertState::valid_route`, non-finite = default).
+- `pub fn default_sends(insert: u8) -> (f32, f32)`: inserts 1..=13 are the default homes of
+  `Channel::ALL` in order, so inserts 2 and 3 (snare, clap) send `(0.0, DRUM_REVERB_SEND)`,
+  6..=13 (the tracks) `(1.0, 1.0)`, everything else `(0.0, 0.0)`.
+- `pub struct InsertState { pub level_db: f32, pub pan: f32, pub mute: bool, pub solo: bool,
+  pub delay_send: f32, pub reverb_send: f32, pub eq3: Eq3State, pub slots: [SlotState; 3],
+  pub route: u8 }` (serde, `#[serde(default)]`, `Copy`, `PartialEq`; `Default` =
+  `InsertState::NEUTRAL`: 0 dB, centre, no mute/solo, no sends, flat EQ, slots off, route
+  0): `default_for(insert)` (neutral plus `default_sends`), `const fn valid_route(insert,
+  route) -> u8` (`route` when `insert < route <= 16`, else `MASTER`), `get(param)`,
+  `set(insert, param, value) -> f32` (stored value; a refused route returns `0.0`),
+  `set_route(insert, route) -> u8`, `normalise(insert)`, `level_gain()`, `slot(slot) ->
+  &SlotState` / `slot_mut(slot)` (wrap), `is_neutral()` (bit-transparent apart from sends and
+  route).
+
+### `fx/compressor.rs` (new; `fx::Compressor`, re-exported at the crate root)
+- Feed-forward peak compressor, stereo-linked (`max(|l|, |r|)`): peak detector with instant
+  attack and exponential release, gain computer in dB with a quadratic `KNEE_DB = 6` soft
+  knee, the applied reduction attacks towards the computed one with the attack time constant
+  and follows it straight down, then `wet = x * db_to_gain(-reduction) * makeup`, `x + (wet -
+  x) * mix`. Bit-transparent under the knee with make-up 0 dB and mix 1.
+- `Compressor::new(sample_rate)` (`Copy`), `set_threshold_db` (-60..=0), `set_ratio`
+  (1..=20), `set_attack_ms` (0.1..=100), `set_release_ms` (10..=1000), `set_makeup_db`
+  (0..=24), `set_mix` (0..=1), the matching getters, `envelope()`, `gain_reduction_db() ->
+  f32` (`>= 0`, read after `process` for the meter), `reduction_db(level_db)` (the static
+  curve), `reset()`, `process(l, r) -> (l, r)`. Constants `MIN_/MAX_*`, `DEFAULT_*`,
+  `KNEE_DB`. A -3 dBFS sine over a -18 dB threshold at 4:1 settles at -14.25 dBFS (+-0.5).
+
+### `fx/eq3.rs` (new; `fx::{Eq3, Eq3State}`, re-exported at the crate root)
+- Low shelf at `LOW_SHELF_HZ = 200`, peaking mid (`MID_Q = 0.7`) at the given frequency,
+  high shelf at `HIGH_SHELF_HZ = 4000`, reusing the RBJ biquads of `fx::eq` (`Coeffs`,
+  `BiquadState`). Gains `-15..=15` dB (`MIN_/MAX_GAIN_DB`), mid `100..=10000` Hz
+  (`MIN_/MAX_MID_HZ`, `DEFAULT_MID_HZ = 1000`); `clamp_gain_db`, `clamp_mid_hz`.
+- `pub struct Eq3State { pub low_gain_db, pub mid_gain_db, pub mid_freq_hz, pub high_gain_db
+  }` (serde `#[serde(default)]`, `Copy`, `Default` = `Eq3State::FLAT`): `new(low, mid,
+  mid_hz, high)`, `normalise()`, `is_flat()`, `response_db(freq_hz, sample_rate)` (the sum of
+  the three bands, for a UI curve).
+- `pub struct Eq3` (`Copy`): `new(sample_rate)`, `state()`, `retarget(&Eq3State)` (values
+  glide over `EQ3_SMOOTH_MS` = 10 ms, coefficients recomputed only while moving, click-free),
+  `snap(&Eq3State)` (project load; clears the memories), `reset()`, `is_transparent()`,
+  `process(l, r)`. A flat state bypasses the biquads entirely (bit-transparent).
+
+### `mixer.rs`
+- `MixerState { pub strips: [Strip; 13], pub inserts: [InsertState; 16], pub routes: [u8;
+  13] }` (still `Copy`, serde `{ "strips": [..], "inserts": [..], "routes": [..] }`; shorter
+  arrays pad with the defaults, longer ones are an error). `inserts[i]` is insert number
+  `i + 1`; `routes[Channel::index]` is the source's insert number (`0` = master).
+- **Defaults changed**: every source strip is neutral now (`ChannelParam::default_value` is
+  `0.0` for everything; the `channel` argument stays for API stability). The sends of a mix
+  live on the inserts: `MixerState::default()` has `inserts[i] = InsertState::default_for(i +
+  1)` (track inserts 6..=13 sent 1.0 / 1.0, inserts 2 / 3 reverb 0.3) and `routes =
+  DEFAULT_ROUTES`. Strip sends still work (post strip, pre insert, into the same buses; the
+  M6 tests use them) but the app should expose the insert sends.
+- New: `valid_source_route(insert) -> u8` (`<= 16` else 0), `insert(insert) -> &InsertState`
+  / `insert_mut(insert)` (wrap), `get_insert(insert, param)`, `set_insert(insert, param,
+  value) -> f32`, `set_slot_kind(insert, slot, kind) -> SlotKind` (the kind's defaults),
+  `set_slot_param(insert, slot, index: u8, value) -> f32`, `route(channel) -> u8`,
+  `set_route(channel, insert) -> u8`, `any_insert_solo()`, `insert_audible(insert)`,
+  `insert_effective_gain(insert)`, `insert_pan_gains(insert)`, `migrate_pre_m11(listed_strips:
+  usize)`. `normalise()` also clamps the inserts and refuses bad routes; `swap(a, b)` now
+  swaps the two channels' routes as well (a track's insert number travels with it on
+  `SwapTracks`).
+- Solo logic: the source strips solo among themselves (`effective_gain`) and the inserts
+  among themselves (`insert_effective_gain`: when any insert is soloed the non-soloed inserts
+  are silent); both layers apply, mute beats solo on each.
+
+### `engine.rs`
+- New `Message` variants (all `Copy`, `size_of::<Message>() <= 16` unchanged): `SetInsert {
+  insert: u8, param: InsertParam, value: f32 }`, `SetSlotKind { insert: u8, slot: u8, kind:
+  SlotKind }`, `SetSlotParam { insert: u8, slot: u8, index: u8, value: f32 }`, `SetRoute {
+  channel: Channel, insert: u8 }`. `SetMixer` is unchanged (source strips).
+- Direct setters (mirror the messages): `set_insert(insert, param, value) -> f32` (level,
+  pan, mute, solo, sends glide over `MIXER_SMOOTH_MS`; a solo change re-targets every insert;
+  the EQ3 values glide in the EQ; `Route` applies at the next sample and returns `0.0` when
+  refused), `set_slot_kind(insert, slot, kind) -> SlotKind` (the effect starts fresh: a hard
+  cut, like loading a plugin), `set_slot_param(insert, slot, index, value) -> f32` (`0.0` and
+  no change for an unused index; drive amount/mix glide, lo-fi / chorus / EQ3 smooth
+  internally, compressor values apply at once), `set_route(channel, insert) -> u8`.
+  `set_mixer_state(&MixerState)` now also normalises the inserts / routes, snaps every
+  insert's smoothers and restarts every slot effect from the loaded state. `mixer()` exposes
+  everything (`mixer().insert(n)`, `mixer().route(ch)`).
+- `Meters` gains `pub insert: [f32; 16]` (post-fader, pre-pan block peak of insert number
+  `i + 1`) and `pub insert_gr: [f32; 16]` (largest compressor gain reduction in dB among the
+  insert's slots over the block, `0` = none), published through the same atomics;
+  `of_insert(insert) -> f32`, `gr_of_insert(insert) -> f32` (wrap). `Meters::SILENT` and
+  `EngineHandle::meters()` cover them. The per-source `channel` meters stay (post-strip).
+- State: `inserts: Box<[InsertDsp; 16]>` (private): per insert three `SlotDsp` (every kind
+  pre-allocated: `Compressor`, `Drive` + two smoothers, `[Lofi; 2]`, `[Chorus; 2]`, `Eq3`;
+  only the chosen kind runs), the built-in `Eq3` and a `StripDsp` fader stage (the same five
+  smoothers as a source strip). `Engine` stays under 256 KiB inline; the slot delay lines
+  (two 20 ms lo-fi + two 20 ms chorus lines per slot, 48 slots) are about 0.75 MiB of heap,
+  allocated once in `new_engine`. Stereo handling per slot: the compressor and EQ3 are
+  stereo; the drive is memoryless (one instance, both channels); lo-fi and chorus keep a left
+  and a right instance (identical seeds, so wobble / noise stay centred; the left chorus
+  instance's sine tap feeds the left channel and the right instance's cosine tap the right,
+  which for a mono input equals the track inserts' single chorus).
+- Render per sample: drums / tracks -> `StripDsp::apply` per source (gain, clean, pan,
+  strip sends, source meter) -> `insert_in[route - 1]` or the master sum -> for `n` in
+  `0..16`: slots -> EQ3 -> fader stage (insert meter, sends) -> `insert_in[route - 1]` when
+  `route > n + 1 && route <= 16`, else the master sum (the render re-checks the rule, so a
+  bad value can never feed back) -> `FxChain::process_bus(master, delay, reverb)` -> master
+  EQ -> tone -> master gain -> limiter. No allocation, locks, I/O, logs or panics; every `u8`
+  from a message is wrapped or refused.
+
+### `project.rs` (format version 8)
+- `FORMAT_VERSION = 8`. The mixer block gains `inserts` and `routes` (see the module docs'
+  JSON). Loading a version-7 (and older) file runs `MixerState::migrate_pre_m11(listed)` with
+  `listed` = the number of strips the file wrote: strip `i` **moves** onto insert `i + 1`
+  (level, pan, mute, solo, delay / reverb sends), the strip is reset to neutral, the source is
+  routed to that insert, the insert's slots are empty, its EQ flat and its route the master,
+  so the file sounds exactly as it did and the mix shows up on the inserts; channels the file
+  did not write (the padded tracks of a pre-M10 file) get `InsertState::default_for`. The
+  "refuse newer" probe is version 9 now. `Project::from_engine` / `apply_to` carry the inserts
+  through `mixer`.
+
+### Tests
+- `tests/inserts.rs` (9, plus 1 ignored): two sources on one insert sum there (bit for bit)
+  and a muted insert silences both; route groups `kick + snare -> 14 -> 16 -> master` and
+  `14 -> 15 -> 16` are bit-transparent, the group fader scales the bus, the feedback rule
+  refuses lower-or-equal and out-of-range routes (setter and `set_mixer_state`); the
+  compressor slot lands a 15 dB-over tone at `threshold + 3.75 dB` (+-1 dB), leaves a quiet
+  tone bit-identical and meters about 11.25 dB; the built-in and slot EQ3 shelves cut 98 Hz /
+  7.9 kHz by the analytic response (+-0.5 dB) and leave 2 kHz / 523 Hz within 1 dB; slot
+  order matters; neutral inserts are bit-transparent for every routing of the demo; the v7
+  fixture migrates and renders sample-identical; insert solo / mute / source solo; post-fader
+  insert sends; the four messages (with index wrapping) and the published insert meters; and
+  `#[ignore] eight_inserts_with_compressors_render_faster_than_real_time` (1 s of eight
+  tracks through compressor + EQ3 + chorus slots grouped onto a compressed insert 16 in about
+  0.1 s in release; gate `< 0.5 s`).
+- `tests/engine_alloc.rs`: the render stays allocation-free with a compressor, a second slot
+  of a rotating kind and an EQ3 on every insert, the drums grouped `14 -> 16`, and the four
+  insert messages in flight.
+- Unit tests in `inserts.rs`, `fx/compressor.rs`, `fx/eq3.rs`, `mixer.rs` (insert setters,
+  solo logic, routes, serde padding, the pre-M11 migration), `project.rs` (v6 strips land on
+  the inserts). `tests/mixer.rs` pulls the synth's sends on insert 6 now; `tests/tracks.rs`
+  expects `"version": 8`.
+- Gate: `cargo fmt -p engine`, `cargo clippy -p engine --all-targets -- -D warnings`,
+  `cargo test -p engine` (422: 197 unit + 225 integration, up from 401; the 2 ignored release
+  perf gates both ok).

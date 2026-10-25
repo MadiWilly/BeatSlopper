@@ -1,25 +1,37 @@
-//! Mixer (M6, 13 channels since M10): channel strips for the five drum rows plus the eight
-//! instrument tracks, with level, pan, mute, solo and post-fader sends into the shared delay
-//! and reverb.
+//! Mixer (M6, 13 channels since M10, FL-style inserts since M11): channel strips for the
+//! five drum rows plus the eight instrument tracks, sixteen insert tracks with effect slots,
+//! and the routes from the sources to the inserts.
 //!
 //! This module is plain data plus arithmetic: [`MixerState`] is what the project file stores
-//! and what the UI mirrors, [`Channel`] / [`ChannelParam`] address one value for the
-//! `Message::SetMixer` message, and the two helpers [`MixerState::effective_gain`] and
-//! [`pan_gains`] define the gain law. The smoothing and the actual summing live in the engine's
-//! render loop (`crate::engine`), which reads this state once per change and never allocates.
+//! and what the UI mirrors, [`Channel`] / [`ChannelParam`] address one value of a source strip
+//! for the `Message::SetMixer` message (the insert side lives in [`crate::inserts`]), and the
+//! helpers [`MixerState::effective_gain`] / [`MixerState::insert_effective_gain`] and
+//! [`pan_gains`] define the gain law. The smoothing and the actual summing live in the
+//! engine's render loop (`crate::engine`), which reads this state once per change and never
+//! allocates.
+//!
+//! # Signal model (M11)
+//!
+//! `source -> strip (level, pan, mute, solo) -> insert bus (routes[channel]) -> insert (slots
+//! -> EQ3 -> fader -> pan -> sends) -> its route (a higher insert or the master)`. The source
+//! strips are FL's channel-rack knobs: a pre-insert level / pan / mute / solo. Their sends
+//! still work (post strip, pre insert, into the same delay / reverb buses) but default to
+//! `0.0` since M11: the sends of a mix live on the inserts ([`crate::inserts::default_sends`]
+//! gives the track inserts the full sends the track strips used to have).
 //!
 //! # Gain law
 //!
 //! - **Level** is in dB (`-60..=6`, `0` = unity). A channel that is muted, or not soloed while
-//!   any other channel is soloed, has an effective gain of exactly `0.0`.
+//!   any other channel is soloed, has an effective gain of exactly `0.0`. Inserts follow the
+//!   same rule among themselves (source solo and insert solo both apply).
 //! - **Pan** uses the equal-power (sine/cosine) law normalised to unity at the centre:
 //!   `pan_gains(0.0) == (1.0, 1.0)`, `pan_gains(-1.0) == (sqrt 2, 0.0)`,
 //!   `pan_gains(1.0) == (0.0, sqrt 2)`. The centre therefore sits 3 dB below a hard pan
 //!   while `l^2 + r^2` stays constant, and a channel at the default (centre) renders exactly as
 //!   the pre-mixer engine did, with no level change.
-//! - **Sends** (`0..=1`) are post-fader and follow the channel's pan into a stereo delay bus
-//!   and a stereo reverb bus; `ParamId::DelayMix` / `ParamId::ReverbMix` are the return
-//!   levels of those buses.
+//! - **Sends** (`0..=1`) are post-fader and follow the pan into a stereo delay bus and a
+//!   stereo reverb bus; `ParamId::DelayMix` / `ParamId::ReverbMix` are the return levels of
+//!   those buses.
 
 use std::ops::RangeInclusive;
 
@@ -27,13 +39,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::drums::DrumRow;
 use crate::dsp::db_to_gain;
+use crate::inserts::{
+    DEFAULT_ROUTES, INSERT_COUNT, InsertParam, InsertState, MASTER, MAX_INSERT, SlotKind,
+    insert_index, insert_number,
+};
 use crate::track::{MAX_TRACKS, TrackId, track_index};
 
 /// Lowest channel level, dB (treated as silence by the UI's fader bottom).
 pub const MIN_LEVEL_DB: f32 = -60.0;
 /// Highest channel level, dB.
 pub const MAX_LEVEL_DB: f32 = 6.0;
-/// Default reverb send of the snare and clap channels.
+/// Default reverb send of the snare and clap inserts (inserts 2 and 3; before M11 the send
+/// sat on the snare and clap strips).
 pub const DRUM_REVERB_SEND: f32 = 0.3;
 
 /// A mixer channel: the five drum rows in sequencer order, then the eight instrument tracks
@@ -212,16 +229,13 @@ impl ChannelParam {
         }
     }
 
-    /// Default value for `channel`: every track sends fully into both effects, the snare and
-    /// clap send [`DRUM_REVERB_SEND`] into the reverb, everything else is `0`.
+    /// Default value for `channel`: `0` for every parameter of every channel (unity, centre,
+    /// no mute / solo, no sends). Since M11 the default sends of a mix live on the inserts
+    /// ([`crate::inserts::default_sends`]); `channel` is kept for API stability.
     #[must_use]
     pub const fn default_value(self, channel: Channel) -> f32 {
-        match (self, channel) {
-            (ChannelParam::DelaySend, Channel::Track(_)) => 1.0,
-            (ChannelParam::ReverbSend, Channel::Track(_)) => 1.0,
-            (ChannelParam::ReverbSend, Channel::Snare | Channel::Clap) => DRUM_REVERB_SEND,
-            _ => 0.0,
-        }
+        let _ = channel;
+        0.0
     }
 
     /// `true` for the on/off parameters (mute, solo).
@@ -290,7 +304,7 @@ pub struct Strip {
 }
 
 impl Default for Strip {
-    /// Unity, centre, no mute/solo, no sends (the defaults of a drum channel without reverb).
+    /// Unity, centre, no mute/solo, no sends (every channel's default since M11).
     fn default() -> Self {
         Self::for_channel(Channel::Kick)
     }
@@ -350,39 +364,59 @@ impl Strip {
     }
 }
 
-/// The whole mixer: one [`Strip`] per [`Channel`], in [`Channel::ALL`] order.
+/// The whole mixer: one [`Strip`] per [`Channel`] in [`Channel::ALL`] order, the sixteen
+/// [`InsertState`]s (M11) and each source's insert number.
 ///
-/// Serialises as `{ "strips": [...] }`. On load a shorter array is padded with the missing
-/// channels' default strips, so a pre-M10 file (six strips: five drums plus the synth) loads
-/// with its synth strip on [`Channel::Track`]`(0)` and defaults on tracks 1..8; more than
-/// [`Channel::COUNT`] strips is an error.
+/// Serialises as `{ "strips": [...], "inserts": [...], "routes": [...] }`. On load a shorter
+/// `strips` array is padded with the missing channels' default strips, so a pre-M10 file
+/// (six strips: five drums plus the synth) loads with its synth strip on
+/// [`Channel::Track`]`(0)` and defaults on tracks 1..8; a shorter `inserts` array is padded
+/// with [`InsertState::default_for`] and a shorter `routes` array with [`DEFAULT_ROUTES`]
+/// (so a pre-M11 file gets both, see [`MixerState::migrate_pre_m11`]). More entries than
+/// the fixed sizes is an error.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct MixerState {
-    /// Strips indexed by [`Channel::index`].
+    /// Source strips indexed by [`Channel::index`].
     pub strips: [Strip; Channel::COUNT],
+    /// The insert tracks: `inserts[i]` is insert number `i + 1` (see
+    /// [`crate::inserts::insert_index`]).
+    pub inserts: [InsertState; INSERT_COUNT],
+    /// Each source's insert number indexed by [`Channel::index`]: `1..=16`, or [`MASTER`]
+    /// (`0`) for "straight to the master sum".
+    pub routes: [u8; Channel::COUNT],
 }
 
 impl Default for MixerState {
-    /// Every channel at unity and centre, every track sent fully to delay and reverb, snare
-    /// and clap sent [`DRUM_REVERB_SEND`] to the reverb, nothing muted or soloed.
+    /// Every strip neutral (unity, centre, no sends), the inserts at
+    /// [`InsertState::default_for`] (the track inserts 6..=13 sent fully to delay and
+    /// reverb, the snare / clap inserts 2 and 3 sent [`DRUM_REVERB_SEND`] to the reverb),
+    /// the sources routed one-to-one ([`DEFAULT_ROUTES`]), nothing muted or soloed.
     fn default() -> Self {
         Self {
             strips: Channel::ALL.map(Strip::for_channel),
+            inserts: core::array::from_fn(|i| InsertState::default_for(insert_number(i))),
+            routes: DEFAULT_ROUTES,
         }
     }
 }
 
-/// On-disk shape of [`MixerState`]: any number of strips up to [`Channel::COUNT`].
+/// On-disk shape of [`MixerState`]: any number of strips / inserts / routes up to the fixed
+/// sizes.
 #[derive(Deserialize)]
 #[serde(default)]
 struct MixerRepr {
     strips: Vec<Strip>,
+    inserts: Vec<InsertState>,
+    routes: Vec<u8>,
 }
 
 impl Default for MixerRepr {
     fn default() -> Self {
+        let d = MixerState::default();
         Self {
-            strips: MixerState::default().strips.to_vec(),
+            strips: d.strips.to_vec(),
+            inserts: d.inserts.to_vec(),
+            routes: d.routes.to_vec(),
         }
     }
 }
@@ -398,18 +432,40 @@ impl<'de> Deserialize<'de> for MixerState {
                 Channel::COUNT
             )));
         }
+        if repr.inserts.len() > INSERT_COUNT {
+            return Err(D::Error::custom(format!(
+                "mixer has {} inserts, at most {} are allowed",
+                repr.inserts.len(),
+                INSERT_COUNT
+            )));
+        }
+        if repr.routes.len() > Channel::COUNT {
+            return Err(D::Error::custom(format!(
+                "mixer has {} routes, at most {} are allowed",
+                repr.routes.len(),
+                Channel::COUNT
+            )));
+        }
         let mut state = MixerState::default();
         for (slot, strip) in state.strips.iter_mut().zip(repr.strips) {
             *slot = strip;
+        }
+        for (slot, insert) in state.inserts.iter_mut().zip(repr.inserts) {
+            *slot = insert;
+        }
+        for (slot, route) in state.routes.iter_mut().zip(repr.routes) {
+            *slot = route;
         }
         Ok(state)
     }
 }
 
 impl MixerState {
-    /// Swaps the strips of two channels (M10 `SwapTracks`).
+    /// Swaps the strips and the insert routes of two channels (M10 `SwapTracks`: a track's
+    /// insert number travels with it).
     pub fn swap(&mut self, a: Channel, b: Channel) {
         self.strips.swap(a.index(), b.index());
+        self.routes.swap(a.index(), b.index());
     }
 
     /// The strip of `channel`.
@@ -438,10 +494,146 @@ impl MixerState {
         v
     }
 
-    /// Clamps every strip into range.
+    /// Clamps every strip, insert and route into range (an insert route to a lower-or-equal
+    /// number, or past 16, becomes the master; a source route past 16 too).
     pub fn normalise(&mut self) {
         for channel in Channel::ALL {
             self.strips[channel.index()].normalise(channel);
+        }
+        for (i, insert) in self.inserts.iter_mut().enumerate() {
+            insert.normalise(insert_number(i));
+        }
+        for route in &mut self.routes {
+            *route = Self::valid_source_route(*route);
+        }
+    }
+
+    // --- inserts (M11) --------------------------------------------------------------------
+
+    /// The route a source may store: `insert` when it is [`MASTER`] or within `1..=16`,
+    /// otherwise [`MASTER`].
+    #[must_use]
+    pub const fn valid_source_route(insert: u8) -> u8 {
+        if insert <= MAX_INSERT { insert } else { MASTER }
+    }
+
+    /// Insert number `insert` (wraps, see [`crate::inserts::insert_index`]).
+    #[must_use]
+    pub fn insert(&self, insert: u8) -> &InsertState {
+        &self.inserts[insert_index(insert)]
+    }
+
+    /// Insert number `insert`, mutably (wraps). Call [`normalise`](Self::normalise)
+    /// afterwards if the values may be out of range.
+    pub fn insert_mut(&mut self, insert: u8) -> &mut InsertState {
+        &mut self.inserts[insert_index(insert)]
+    }
+
+    /// Reads one value of insert number `insert`.
+    #[must_use]
+    pub fn get_insert(&self, insert: u8, param: InsertParam) -> f32 {
+        self.insert(insert).get(param)
+    }
+
+    /// Sets one value of insert number `insert` (clamped with [`InsertParam::clamp`]:
+    /// toggles snap to 0/1, a refused route becomes the master, non-finite values reset to
+    /// the default). Returns the stored value.
+    pub fn set_insert(&mut self, insert: u8, param: InsertParam, value: f32) -> f32 {
+        let number = insert_number(insert_index(insert));
+        self.inserts[insert_index(insert)].set(number, param, value)
+    }
+
+    /// Puts `kind` into slot `slot` (wraps into `0..SLOT_COUNT`) of insert number `insert`
+    /// with the kind's default parameters. Returns the kind.
+    pub fn set_slot_kind(&mut self, insert: u8, slot: u8, kind: SlotKind) -> SlotKind {
+        self.insert_mut(insert).slot_mut(slot).set_kind(kind);
+        kind
+    }
+
+    /// Sets parameter `index` of slot `slot` of insert number `insert` (clamped by the
+    /// slot kind's [`crate::inserts::SlotParam`] table). Returns the stored value, or `0.0`
+    /// for an index the kind does not use (nothing changes then).
+    pub fn set_slot_param(&mut self, insert: u8, slot: u8, index: u8, value: f32) -> f32 {
+        self.insert_mut(insert)
+            .slot_mut(slot)
+            .set(usize::from(index), value)
+    }
+
+    /// The insert number source `channel` feeds ([`MASTER`] = straight to the master).
+    #[must_use]
+    pub fn route(&self, channel: Channel) -> u8 {
+        self.routes[channel.index()]
+    }
+
+    /// Routes source `channel` to insert number `insert` (`1..=16`) or the master (`0`);
+    /// anything else becomes the master. Returns the stored value.
+    pub fn set_route(&mut self, channel: Channel, insert: u8) -> u8 {
+        let v = Self::valid_source_route(insert);
+        self.routes[channel.index()] = v;
+        v
+    }
+
+    /// `true` when at least one insert is soloed.
+    #[must_use]
+    pub fn any_insert_solo(&self) -> bool {
+        self.inserts.iter().any(|i| i.solo)
+    }
+
+    /// Mute/solo logic among the inserts: insert `insert` sounds unless it is muted, or
+    /// another insert is soloed and this one is not.
+    #[must_use]
+    pub fn insert_audible(&self, insert: u8) -> bool {
+        let state = self.insert(insert);
+        !state.mute && (state.solo || !self.any_insert_solo())
+    }
+
+    /// Insert `insert`'s linear gain target: its fader gain when
+    /// [`insert_audible`](Self::insert_audible), else exactly `0.0`.
+    #[must_use]
+    pub fn insert_effective_gain(&self, insert: u8) -> f32 {
+        if self.insert_audible(insert) {
+            self.insert(insert).level_gain()
+        } else {
+            0.0
+        }
+    }
+
+    /// Left/right gains of insert `insert`'s pan position (see [`pan_gains`]).
+    #[must_use]
+    pub fn insert_pan_gains(&self, insert: u8) -> (f32, f32) {
+        pan_gains(self.insert(insert).pan)
+    }
+
+    /// Migrates a pre-M11 mixer (format version 7 and older), whose mix lived on the source
+    /// strips: strip `i` (channel [`Channel::ALL`]`[i]`) moves onto insert `i + 1` (level,
+    /// pan, mute, solo and sends copied), the strip is reset to neutral, the source is routed
+    /// to that insert and the insert's slots are empty, its EQ flat and its route the master,
+    /// so the file sounds exactly as it did. `listed_strips` is the number of strips the file
+    /// actually wrote: channels it did not list (the padded tracks of a pre-M10 file) get
+    /// [`InsertState::default_for`] instead of the padded strip's (empty) sends.
+    pub fn migrate_pre_m11(&mut self, listed_strips: usize) {
+        for (i, channel) in Channel::ALL.iter().enumerate() {
+            let number = insert_number(i);
+            let strip = self.strips[i];
+            let insert = if i < listed_strips {
+                InsertState {
+                    level_db: strip.level_db,
+                    pan: strip.pan,
+                    mute: strip.mute,
+                    solo: strip.solo,
+                    delay_send: strip.delay_send,
+                    reverb_send: strip.reverb_send,
+                    ..InsertState::NEUTRAL
+                }
+            } else {
+                InsertState::default_for(number)
+            };
+            self.inserts[i] = insert;
+            self.strips[i] = Strip::for_channel(*channel);
+            self.routes[i] = number;
+        }
+        for (i, insert) in self.inserts.iter_mut().enumerate().skip(Channel::COUNT) {
+            *insert = InsertState::default_for(insert_number(i));
         }
     }
 
@@ -508,6 +700,7 @@ pub fn pan_gains(pan: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inserts::SlotState;
 
     #[test]
     fn channel_indices_and_rows_line_up() {
@@ -544,25 +737,163 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let m = MixerState::default();
-        for ch in Channel::ALL {
+        for (i, ch) in Channel::ALL.iter().enumerate() {
+            let ch = *ch;
             let s = m.strip(ch);
             assert_eq!(s.level_db, 0.0);
             assert_eq!(s.pan, 0.0);
             assert!(!s.mute && !s.solo);
-            let (d, r) = match ch {
-                Channel::Track(_) => (1.0, 1.0),
-                Channel::Snare | Channel::Clap => (0.0, DRUM_REVERB_SEND),
-                _ => (0.0, 0.0),
-            };
-            assert_eq!(s.delay_send, d, "{ch:?}");
-            assert_eq!(s.reverb_send, r, "{ch:?}");
+            // Since M11 the strips are neutral; the sends live on the inserts.
+            assert_eq!(s.delay_send, 0.0, "{ch:?}");
+            assert_eq!(s.reverb_send, 0.0, "{ch:?}");
             assert_eq!(m.effective_gain(ch), 1.0);
             assert_eq!(m.pan_gains(ch), (1.0, 1.0));
             for p in ChannelParam::ALL {
                 assert_eq!(m.get(ch, p), p.default_value(ch), "{ch:?} {p:?}");
             }
+            // Sources route one-to-one onto inserts 1..=13.
+            assert_eq!(m.route(ch), i as u8 + 1, "{ch:?}");
+            let insert = m.insert(i as u8 + 1);
+            let (d, r) = match ch {
+                Channel::Track(_) => (1.0, 1.0),
+                Channel::Snare | Channel::Clap => (0.0, DRUM_REVERB_SEND),
+                _ => (0.0, 0.0),
+            };
+            assert_eq!(insert.delay_send, d, "{ch:?}");
+            assert_eq!(insert.reverb_send, r, "{ch:?}");
+            assert!(insert.is_neutral());
+            assert_eq!(insert.route, MASTER);
         }
+        for n in 1..=16u8 {
+            assert_eq!(m.insert_effective_gain(n), 1.0);
+            assert_eq!(m.insert_pan_gains(n), (1.0, 1.0));
+            assert!(m.insert_audible(n));
+            for p in InsertParam::ALL {
+                assert_eq!(m.get_insert(n, p), p.default_value(n), "{n} {p:?}");
+            }
+        }
+        assert_eq!(m.insert(14).delay_send, 0.0);
         assert_eq!(Strip::default(), Strip::for_channel(Channel::Kick));
+        assert_eq!(m.insert(0), m.insert(16), "0 wraps onto the last insert");
+    }
+
+    #[test]
+    fn insert_setters_solo_logic_and_routes() {
+        let mut m = MixerState::default();
+        assert_eq!(m.set_insert(14, InsertParam::Level, -6.0), -6.0);
+        assert!((m.insert_effective_gain(14) - db_to_gain(-6.0)).abs() < 1e-6);
+        assert_eq!(m.set_insert(14, InsertParam::Mute, 1.0), 1.0);
+        assert_eq!(m.insert_effective_gain(14), 0.0);
+        m.set_insert(14, InsertParam::Mute, 0.0);
+        m.set_insert(3, InsertParam::Solo, 1.0);
+        assert!(m.any_insert_solo());
+        for n in 1..=16u8 {
+            let expected = if n == 3 { 1.0 } else { 0.0 };
+            assert_eq!(m.insert_effective_gain(n), expected, "{n}");
+        }
+        assert!(!m.any_solo(), "source solos are a separate layer");
+        m.set_insert(3, InsertParam::Solo, 0.0);
+        assert!((m.insert_effective_gain(14) - db_to_gain(-6.0)).abs() < 1e-6);
+        // Insert routes: higher only.
+        assert_eq!(m.set_insert(14, InsertParam::Route, 16.0), 16.0);
+        assert_eq!(m.set_insert(14, InsertParam::Route, 14.0), 0.0);
+        assert_eq!(m.set_insert(14, InsertParam::Route, 2.0), 0.0);
+        assert_eq!(m.set_insert(16, InsertParam::Route, 17.0), 0.0);
+        assert_eq!(m.insert_mut(5).set_route(5, 9), 9);
+        // Source routes: 0..=16, anything else is the master.
+        assert_eq!(m.set_route(Channel::Kick, 14), 14);
+        assert_eq!(m.route(Channel::Kick), 14);
+        assert_eq!(m.set_route(Channel::Kick, 0), 0);
+        assert_eq!(m.set_route(Channel::Kick, 17), 0);
+        assert_eq!(m.set_route(Channel::Track(2), 16), 16);
+        // Slots.
+        assert_eq!(
+            m.set_slot_kind(14, 0, SlotKind::Compressor),
+            SlotKind::Compressor
+        );
+        assert_eq!(m.insert(14).slot(0).get(1), 4.0, "ratio default");
+        assert_eq!(m.set_slot_param(14, 0, 1, 50.0), 20.0);
+        assert_eq!(m.set_slot_param(14, 0, 6, 1.0), 0.0, "unused index");
+        assert_eq!(
+            m.set_slot_param(14, 3, 1, 8.0),
+            8.0,
+            "slot 3 wraps onto slot 0"
+        );
+        assert_eq!(m.insert(14).slot(0).get(1), 8.0);
+        // Normalise fixes bad routes and values from a hand-edited file.
+        m.routes[2] = 99;
+        m.inserts[7].route = 3;
+        m.inserts[7].level_db = 100.0;
+        m.inserts[15].route = 16;
+        m.normalise();
+        assert_eq!(m.routes[2], 0);
+        assert_eq!(m.inserts[7].route, 0);
+        assert_eq!(m.inserts[7].level_db, MAX_LEVEL_DB);
+        assert_eq!(m.inserts[15].route, 0);
+        // Swapping tracks moves their routes.
+        m.set_route(Channel::Track(0), 15);
+        m.swap(Channel::Track(0), Channel::Track(1));
+        assert_eq!(m.route(Channel::Track(1)), 15);
+        assert_eq!(m.route(Channel::Track(0)), 7);
+    }
+
+    #[test]
+    fn pre_m11_migration_moves_strips_onto_inserts() {
+        // A v7 mixer: the mix on the strips, nothing on the inserts (the deserializer pads).
+        let mut strips: Vec<Strip> = Channel::ALL
+            .iter()
+            .map(|&c| Strip::for_channel(c))
+            .collect();
+        strips[0].level_db = -4.5;
+        strips[1].pan = 0.35;
+        strips[1].reverb_send = DRUM_REVERB_SEND;
+        strips[2].mute = true;
+        strips[3].solo = true;
+        strips[5].delay_send = 1.0;
+        strips[5].reverb_send = 0.15;
+        let v = serde_json::json!({ "strips": strips });
+        let mut m: MixerState = serde_json::from_value(v).unwrap();
+        m.migrate_pre_m11(Channel::COUNT);
+        for (i, ch) in Channel::ALL.iter().enumerate() {
+            assert_eq!(
+                m.strip(*ch),
+                &Strip::for_channel(*ch),
+                "{ch:?} strip is neutral"
+            );
+            assert_eq!(m.route(*ch), i as u8 + 1);
+            let insert = m.insert(i as u8 + 1);
+            assert_eq!(insert.route, MASTER);
+            assert!(insert.slots.iter().all(SlotState::is_off));
+            assert!(insert.eq3.is_flat());
+        }
+        assert_eq!(m.insert(1).level_db, -4.5);
+        assert_eq!(m.insert(2).pan, 0.35);
+        assert_eq!(m.insert(2).reverb_send, DRUM_REVERB_SEND);
+        assert!(m.insert(3).mute);
+        assert!(m.insert(4).solo);
+        assert_eq!(m.insert(6).delay_send, 1.0);
+        assert_eq!(m.insert(6).reverb_send, 0.15);
+        assert_eq!(m.insert(7).delay_send, 0.0, "a listed strip without sends");
+        assert_eq!(m.insert(14), &InsertState::default_for(14));
+        // A six-strip (pre-M10) mixer: the unlisted tracks get the insert defaults.
+        let six: Vec<Strip> = Channel::ALL[..6]
+            .iter()
+            .map(|&c| Strip::for_channel(c))
+            .collect();
+        let mut m: MixerState =
+            serde_json::from_value(serde_json::json!({ "strips": six })).unwrap();
+        m.migrate_pre_m11(6);
+        assert_eq!(
+            m.insert(6).delay_send,
+            0.0,
+            "the listed synth strip had no sends"
+        );
+        assert_eq!(m.insert(7), &InsertState::default_for(7));
+        assert_eq!(m.insert(7).delay_send, 1.0);
+        // No strips at all (a v3 file): everything at the defaults.
+        let mut m: MixerState = serde_json::from_value(serde_json::json!({})).unwrap();
+        m.migrate_pre_m11(0);
+        assert_eq!(m, MixerState::default());
     }
 
     #[test]
@@ -584,7 +915,8 @@ mod tests {
         assert!(!m.strip(Channel::Kick).mute);
         assert_eq!(
             m.set(Channel::Synth, ChannelParam::ReverbSend, f32::NAN),
-            1.0
+            0.0,
+            "a non-finite value resets to the (M11) strip default"
         );
         assert_eq!(
             m.set(Channel::Kick, ChannelParam::ReverbSend, f32::NAN),
@@ -611,7 +943,7 @@ mod tests {
         assert_eq!(s.pan, 1.0);
         assert!(s.solo);
         assert_eq!(s.delay_send, 0.0);
-        assert_eq!(s.reverb_send, DRUM_REVERB_SEND);
+        assert_eq!(s.reverb_send, 0.0, "strip sends default to 0 since M11");
     }
 
     #[test]
@@ -697,6 +1029,34 @@ mod tests {
         assert!(
             serde_json::from_value::<MixerState>(serde_json::json!({ "strips": many })).is_err()
         );
+        let many: Vec<InsertState> = vec![InsertState::NEUTRAL; INSERT_COUNT + 1];
+        assert!(
+            serde_json::from_value::<MixerState>(serde_json::json!({ "inserts": many })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<MixerState>(serde_json::json!({ "routes": vec![0_u8; 14] }))
+                .is_err()
+        );
+        // Inserts and routes round-trip, and short arrays pad with the defaults.
+        let mut m = MixerState::default();
+        m.set_insert(14, InsertParam::Level, -3.0);
+        m.set_slot_kind(14, 1, SlotKind::Lofi);
+        m.set_slot_param(14, 1, 0, 6.0);
+        m.set_insert(14, InsertParam::Route, 16.0);
+        m.set_route(Channel::Kick, 14);
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"inserts\":[") && json.contains("\"routes\":[14,2,3"));
+        let back: MixerState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        let short: MixerState = serde_json::from_value(serde_json::json!({
+            "inserts": [ { "level_db": -1.0 } ],
+            "routes": [0, 0]
+        }))
+        .unwrap();
+        assert_eq!(short.insert(1).level_db, -1.0);
+        assert_eq!(short.insert(6), &InsertState::default_for(6));
+        assert_eq!(short.routes[0], 0);
+        assert_eq!(short.routes[2], 3);
         let mut m = MixerState::default();
         m.set(Channel::Track(0), ChannelParam::Level, -6.0);
         m.swap(Channel::Track(0), Channel::Track(3));

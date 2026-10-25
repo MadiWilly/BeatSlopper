@@ -11,7 +11,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 
 use common::{SAMPLE_RATE, all_finite};
 use engine::presets;
-use engine::{Channel, ChannelParam, DrumRow, MAX_TRACKS, Message, Note, ParamId, new_engine};
+use engine::{
+    Channel, ChannelParam, DrumRow, INSERT_COUNT, InsertParam, MAX_TRACKS, Message, Note, ParamId,
+    SlotKind, new_engine,
+};
 
 thread_local! {
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
@@ -74,6 +77,25 @@ fn eight_tracks_render_is_allocation_free() {
     engine.set_drum_step(DrumRow::Snare, 4, true, false);
     engine.set_param(ParamId::DelayMix, 0.5);
     engine.set_param(ParamId::ReverbMix, 0.5);
+    // M11: every insert carries a compressor, a second slot of a rotating kind and an EQ3,
+    // the drums are grouped onto insert 14 which feeds insert 16.
+    let kinds = [
+        SlotKind::Drive,
+        SlotKind::Lofi,
+        SlotKind::Chorus,
+        SlotKind::Eq3,
+    ];
+    for n in 1..=INSERT_COUNT as u8 {
+        engine.set_slot_kind(n, 0, SlotKind::Compressor);
+        engine.set_slot_param(n, 0, 0, -30.0);
+        engine.set_slot_kind(n, 1, kinds[usize::from(n) % kinds.len()]);
+        engine.set_slot_kind(n, 2, SlotKind::Eq3);
+        engine.set_insert(n, InsertParam::Eq3Low, 2.0);
+    }
+    for row in DrumRow::ALL {
+        engine.set_route(Channel::from_row(row), 14);
+    }
+    engine.set_insert(14, InsertParam::Route, 16.0);
     let mut out = vec![0.0_f32; 512 * 2];
     engine.play();
     // One warm-up block so lazily initialised state (if any) is behind us.
@@ -95,6 +117,15 @@ fn eight_tracks_render_is_allocation_free() {
                 handle.send(Message::SetTrackActive {
                     track: 7,
                     on: block % 16 == 2,
+                });
+                handle.send(Message::SetSlotKind {
+                    insert: (block / 8) as u8 % 16 + 1,
+                    slot: 1,
+                    kind: if block % 16 == 2 {
+                        SlotKind::Lofi
+                    } else {
+                        SlotKind::Chorus
+                    },
                 });
             }
             3 => {
@@ -131,6 +162,15 @@ fn eight_tracks_render_is_allocation_free() {
                     value: -0.5,
                 });
                 handle.send(Message::SetParam(ParamId::ReverbSize, 0.7));
+                handle.send(Message::SetInsert {
+                    insert: 16,
+                    param: InsertParam::Level,
+                    value: -1.0,
+                });
+                handle.send(Message::SetRoute {
+                    channel: Channel::Track(1),
+                    insert: 15,
+                });
             }
             _ => {
                 handle.send(Message::AllNotesOff);
@@ -139,6 +179,22 @@ fn eight_tracks_render_is_allocation_free() {
                     step: 3,
                     note: Some(50),
                     accent: true,
+                });
+                handle.send(Message::SetSlotParam {
+                    insert: 6,
+                    slot: 0,
+                    index: 0,
+                    value: -24.0,
+                });
+                handle.send(Message::SetInsert {
+                    insert: 14,
+                    param: InsertParam::Route,
+                    value: 15.0,
+                });
+                handle.send(Message::SetInsert {
+                    insert: 15,
+                    param: InsertParam::Eq3Mid,
+                    value: 3.0,
                 });
             }
         }

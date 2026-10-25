@@ -419,7 +419,7 @@ fn eight_track_project_round_trips_through_json() {
             .to_owned();
     }
     let json = project.to_json_pretty();
-    assert!(json.contains("\"version\": 7"));
+    assert!(json.contains("\"version\": 8"));
     let back = Project::from_json(&json).unwrap();
     assert_eq!(back, project);
     assert_eq!(back.to_json_pretty(), json, "stable output");

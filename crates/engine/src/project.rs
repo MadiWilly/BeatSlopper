@@ -6,11 +6,11 @@
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 7), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 8), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 7,
+//!   "version": 8,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
@@ -30,7 +30,16 @@
 //!       { "level_db": 0.0, "pan": 0.0, "mute": false, "solo": false,
 //!         "delay_send": 0.0, "reverb_send": 0.0 },
 //!       "... 13 strips in all: kick, snare, clap, closed hat, open hat, tracks 1..8"
-//!     ]
+//!     ],
+//!     "inserts": [
+//!       { "level_db": 0.0, "pan": 0.0, "mute": false, "solo": false,
+//!         "delay_send": 0.0, "reverb_send": 0.0,
+//!         "eq3": { "low_gain_db": 0.0, "mid_gain_db": 0.0, "mid_freq_hz": 1000.0, "high_gain_db": 0.0 },
+//!         "slots": [ { "kind": "off", "params": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }, "... 3 slots" ],
+//!         "route": 0 },
+//!       "... 16 inserts in all (M11)"
+//!     ],
+//!     "routes": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 //!   },
 //!   "eq": { "...": "the master EQ" },
 //!   "reverb": { "...": "every reverb value" },
@@ -54,8 +63,13 @@
 //! [`Project::default`] value (a missing `tracks` field means one default `"Synth"` track; an
 //! explicit empty array means no track).
 //!
-//! Migration: a version-6 (and older) file has one synth: its `params` hold the track ids
-//! too, each pattern has a single `notes` list and the mixer has six strips. It loads as one
+//! Migration: a version-7 (and older) file keeps its mix on the source strips and has no
+//! `inserts` / `routes`: [`MixerState::migrate_pre_m11`] moves every written strip onto the
+//! insert of the same number (level, pan, mute, solo, sends), resets the strip to neutral
+//! and routes the source there, so the file sounds as before (channels the file did not
+//! write get the insert defaults). A version-6 (and older) file has one synth: its `params`
+//! hold the track ids too, each pattern has a single `notes` list and the mixer has six
+//! strips. It loads as one
 //! track in slot 0 named `"Synth"`, colour 0, holding the file's synth and insert params, with
 //! the notes on track 0 (done by the pattern deserializer), the synth strip on
 //! [`Channel::Track`]`(0)` (the mixer deserializer pads the rest) and the preset name looked
@@ -101,7 +115,13 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 ///   per-track params), each pattern's `notes` becomes `tracks` (one note list per track),
 ///   the mixer grows to 13 strips, `params` keeps only the global ids and `preset_index` is
 ///   gone (the preset name lives in each track).
-pub const FORMAT_VERSION: u32 = 7;
+/// - 8: FL-style mixer (M11). The mixer gains `inserts` (sixteen
+///   [`crate::inserts::InsertState`]s: fader, pan, mute, solo, sends, EQ3, three effect
+///   slots, route) and `routes` (each source's insert number). A version-7 (and older) file
+///   is migrated with [`MixerState::migrate_pre_m11`]: strip `i` moves onto insert `i + 1`
+///   (level, pan, mute, solo and sends), the strip is reset to neutral and the source routed
+///   to that insert, so it sounds exactly as before.
+pub const FORMAT_VERSION: u32 = 8;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -432,6 +452,15 @@ impl Project {
                     })
             })
             .flatten();
+        // Versions before 8 kept the mix on the source strips (M11 moves it onto the
+        // inserts); remember how many strips the file actually wrote.
+        let legacy_strips = (version < 8).then(|| {
+            value
+                .get("mixer")
+                .and_then(|m| m.get("strips"))
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        });
 
         let mut project: Project = serde_json::from_value(value)?;
         project.version = FORMAT_VERSION;
@@ -456,6 +485,9 @@ impl Project {
             project.bank = Bank::from_pattern(pattern);
         }
         project.bank.normalise();
+        if let Some(listed) = legacy_strips {
+            project.mixer.migrate_pre_m11(listed);
+        }
         project.mixer.normalise();
         project.eq.normalise();
         project.reverb.normalise();
@@ -707,13 +739,22 @@ mod tests {
         assert_eq!(p.param(ParamId::DelayFeedback), 0.6);
         assert_eq!(p.params.len(), global_count());
         assert!(!p.params.contains_key(ParamId::FilterCutoff.key()));
+        // The synth strip is track 0's; M11 moves the mix onto insert 6 and leaves the
+        // strip neutral; the unlisted tracks get the insert defaults.
         assert_eq!(
-            p.mixer.strips[5].level_db, -4.5,
+            p.mixer.insert(6).level_db,
+            -4.5,
             "the synth strip is track 0's"
         );
+        assert_eq!(p.mixer.strips[5].level_db, 0.0);
+        assert_eq!(p.mixer.route(crate::mixer::Channel::Track(0)), 6);
         assert_eq!(
             p.mixer.strips[6],
             crate::mixer::Strip::for_channel(crate::mixer::Channel::Track(1))
+        );
+        assert_eq!(
+            p.mixer.insert(7),
+            &crate::inserts::InsertState::default_for(7)
         );
         assert_eq!(p.pattern().notes(0).len(), 9);
         // An unknown preset index gives no preset name.
@@ -771,7 +812,7 @@ mod tests {
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 8,
+                found: 9,
                 supported: FORMAT_VERSION
             }
         ));

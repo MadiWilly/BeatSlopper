@@ -4,28 +4,40 @@
 //!
 //! The public API below is the contract the `app` crate builds against (docs/ARCHITECTURE.md).
 //!
-//! # Signal flow (M6, tracks since M10)
+//! # Signal flow (M6, tracks since M10, FL-style inserts since M11)
 //!
-//! Per sample, [`Channel::COUNT`] mixer channels ([`Channel`]): the five drum rows from
+//! Per sample, [`Channel::COUNT`] mixer sources ([`Channel`]): the five drum rows from
 //! [`DrumKit::tick_rows`] and one channel per instrument [`Track`]. An **active** track sums
 //! its voices (`pool.tick()`) and runs them through its own stereo insert
 //! (`insert.process(x)`: drive -> lo-fi -> chorus -> sidechain ducker, see
 //! [`crate::track::SynthInsert`]); an inactive track costs nothing (it is skipped once its
-//! voices have faded) and an idle voice returns early. Each channel is scaled by its smoothed
-//! gain (fader level times the mute/solo decision, [`MixerState::effective_gain`]), panned
-//! ([`crate::mixer::pan_gains`], smoothed) into the stereo dry bus, and its post-fader signal
-//! is also sent (smoothed send levels, same pan) into a stereo delay bus and a stereo reverb
-//! bus. [`FxChain::process_bus`] returns `dry + delay * DelayMix + reverb * ReverbMix`; then
-//! `-> master EQ -> (+ TestTone) -> master gain (smoothed) -> Limiter (bypassable via
-//! LimiterOn) -> interleaved stereo`. The diagnostic test tone bypasses the mixer and the
-//! effects. Every kick hit triggers the ducker of every active track.
+//! voices have faded) and an idle voice returns early. Each source is scaled by its strip's
+//! smoothed gain (level times the mute/solo decision, [`MixerState::effective_gain`]) and
+//! panned ([`crate::mixer::pan_gains`], smoothed); its strip sends (legacy, default `0`) go
+//! into the stereo delay / reverb buses; the panned frame then lands on the **insert bus** of
+//! `routes[channel]` (`1..=16`), or on the master sum when the route is `0`.
 //!
-//! With the default [`MixerState`] (every strip at unity and centre, the tracks sent fully to
-//! both effects) a single track renders exactly as the pre-M10 synth did: the v6 regression
-//! test in `tests/tracks.rs` checks this bit for bit.
+//! The sixteen inserts ([`crate::inserts::InsertState`]) are then processed in ascending
+//! number order: `slot 1 -> slot 2 -> slot 3` (each a [`crate::inserts::SlotKind`]:
+//! compressor, drive, lo-fi, chorus or an extra EQ3, all pre-allocated, only the chosen kind
+//! runs) `-> built-in EQ3 -> fader (level times mute/solo among the inserts, smoothed) -> pan
+//! -> post-fader sends into the shared delay / reverb buses`, and the result is added to the
+//! insert's `route`: a *higher* insert's bus (not processed yet, so groups and sub-groups
+//! work and feedback cannot happen) or the master sum. [`FxChain::process_bus`] returns
+//! `master + delay * DelayMix + reverb * ReverbMix`; then `-> master EQ -> (+ TestTone) ->
+//! master gain (smoothed) -> Limiter (bypassable via LimiterOn) -> interleaved stereo`. The
+//! diagnostic test tone bypasses the mixer and the effects. Every kick hit triggers the
+//! ducker of every active track.
 //!
-//! Block peaks of every channel (post-fader) and of the master output are published once per
-//! `render` as [`Meters`] through lock-free atomics ([`EngineHandle::meters`]).
+//! An insert at its defaults (slots off, flat EQ, 0 dB, centre) is bit-transparent, and
+//! with the default [`MixerState`] (every source on its own neutral insert, the track
+//! inserts sent fully to both effects) a single track renders exactly as the pre-M10 synth
+//! did: the v6 / v7 regression tests in `tests/tracks.rs` and `tests/inserts.rs` check this
+//! bit for bit.
+//!
+//! Block peaks of every source (post-strip) and every insert (post-fader), the inserts'
+//! compressor gain reduction and the master output are published once per `render` as
+//! [`Meters`] through lock-free atomics ([`EngineHandle::meters`]).
 //!
 //! # Tracks (M10)
 //!
@@ -100,7 +112,14 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::drums::{DrumKit, DrumRow};
 use crate::dsp::db_to_gain;
-use crate::fx::{EqParam, EqState, FxChain, Limiter, ParametricEq, ReverbParam, ReverbState};
+use crate::fx::{
+    Chorus, Compressor, Drive, Eq3, Eq3State, EqParam, EqState, FxChain, Limiter, Lofi,
+    ParametricEq, ReverbParam, ReverbState,
+};
+use crate::inserts::{
+    INSERT_COUNT, InsertParam, SLOT_COUNT, SlotKind, SlotState, insert_index, insert_number,
+    slot_index,
+};
 use crate::mixer::{Channel, ChannelParam, MixerState};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::pattern::{
@@ -348,17 +367,67 @@ pub enum Message {
     /// Swap two track slots: parameters, insert and voice state, notes in every pattern and
     /// mixer strips. The edit track follows its content.
     SwapTracks(u8, u8),
+    /// Set one value of mixer insert `insert` (`1..=16`, wraps; M11). Clamped with
+    /// [`InsertParam::clamp`]; level, pan, mute, solo and sends glide over
+    /// [`MIXER_SMOOTH_MS`], the EQ3 values over `fx::eq3::EQ3_SMOOTH_MS`; a `Route` to a
+    /// lower-or-equal insert number is refused (stored as `0` = master).
+    SetInsert {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Which value.
+        param: InsertParam,
+        /// New value (dB for `Level` / `Eq3*` gains, Hz for `Eq3MidFreq`, `-1..=1` for
+        /// `Pan`, `0..=1` for the sends and toggles, an insert number for `Route`).
+        value: f32,
+    },
+    /// Put `kind` into effect slot `slot` (`0..3`, wraps) of insert `insert` (`1..=16`,
+    /// wraps) with the kind's default parameters; the slot's DSP starts fresh (M11).
+    SetSlotKind {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Slot index `0..3`.
+        slot: u8,
+        /// The effect.
+        kind: SlotKind,
+    },
+    /// Set parameter `index` of effect slot `slot` of insert `insert` (M11); clamped by the
+    /// slot kind's [`crate::inserts::SlotParam`] table, ignored for an index the kind does
+    /// not use.
+    SetSlotParam {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Slot index `0..3`.
+        slot: u8,
+        /// Parameter index into `SlotKind::params()`.
+        index: u8,
+        /// New value.
+        value: f32,
+    },
+    /// Route source `channel` to insert `insert` (`1..=16`) or straight to the master (`0`;
+    /// anything larger is treated as `0`) (M11).
+    SetRoute {
+        /// The source.
+        channel: Channel,
+        /// Insert number, or `0` for the master.
+        insert: u8,
+    },
 }
 
 /// Block peak levels (linear, `0.0` = silence) as last published by the audio thread.
 ///
-/// Each value is the largest absolute sample of the last `render` call: per channel the
-/// post-fader (pre-pan) signal, for the master the final left/right output. The UI applies
-/// its own decay / hold.
+/// Each value is the largest absolute sample of the last `render` call: per source channel
+/// the post-strip (pre-pan) signal, per insert the post-fader (pre-pan) signal, for the
+/// master the final left/right output. `insert_gr` is the largest compressor gain reduction
+/// (dB, `>= 0`) among the insert's slots over the block. The UI applies its own decay / hold.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Meters {
-    /// Per-channel peaks indexed by [`Channel::index`].
+    /// Per-source peaks indexed by [`Channel::index`].
     pub channel: [f32; Channel::COUNT],
+    /// Per-insert post-fader peaks; `insert[i]` is insert number `i + 1` (M11).
+    pub insert: [f32; INSERT_COUNT],
+    /// Per-insert compressor gain reduction in dB (`0` = none); `insert_gr[i]` is insert
+    /// number `i + 1` (M11).
+    pub insert_gr: [f32; INSERT_COUNT],
     /// Master output peaks, left and right.
     pub master: [f32; 2],
 }
@@ -367,6 +436,8 @@ impl Meters {
     /// All meters at silence.
     pub const SILENT: Meters = Meters {
         channel: [0.0; Channel::COUNT],
+        insert: [0.0; INSERT_COUNT],
+        insert_gr: [0.0; INSERT_COUNT],
         master: [0.0; 2],
     };
 
@@ -374,6 +445,18 @@ impl Meters {
     #[must_use]
     pub fn of(&self, channel: Channel) -> f32 {
         self.channel[channel.index()]
+    }
+
+    /// Post-fader peak of insert number `insert` (`1..=16`, wraps).
+    #[must_use]
+    pub fn of_insert(&self, insert: u8) -> f32 {
+        self.insert[insert_index(insert)]
+    }
+
+    /// Compressor gain reduction of insert number `insert` (`1..=16`, wraps), dB.
+    #[must_use]
+    pub fn gr_of_insert(&self, insert: u8) -> f32 {
+        self.insert_gr[insert_index(insert)]
     }
 
     /// The larger of the two master peaks.
@@ -385,7 +468,13 @@ impl Meters {
     /// Replaces any NaN with `0.0` and clamps negatives (defensive, for values read from
     /// atomics).
     fn sanitised(mut self) -> Self {
-        for v in self.channel.iter_mut().chain(self.master.iter_mut()) {
+        for v in self
+            .channel
+            .iter_mut()
+            .chain(self.insert.iter_mut())
+            .chain(self.insert_gr.iter_mut())
+            .chain(self.master.iter_mut())
+        {
             *v = if v.is_finite() && *v > 0.0 { *v } else { 0.0 };
         }
         self
@@ -472,6 +561,10 @@ pub(crate) struct Shared {
     song: AtomicU32,
     /// Channel block peaks as `f32` bit patterns.
     meter_channel: [AtomicU32; Channel::COUNT],
+    /// Insert block peaks as `f32` bit patterns (M11).
+    meter_insert: [AtomicU32; INSERT_COUNT],
+    /// Insert compressor gain reduction (dB) as `f32` bit patterns (M11).
+    meter_insert_gr: [AtomicU32; INSERT_COUNT],
     /// Master block peaks (left, right) as `f32` bit patterns.
     meter_master: [AtomicU32; 2],
     /// Block peak of the reverb return (plugins milestone) as an `f32` bit pattern.
@@ -484,6 +577,12 @@ pub(crate) struct Shared {
 impl Shared {
     pub(crate) fn publish_meters(&self, meters: &Meters) {
         for (slot, &v) in self.meter_channel.iter().zip(&meters.channel) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+        for (slot, &v) in self.meter_insert.iter().zip(&meters.insert) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+        for (slot, &v) in self.meter_insert_gr.iter().zip(&meters.insert_gr) {
             slot.store(v.to_bits(), Ordering::Relaxed);
         }
         for (slot, &v) in self.meter_master.iter().zip(&meters.master) {
@@ -503,6 +602,12 @@ impl Shared {
     pub(crate) fn read_meters(&self) -> Meters {
         let mut m = Meters::SILENT;
         for (v, slot) in m.channel.iter_mut().zip(&self.meter_channel) {
+            *v = f32::from_bits(slot.load(Ordering::Relaxed));
+        }
+        for (v, slot) in m.insert.iter_mut().zip(&self.meter_insert) {
+            *v = f32::from_bits(slot.load(Ordering::Relaxed));
+        }
+        for (v, slot) in m.insert_gr.iter_mut().zip(&self.meter_insert_gr) {
             *v = f32::from_bits(slot.load(Ordering::Relaxed));
         }
         for (v, slot) in m.master.iter_mut().zip(&self.meter_master) {
@@ -684,10 +789,11 @@ impl TestTone {
     }
 }
 
-/// Smoothed per-channel mixer gains, derived from a [`MixerState`] strip.
+/// Smoothed fader / pan / send gains of one source strip or one insert, derived from a
+/// [`MixerState`].
 ///
-/// Five one-pole smoothers per channel: the fader gain (level times mute/solo, so a mute is a
-/// 10 ms fade rather than a step), the two pan gains and the two send levels.
+/// Five one-pole smoothers: the fader gain (level times mute/solo, so a mute is a 10 ms fade
+/// rather than a step), the two pan gains and the two send levels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct StripDsp {
     gain: Smoother,
@@ -697,35 +803,57 @@ struct StripDsp {
     reverb_send: Smoother,
 }
 
+/// The target values of a [`StripDsp`]: `(gain, (pan_l, pan_r), delay_send, reverb_send)`.
+type StripTargets = (f32, (f32, f32), f32, f32);
+
 impl StripDsp {
-    fn new(sample_rate: f32, mixer: &MixerState, channel: Channel) -> Self {
-        let gain = mixer.effective_gain(channel);
-        let (pl, pr) = mixer.pan_gains(channel);
-        let strip = mixer.strip(channel);
+    fn new(sample_rate: f32, targets: StripTargets) -> Self {
+        let (gain, (pl, pr), ds, rs) = targets;
         let s = |v: f32| Smoother::new(sample_rate, MIXER_SMOOTH_MS, v);
         Self {
             gain: s(gain),
             pan_l: s(pl),
             pan_r: s(pr),
-            delay_send: s(strip.delay_send),
-            reverb_send: s(strip.reverb_send),
+            delay_send: s(ds),
+            reverb_send: s(rs),
         }
     }
 
-    /// Points every smoother at the strip's current values (glides over ~10 ms).
-    fn retarget(&mut self, mixer: &MixerState, channel: Channel) {
-        let (pl, pr) = mixer.pan_gains(channel);
+    /// The targets of source `channel`'s strip.
+    fn channel_targets(mixer: &MixerState, channel: Channel) -> StripTargets {
         let strip = mixer.strip(channel);
-        self.gain.set_target(mixer.effective_gain(channel));
-        self.pan_l.set_target(pl);
-        self.pan_r.set_target(pr);
-        self.delay_send.set_target(strip.delay_send);
-        self.reverb_send.set_target(strip.reverb_send);
+        (
+            mixer.effective_gain(channel),
+            mixer.pan_gains(channel),
+            strip.delay_send,
+            strip.reverb_send,
+        )
     }
 
-    /// Jumps every smoother to the strip's current values (project load).
-    fn snap(&mut self, mixer: &MixerState, channel: Channel) {
-        self.retarget(mixer, channel);
+    /// The targets of insert number `insert`'s fader stage.
+    fn insert_targets(mixer: &MixerState, insert: u8) -> StripTargets {
+        let state = mixer.insert(insert);
+        (
+            mixer.insert_effective_gain(insert),
+            mixer.insert_pan_gains(insert),
+            state.delay_send,
+            state.reverb_send,
+        )
+    }
+
+    /// Points every smoother at the given values (glides over ~10 ms).
+    fn retarget(&mut self, targets: StripTargets) {
+        let (gain, (pl, pr), ds, rs) = targets;
+        self.gain.set_target(gain);
+        self.pan_l.set_target(pl);
+        self.pan_r.set_target(pr);
+        self.delay_send.set_target(ds);
+        self.reverb_send.set_target(rs);
+    }
+
+    /// Jumps every smoother to the given values (project load).
+    fn snap(&mut self, targets: StripTargets) {
+        self.retarget(targets);
         for s in [
             &mut self.gain,
             &mut self.pan_l,
@@ -736,14 +864,190 @@ impl StripDsp {
             s.snap(s.target());
         }
     }
+
+    /// One frame of the fader stage: `(l, r)` scaled by the smoothed gain, cleaned of
+    /// non-finite values, panned, with its post-fader sends added to `buses` and the
+    /// post-fader (pre-pan) peak written into `peak`. Returns the panned frame.
+    #[inline]
+    fn apply(&mut self, (xl, xr): (f32, f32), buses: &mut Buses, peak: &mut f32) -> (f32, f32) {
+        let g = self.gain.tick();
+        let post_l = if xl.is_finite() { xl * g } else { 0.0 };
+        let post_r = if xr.is_finite() { xr * g } else { 0.0 };
+        // The pan gains act on the pair, so a mono source (`xl == xr`) mixes exactly as
+        // before M8 and a stereo one (a track insert's chorus) keeps its width.
+        let (pl, pr) = (self.pan_l.tick(), self.pan_r.tick());
+        let (l, r) = (post_l * pl, post_r * pr);
+        let post = post_l.abs().max(post_r.abs());
+        let ds = self.delay_send.tick();
+        buses.delay.0 += l * ds;
+        buses.delay.1 += r * ds;
+        let rs = self.reverb_send.tick();
+        buses.reverb.0 += l * rs;
+        buses.reverb.1 += r * rs;
+        if post > *peak {
+            *peak = post;
+        }
+        (l, r)
+    }
 }
 
-/// Stereo accumulators of one mixer frame.
+/// Stereo accumulators of one mixer frame: the master sum and the two effect buses.
 #[derive(Debug, Clone, Copy, Default)]
 struct Buses {
     dry: (f32, f32),
     delay: (f32, f32),
     reverb: (f32, f32),
+}
+
+/// The DSP behind one effect slot (M11): every kind is allocated up front and only the
+/// chosen one runs, so switching kinds never allocates.
+///
+/// Stereo handling: the compressor and the EQ3 are stereo by design; the drive is memoryless,
+/// so one instance shapes both channels; the lo-fi and the chorus keep state, so each slot
+/// holds a left and a right instance (identical seeds, so the lo-fi wobble and noise stay
+/// centred; the left chorus instance's sine tap feeds the left channel and the right
+/// instance's cosine tap the right, which for a mono input equals the one-instance chorus of
+/// the track inserts).
+#[derive(Debug, Clone, PartialEq)]
+struct SlotDsp {
+    kind: SlotKind,
+    compressor: Compressor,
+    drive: Drive,
+    drive_amount: Smoother,
+    drive_mix: Smoother,
+    lofi: [Lofi; 2],
+    chorus: [Chorus; 2],
+    eq3: Eq3,
+}
+
+impl SlotDsp {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            kind: SlotKind::Off,
+            compressor: Compressor::new(sample_rate),
+            drive: Drive::new(),
+            drive_amount: Smoother::new(sample_rate, MIXER_SMOOTH_MS, 0.0),
+            drive_mix: Smoother::new(sample_rate, MIXER_SMOOTH_MS, 0.0),
+            lofi: [Lofi::new(sample_rate), Lofi::new(sample_rate)],
+            chorus: [Chorus::new(sample_rate), Chorus::new(sample_rate)],
+            eq3: Eq3::new(sample_rate),
+        }
+    }
+
+    /// Pushes `state`'s parameters into the DSP of its kind (continuous values glide where
+    /// the effect smooths them).
+    fn apply(&mut self, state: &SlotState) {
+        let p = &state.params;
+        match state.kind {
+            SlotKind::Off => {}
+            SlotKind::Compressor => {
+                self.compressor.set_threshold_db(p[0]);
+                self.compressor.set_ratio(p[1]);
+                self.compressor.set_attack_ms(p[2]);
+                self.compressor.set_release_ms(p[3]);
+                self.compressor.set_makeup_db(p[4]);
+                self.compressor.set_mix(p[5]);
+            }
+            SlotKind::Drive => {
+                self.drive_amount.set_target(p[0]);
+                self.drive_mix.set_target(p[1]);
+            }
+            SlotKind::Lofi => {
+                for lofi in &mut self.lofi {
+                    lofi.set_param(ParamId::LofiBits, p[0]);
+                    lofi.set_param(ParamId::LofiRate, p[1]);
+                    lofi.set_param(ParamId::LofiTone, p[2]);
+                    lofi.set_param(ParamId::LofiMix, p[3]);
+                }
+            }
+            SlotKind::Chorus => {
+                for chorus in &mut self.chorus {
+                    chorus.set_param(ParamId::ChorusRate, p[0]);
+                    chorus.set_param(ParamId::ChorusDepth, p[1]);
+                    chorus.set_param(ParamId::ChorusMix, p[2]);
+                }
+            }
+            SlotKind::Eq3 => self.eq3.retarget(&Eq3State::new(p[0], p[1], p[2], p[3])),
+        }
+    }
+
+    /// Switches to `state`'s kind with its parameters, starting that effect fresh (cleared
+    /// memories, smoothers snapped). Also the project-load path.
+    fn snap(&mut self, state: &SlotState) {
+        self.kind = state.kind;
+        self.apply(state);
+        match state.kind {
+            SlotKind::Off => {}
+            SlotKind::Compressor => self.compressor.reset(),
+            SlotKind::Drive => {
+                self.drive_amount.snap(self.drive_amount.target());
+                self.drive_mix.snap(self.drive_mix.target());
+                self.drive.set_amount(self.drive_amount.current());
+                self.drive.set_mix(self.drive_mix.current());
+            }
+            SlotKind::Lofi => self.lofi.iter_mut().for_each(Lofi::reset),
+            SlotKind::Chorus => self.chorus.iter_mut().for_each(Chorus::reset),
+            SlotKind::Eq3 => self.eq3.reset(),
+        }
+    }
+
+    /// Gain reduction of a compressor slot, dB (`0` for any other kind).
+    #[inline]
+    fn gain_reduction_db(&self) -> f32 {
+        if self.kind == SlotKind::Compressor {
+            self.compressor.gain_reduction_db()
+        } else {
+            0.0
+        }
+    }
+
+    /// One stereo frame through the chosen effect (`Off` passes the input through).
+    #[inline]
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        match self.kind {
+            SlotKind::Off => (l, r),
+            SlotKind::Compressor => self.compressor.process(l, r),
+            SlotKind::Drive => {
+                self.drive.set_amount(self.drive_amount.tick());
+                self.drive.set_mix(self.drive_mix.tick());
+                (self.drive.process(l), self.drive.process(r))
+            }
+            SlotKind::Lofi => (self.lofi[0].process(l), self.lofi[1].process(r)),
+            SlotKind::Chorus => (self.chorus[0].process(l).0, self.chorus[1].process(r).1),
+            SlotKind::Eq3 => self.eq3.process(l, r),
+        }
+    }
+}
+
+/// The DSP of one insert track (M11): three slots, the built-in EQ3 and the fader stage.
+#[derive(Debug, Clone, PartialEq)]
+struct InsertDsp {
+    slots: [SlotDsp; SLOT_COUNT],
+    eq3: Eq3,
+    strip: StripDsp,
+}
+
+impl InsertDsp {
+    fn new(sample_rate: f32, mixer: &MixerState, insert: u8) -> Self {
+        let mut dsp = Self {
+            slots: core::array::from_fn(|_| SlotDsp::new(sample_rate)),
+            eq3: Eq3::new(sample_rate),
+            strip: StripDsp::new(sample_rate, StripDsp::insert_targets(mixer, insert)),
+        };
+        dsp.snap(mixer, insert);
+        dsp
+    }
+
+    /// Jumps everything to the insert's current state (project load): fader stage snapped,
+    /// EQ snapped, every slot restarted.
+    fn snap(&mut self, mixer: &MixerState, insert: u8) {
+        let state = mixer.insert(insert);
+        self.strip.snap(StripDsp::insert_targets(mixer, insert));
+        self.eq3.snap(&state.eq3);
+        for (dsp, slot) in self.slots.iter_mut().zip(&state.slots) {
+            dsp.snap(slot);
+        }
+    }
 }
 
 /// Audio-side engine. Owns all DSP state. Lives on the audio thread (or in a test).
@@ -802,6 +1106,9 @@ pub struct Engine {
     mixer: MixerState,
     /// Smoothed per-channel gains derived from `mixer`.
     strips: [StripDsp; Channel::COUNT],
+    /// The sixteen insert tracks' DSP (M11): slots, EQ3 and fader stage each, pre-allocated
+    /// for every slot kind. Boxed once in [`new_engine`] like the tracks.
+    inserts: Box<[InsertDsp; INSERT_COUNT]>,
     /// Block peaks of the last `render`.
     meters: Meters,
     /// Playhead and meters published to the UI.
@@ -869,7 +1176,11 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let samples_per_step = transport.samples_per_step(sample_rate);
     let bar_len = bar_len_samples(samples_per_step);
     let mixer = MixerState::default();
-    let strips = Channel::ALL.map(|ch| StripDsp::new(sample_rate, &mixer, ch));
+    let strips =
+        Channel::ALL.map(|ch| StripDsp::new(sample_rate, StripDsp::channel_targets(&mixer, ch)));
+    let inserts: Box<[InsertDsp; INSERT_COUNT]> = Box::new(core::array::from_fn(|i| {
+        InsertDsp::new(sample_rate, &mixer, insert_number(i))
+    }));
     let (spectrum_tap, spectrum_reader) = spectrum_pair();
     let mut tracks: Box<[Track; MAX_TRACKS]> =
         Box::new(core::array::from_fn(|_| Track::new(sample_rate)));
@@ -912,6 +1223,7 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             drums: DrumKit::new(sample_rate),
             mixer,
             strips,
+            inserts,
             meters: Meters::SILENT,
             shared,
             scope: scope_tap,
@@ -1349,24 +1661,94 @@ impl Engine {
         let stored = self.mixer.set(channel, param, value);
         if param == ChannelParam::Solo {
             for ch in Channel::ALL {
-                self.strips[ch.index()].retarget(&self.mixer, ch);
+                self.strips[ch.index()].retarget(StripDsp::channel_targets(&self.mixer, ch));
             }
         } else {
-            self.strips[channel.index()].retarget(&self.mixer, channel);
+            self.strips[channel.index()].retarget(StripDsp::channel_targets(&self.mixer, channel));
         }
         stored
     }
 
-    /// Replaces the whole mixer (project load). Values are normalised into range and the
-    /// smoothers jump straight to them (no glide), so an exported or freshly loaded project
-    /// starts with its exact mix. Meant to be called before the stream starts; on the audio
-    /// thread it is a fixed-size copy, not an allocation.
+    /// Replaces the whole mixer (project load): strips, inserts, slots and routes. Values
+    /// are normalised into range and the smoothers jump straight to them (no glide), every
+    /// slot effect starts fresh, so an exported or freshly loaded project starts with its
+    /// exact mix. Meant to be called before the stream starts; on the audio thread it is a
+    /// fixed-size copy, not an allocation.
     pub fn set_mixer_state(&mut self, mixer: &MixerState) {
         self.mixer = *mixer;
         self.mixer.normalise();
         for ch in Channel::ALL {
-            self.strips[ch.index()].snap(&self.mixer, ch);
+            self.strips[ch.index()].snap(StripDsp::channel_targets(&self.mixer, ch));
         }
+        for (i, dsp) in self.inserts.iter_mut().enumerate() {
+            dsp.snap(&self.mixer, insert_number(i));
+        }
+    }
+
+    // --- inserts (M11) --------------------------------------------------------------------
+
+    /// Sets one value of insert number `insert` (`1..=16`, wraps; clamped with
+    /// [`InsertParam::clamp`]). Level, pan, mute, solo and the sends glide over about
+    /// [`MIXER_SMOOTH_MS`] (a solo change re-targets every insert), the EQ3 values glide in
+    /// the EQ, a route change applies at the next sample. A `Route` to a lower-or-equal
+    /// insert number (or past 16) is refused and stored as `0` (master). Returns the stored
+    /// value.
+    pub fn set_insert(&mut self, insert: u8, param: InsertParam, value: f32) -> f32 {
+        let stored = self.mixer.set_insert(insert, param, value);
+        let index = insert_index(insert);
+        match param {
+            InsertParam::Solo => {
+                for (i, dsp) in self.inserts.iter_mut().enumerate() {
+                    dsp.strip
+                        .retarget(StripDsp::insert_targets(&self.mixer, insert_number(i)));
+                }
+            }
+            InsertParam::Eq3Low
+            | InsertParam::Eq3Mid
+            | InsertParam::Eq3MidFreq
+            | InsertParam::Eq3High => {
+                self.inserts[index]
+                    .eq3
+                    .retarget(&self.mixer.inserts[index].eq3);
+            }
+            InsertParam::Route => {}
+            _ => {
+                self.inserts[index]
+                    .strip
+                    .retarget(StripDsp::insert_targets(&self.mixer, insert_number(index)));
+            }
+        }
+        stored
+    }
+
+    /// Puts `kind` into slot `slot` (`0..3`, wraps) of insert `insert` (`1..=16`, wraps)
+    /// with the kind's default parameters; the effect starts fresh (its memories cleared), so
+    /// the switch itself is a hard cut, like loading a plugin. Returns the kind.
+    pub fn set_slot_kind(&mut self, insert: u8, slot: u8, kind: SlotKind) -> SlotKind {
+        self.mixer.set_slot_kind(insert, slot, kind);
+        let (i, s) = (insert_index(insert), slot_index(slot));
+        let state = self.mixer.inserts[i].slots[s];
+        self.inserts[i].slots[s].snap(&state);
+        kind
+    }
+
+    /// Sets parameter `index` of slot `slot` of insert `insert` (clamped by the kind's
+    /// [`crate::inserts::SlotParam`] table; continuous values glide where the effect smooths
+    /// them). Returns the stored value, or `0.0` for an index the kind does not use (nothing
+    /// changes then).
+    pub fn set_slot_param(&mut self, insert: u8, slot: u8, index: u8, value: f32) -> f32 {
+        let stored = self.mixer.set_slot_param(insert, slot, index, value);
+        let (i, s) = (insert_index(insert), slot_index(slot));
+        let state = self.mixer.inserts[i].slots[s];
+        self.inserts[i].slots[s].apply(&state);
+        stored
+    }
+
+    /// Routes source `channel` to insert number `insert` (`1..=16`) or the master (`0`;
+    /// anything larger becomes `0`). Takes effect at the next sample. Returns the stored
+    /// value.
+    pub fn set_route(&mut self, channel: Channel, insert: u8) -> u8 {
+        self.mixer.set_route(channel, insert)
     }
 
     /// Block peaks of the last `render` call (the UI reads the same data through
@@ -2048,35 +2430,75 @@ impl Engine {
             Message::SetTrackActive { track, on } => self.set_track_active(track, on),
             Message::CopyTrack { from, to } => self.copy_track(from, to),
             Message::SwapTracks(a, b) => self.swap_tracks(a, b),
+            Message::SetInsert {
+                insert,
+                param,
+                value,
+            } => {
+                self.set_insert(insert, param, value);
+            }
+            Message::SetSlotKind { insert, slot, kind } => {
+                self.set_slot_kind(insert, slot, kind);
+            }
+            Message::SetSlotParam {
+                insert,
+                slot,
+                index,
+                value,
+            } => {
+                self.set_slot_param(insert, slot, index, value);
+            }
+            Message::SetRoute { channel, insert } => {
+                self.set_route(channel, insert);
+            }
         }
     }
 
-    /// One frame of the mixer: scales each channel input by its smoothed gain, pans it into
-    /// the dry bus, adds its post-fader sends to the delay and reverb buses and tracks the
-    /// per-channel block peak (post-fader, pre-pan).
+    /// One frame of the mixer (see the module docs): every source through its strip onto its
+    /// insert bus (or the master sum), then the inserts in ascending number order through
+    /// their slots, EQ3 and fader stage onto their route. Tracks the per-source and
+    /// per-insert block peaks (post-fader, pre-pan) and the inserts' gain reduction.
     #[inline]
     fn mix_frame(&mut self, inputs: &[(f32, f32); Channel::COUNT]) -> Buses {
         let mut buses = Buses::default();
+        let mut insert_in = [(0.0_f32, 0.0_f32); INSERT_COUNT];
         for (i, strip) in self.strips.iter_mut().enumerate() {
-            let (xl, xr) = inputs[i];
-            let g = strip.gain.tick();
-            let post_l = if xl.is_finite() { xl * g } else { 0.0 };
-            let post_r = if xr.is_finite() { xr * g } else { 0.0 };
-            // The pan gains act on the pair, so a mono source (`xl == xr`) mixes exactly as
-            // before M8 and a stereo one (a track insert's chorus) keeps its width.
-            let (pl, pr) = (strip.pan_l.tick(), strip.pan_r.tick());
-            let (l, r) = (post_l * pl, post_r * pr);
-            let post = post_l.abs().max(post_r.abs());
-            buses.dry.0 += l;
-            buses.dry.1 += r;
-            let ds = strip.delay_send.tick();
-            buses.delay.0 += l * ds;
-            buses.delay.1 += r * ds;
-            let rs = strip.reverb_send.tick();
-            buses.reverb.0 += l * rs;
-            buses.reverb.1 += r * rs;
-            if post > self.meters.channel[i] {
-                self.meters.channel[i] = post;
+            let (l, r) = strip.apply(inputs[i], &mut buses, &mut self.meters.channel[i]);
+            // A route is `1..=16` or the master; anything else (impossible after
+            // `normalise`, but never trusted) also lands on the master.
+            let route = usize::from(self.mixer.routes[i]);
+            if (1..=INSERT_COUNT).contains(&route) {
+                insert_in[route - 1].0 += l;
+                insert_in[route - 1].1 += r;
+            } else {
+                buses.dry.0 += l;
+                buses.dry.1 += r;
+            }
+        }
+        for n in 0..INSERT_COUNT {
+            let dsp = &mut self.inserts[n];
+            let (mut l, mut r) = insert_in[n];
+            let mut gr = 0.0_f32;
+            for slot in &mut dsp.slots {
+                (l, r) = slot.process(l, r);
+                gr = gr.max(slot.gain_reduction_db());
+            }
+            (l, r) = dsp.eq3.process(l, r);
+            let (l, r) = dsp
+                .strip
+                .apply((l, r), &mut buses, &mut self.meters.insert[n]);
+            if gr > self.meters.insert_gr[n] {
+                self.meters.insert_gr[n] = gr;
+            }
+            // Only a higher insert (not processed yet) is a valid destination; the state
+            // guarantees it, the render re-checks it so a bad value can never feed back.
+            let route = usize::from(self.mixer.inserts[n].route);
+            if route > n + 1 && route <= INSERT_COUNT {
+                insert_in[route - 1].0 += l;
+                insert_in[route - 1].1 += r;
+            } else {
+                buses.dry.0 += l;
+                buses.dry.1 += r;
             }
         }
         buses

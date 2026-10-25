@@ -23,6 +23,8 @@
 //! - [`mixer`]: the channel strips (five drum rows plus eight tracks: level, pan, mute,
 //!   solo, delay/reverb sends) and the pan law; [`engine::Meters`] carries the per-block
 //!   peaks to the UI.
+//! - [`inserts`]: the M11 FL-style insert tracks ([`InsertState`], effect [`SlotState`]s
+//!   with their [`SlotKind`] / [`SlotParam`] tables, the source routes).
 //! - [`track`]: the M10 instrument tracks ([`Track`], [`SynthInsert`], [`TrackState`]).
 //! - [`spectrum`]: the lock-free master-output tap and FFT analyser behind the EQ plugin's
 //!   display; `fx::eq` and `fx::reverb` hold the plugin states ([`EqState`], [`ReverbState`]).
@@ -36,6 +38,7 @@ pub mod dsp;
 pub mod engine;
 pub mod export;
 pub mod fx;
+pub mod inserts;
 pub mod mixer;
 pub mod params;
 pub mod pattern;
@@ -57,6 +60,10 @@ pub use voice::{MAX_VOICES, SynthParams, VoicePool};
 pub use drums::DrumRow;
 pub use engine::{Meters, MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
+pub use inserts::{
+    INSERT_COUNT, InsertParam, InsertState, MASTER, SLOT_COUNT, SLOT_PARAMS, SlotKind, SlotParam,
+    SlotState,
+};
 pub use mixer::{Channel, ChannelParam, MixerState, Strip};
 pub use pattern::{
     BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_NOTES, MAX_STEPS, Note, NoteTrack,
@@ -65,6 +72,8 @@ pub use pattern::{
 pub use project::{Project, ProjectError};
 pub use track::{MAX_TRACKS, SynthInsert, Track, TrackId, TrackState};
 
-pub use fx::{EqBand, EqKind, EqParam, EqState, ReverbParam, ReverbState};
+pub use fx::{
+    Compressor, Eq3, Eq3State, EqBand, EqKind, EqParam, EqState, ReverbParam, ReverbState,
+};
 pub use scope::{SCOPE_CAPACITY_FRAMES, SCOPE_WINDOW_FRAMES, ScopeReader, ScopeTap, ScopeWindow};
 pub use spectrum::{Analyzer, SPECTRUM_BINS, SPECTRUM_SIZE, SpectrumReader};
