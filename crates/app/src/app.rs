@@ -443,6 +443,9 @@ pub struct AppState {
     /// Whether the piano roll is shown in its own window (the POP OUT pill) instead of the
     /// SEQUENCER panel. Not persisted.
     pub roll_popped: bool,
+    /// Shortcuts pressed in the roll's own window this frame ([`Self::handle_window_input`]),
+    /// run by the app on its next tick (the window is drawn after the tick).
+    pub pending_shortcuts: Vec<Shortcut>,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
@@ -626,6 +629,7 @@ impl AppState {
             roll_black_keys: true,
             roll_extra_width: 0.0,
             roll_popped: false,
+            pending_shortcuts: Vec::new(),
             song_selected: Some(0),
             mixer: MixerState::default(),
             meters: Meters::SILENT,
@@ -2239,6 +2243,14 @@ impl AppState {
             bpm: self.bpm,
             time,
         }
+    /// The keyboard of another window of the app (the roll's own window): its shortcuts are
+    /// queued in [`Self::pending_shortcuts`] for the app's next tick and its keys play the
+    /// piano right away ([`Self::handle_keyboard`]). Call it inside that window's viewport
+    /// callback, where `ctx` reads that window's input.
+    pub fn handle_window_input(&mut self, ctx: &egui::Context) {
+        let shortcuts = self.take_shortcuts(ctx);
+        self.pending_shortcuts.extend(shortcuts);
+        self.handle_keyboard(ctx);
     }
 
     /// Flips the theme mode as a manual choice (stored as the override).
@@ -2813,7 +2825,12 @@ impl BeatSlopperApp {
         self.state.poll_export();
         self.state.expire_status();
         // Shortcuts first, so their keys are consumed before the piano sees the frame.
+        // Shortcuts pressed in the roll's own window last frame run first, then this frame's.
+        let pending = std::mem::take(&mut self.state.pending_shortcuts);
         if !self.smoke_test {
+            for shortcut in pending {
+                self.run_shortcut(shortcut);
+            }
             for shortcut in self.state.take_shortcuts(ctx) {
                 self.run_shortcut(shortcut);
             }
@@ -4565,6 +4582,67 @@ mod tests {
         assert!(state.undo());
         assert!(state.pattern().notes().is_empty());
         assert!(!state.undo());
+    }
+
+    /// Ends a headless egui pass, dropping the texture deltas nobody paints.
+    fn end_pass(ctx: &egui::Context) {
+        let mut out = ctx.end_pass();
+        out.textures_delta.clear();
+    }
+
+    /// A key event as the roll's own window would receive it.
+    fn key_event(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn the_roll_windows_keyboard_queues_shortcuts_and_plays_keys() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            events: vec![
+                key_event(egui::Key::Space, true),
+                key_event(egui::Key::A, true),
+            ],
+            ..Default::default()
+        });
+        state.handle_window_input(&ctx);
+        end_pass(&ctx);
+        assert_eq!(state.pending_shortcuts, [Shortcut::PlayStop]);
+        assert!(!state.playing, "the shortcut waits for the app's tick");
+        assert!(state.held_notes[60], "A plays C4 from the window too");
+        assert_eq!(state.note_on_count, 1);
+
+        // Releasing the key in that window releases the note.
+        ctx.begin_pass(egui::RawInput {
+            events: vec![key_event(egui::Key::A, false)],
+            ..Default::default()
+        });
+        state.handle_window_input(&ctx);
+        end_pass(&ctx);
+        assert!(!state.held_notes[60]);
+
+        // The app's tick runs what the window queued, once.
+        let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+        app.state.pending_shortcuts.push(Shortcut::PlayStop);
+        ctx.begin_pass(egui::RawInput::default());
+        app.tick(&ctx);
+        end_pass(&ctx);
+        assert!(
+            app.state.playing,
+            "Space in the roll window starts the loop"
+        );
+        assert!(app.state.pending_shortcuts.is_empty());
+        ctx.begin_pass(egui::RawInput::default());
+        app.tick(&ctx);
+        end_pass(&ctx);
+        assert!(app.state.playing, "not run twice");
     }
 
     #[test]
