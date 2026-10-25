@@ -2,10 +2,68 @@
 //! feedback) form after Zavalishin.
 //!
 //! The TPT form is stable for every cutoff below Nyquist and for any damping, and its cutoff
-//! and resonance can be modulated per sample without blowing up. Only the lowpass output is
-//! exposed (the synth needs nothing else).
+//! and resonance can be modulated per sample without blowing up. The structure yields the
+//! lowpass, bandpass and highpass outputs in one pass; [`Svf::set_type`] picks which one
+//! [`Svf::tick`] returns (M8).
 
 use crate::dsp::flush_denormal;
+
+/// Which output of the state-variable filter is used. The index order matches
+/// `ParamId::FilterType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FilterType {
+    /// 12 dB/octave lowpass.
+    #[default]
+    Lowpass,
+    /// Bandpass, unity gain at the cutoff for every resonance (resonance narrows it).
+    Bandpass,
+    /// 12 dB/octave highpass.
+    Highpass,
+}
+
+impl FilterType {
+    /// Every type in parameter-index order.
+    pub const ALL: [FilterType; 3] = [
+        FilterType::Lowpass,
+        FilterType::Bandpass,
+        FilterType::Highpass,
+    ];
+
+    /// Type for a parameter index; out-of-range indices clamp to the last type.
+    #[must_use]
+    pub const fn from_index(index: usize) -> FilterType {
+        match index {
+            0 => FilterType::Lowpass,
+            1 => FilterType::Bandpass,
+            _ => FilterType::Highpass,
+        }
+    }
+
+    /// Type for a parameter value (rounded, clamped). Non-finite values give the default.
+    #[must_use]
+    pub fn from_param(value: f32) -> FilterType {
+        if !value.is_finite() {
+            return FilterType::default();
+        }
+        FilterType::from_index(value.round().clamp(0.0, 2.0) as usize)
+    }
+
+    /// Parameter index of this type.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Short display name.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            FilterType::Lowpass => "LP",
+            FilterType::Bandpass => "BP",
+            FilterType::Highpass => "HP",
+        }
+    }
+}
 
 /// Lowest accepted cutoff, Hz.
 pub const MIN_CUTOFF_HZ: f32 = 20.0;
@@ -37,7 +95,7 @@ pub fn resonance_to_q(resonance: f32) -> f32 {
     MIN_Q * (MAX_Q / MIN_Q).powf(resonance.clamp(0.0, 1.0))
 }
 
-/// TPT state-variable lowpass filter.
+/// TPT state-variable filter (lowpass by default; see [`FilterType`]).
 ///
 /// Real-time safe: `Copy`, no allocation, no panics; the two integrator states are
 /// denormal-flushed every sample.
@@ -46,9 +104,12 @@ pub struct Svf {
     sample_rate: f32,
     cutoff: f32,
     resonance: f32,
+    filter_type: FilterType,
     a1: f32,
     a2: f32,
     a3: f32,
+    /// Damping `1 / Q` (needed by the bandpass and highpass outputs).
+    k: f32,
     ic1eq: f32,
     ic2eq: f32,
 }
@@ -66,9 +127,11 @@ impl Svf {
             sample_rate,
             cutoff: -1.0,
             resonance: -1.0,
+            filter_type: FilterType::Lowpass,
             a1: 0.0,
             a2: 0.0,
             a3: 0.0,
+            k: 2.0,
             ic1eq: 0.0,
             ic2eq: 0.0,
         };
@@ -86,6 +149,18 @@ impl Svf {
     #[must_use]
     pub fn resonance(&self) -> f32 {
         self.resonance
+    }
+
+    /// Which output [`tick`](Self::tick) returns.
+    #[must_use]
+    pub fn filter_type(&self) -> FilterType {
+        self.filter_type
+    }
+
+    /// Selects the output of [`tick`](Self::tick). The state is shared by all three outputs,
+    /// so switching is click-free.
+    pub fn set_type(&mut self, filter_type: FilterType) {
+        self.filter_type = filter_type;
     }
 
     /// Clears the filter state (not the coefficients).
@@ -119,12 +194,14 @@ impl Svf {
         self.resonance = resonance;
         let g = (core::f32::consts::PI * cutoff / self.sample_rate).tan();
         let k = 1.0 / resonance_to_q(resonance);
+        self.k = k;
         self.a1 = 1.0 / (1.0 + g * (g + k));
         self.a2 = g * self.a1;
         self.a3 = g * self.a2;
     }
 
-    /// Filters one sample and returns the lowpass output.
+    /// Filters one sample and returns the selected output (lowpass unless
+    /// [`set_type`](Self::set_type) chose otherwise).
     #[inline]
     pub fn tick(&mut self, x: f32) -> f32 {
         let v3 = x - self.ic2eq;
@@ -132,7 +209,11 @@ impl Svf {
         let v2 = self.ic2eq + self.a2 * self.ic1eq + self.a3 * v3;
         self.ic1eq = flush_denormal(2.0 * v1 - self.ic1eq);
         self.ic2eq = flush_denormal(2.0 * v2 - self.ic2eq);
-        v2
+        match self.filter_type {
+            FilterType::Lowpass => v2,
+            FilterType::Bandpass => self.k * v1,
+            FilterType::Highpass => x - self.k * v1 - v2,
+        }
     }
 }
 
@@ -153,9 +234,52 @@ mod tests {
     }
 
     fn filtered_rms(hz: f32, cutoff: f32, res: f32) -> f32 {
+        typed_rms(FilterType::Lowpass, hz, cutoff, res)
+    }
+
+    fn typed_rms(t: FilterType, hz: f32, cutoff: f32, res: f32) -> f32 {
         let mut f = Svf::new(SR, cutoff, res);
+        f.set_type(t);
         let out: Vec<f32> = sine(hz, 48_000).iter().map(|&x| f.tick(x)).collect();
         rms(&out[24_000..])
+    }
+
+    #[test]
+    fn type_indices_round_trip() {
+        for (i, t) in FilterType::ALL.iter().enumerate() {
+            assert_eq!(t.index(), i);
+            assert_eq!(FilterType::from_index(i), *t);
+            assert_eq!(FilterType::from_param(i as f32 - 0.3), *t);
+            assert!(!t.label().is_empty());
+        }
+        assert_eq!(FilterType::from_param(f32::NAN), FilterType::Lowpass);
+        assert_eq!(FilterType::from_index(9), FilterType::Highpass);
+        let mut f = Svf::new(SR, 1000.0, 0.0);
+        assert_eq!(f.filter_type(), FilterType::Lowpass);
+        f.set_type(FilterType::Highpass);
+        assert_eq!(f.filter_type(), FilterType::Highpass);
+    }
+
+    #[test]
+    fn bandpass_and_highpass_shape_the_spectrum() {
+        let unfiltered = 1.0 / 2.0_f32.sqrt();
+        let hp_low = typed_rms(FilterType::Highpass, 50.0, 1_000.0, 0.0);
+        let hp_high = typed_rms(FilterType::Highpass, 10_000.0, 1_000.0, 0.0);
+        assert!(hp_low < unfiltered * 0.01, "hp low {hp_low}");
+        assert!((hp_high - unfiltered).abs() < 0.03, "hp high {hp_high}");
+
+        let bp_low = typed_rms(FilterType::Bandpass, 100.0, 1_000.0, 0.0);
+        let bp_mid = typed_rms(FilterType::Bandpass, 1_000.0, 1_000.0, 0.0);
+        let bp_high = typed_rms(FilterType::Bandpass, 10_000.0, 1_000.0, 0.0);
+        assert!((bp_mid - unfiltered).abs() < 0.03, "bp mid {bp_mid}");
+        assert!(bp_low < bp_mid * 0.25, "bp low {bp_low} mid {bp_mid}");
+        assert!(bp_high < bp_mid * 0.25, "bp high {bp_high} mid {bp_mid}");
+        // Resonance narrows the bandpass without raising its centre gain.
+        let bp_mid_res = typed_rms(FilterType::Bandpass, 1_000.0, 1_000.0, 0.9);
+        let bp_near_res = typed_rms(FilterType::Bandpass, 700.0, 1_000.0, 0.9);
+        let bp_near = typed_rms(FilterType::Bandpass, 700.0, 1_000.0, 0.0);
+        assert!((bp_mid_res - unfiltered).abs() < 0.05, "{bp_mid_res}");
+        assert!(bp_near_res < bp_near * 0.6, "{bp_near_res} vs {bp_near}");
     }
 
     #[test]

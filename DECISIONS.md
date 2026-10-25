@@ -100,3 +100,10 @@ pluck mode, 7-voice unison, sub and noise sources, a filter ADSR with LP/BP/HP t
 envelope, velocity response, a lo-fi insert (bits, rate, wobble, vinyl noise, tone), chorus and
 a kick-triggered sidechain ducker. M9 builds about 80 presets on top with a browser. Sound
 design is done by DSP reasoning and measurable tests since the build machine cannot listen.
+
+## 2026-10-25: M8 synth DSP choices
+- Velocity-to-cutoff is relative to full velocity (soft notes close the filter; a full-velocity
+  note leaves the cutoff knob as set) so existing patches and level tests keep their meaning.
+- Pluck damping/brightness cutoffs are defined relative to the fundamental so the knobs mean
+  the same across the keyboard; decay time is time-based via the loop gain (8 s to 0.25 s).
+- Unison copy 0 is untouched so unison 1 is bit-identical to the pre-M8 oscillator.

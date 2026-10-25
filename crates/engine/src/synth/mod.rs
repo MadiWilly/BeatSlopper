@@ -1,20 +1,30 @@
 //! Synthesizer building blocks.
 //!
-//! - [`Oscillator`] / [`Wave`]: PolyBLEP band-limited saw and square, integrated triangle,
-//!   plain sine ([`oscillator`]).
-//! - [`Svf`]: TPT state-variable lowpass with cutoff and resonance ([`svf`]).
+//! - [`Oscillator`] / [`Wave`]: PolyBLEP band-limited saw and square (with pulse width),
+//!   integrated triangle, plain sine, with a phase-modulation input ([`oscillator`]).
+//! - [`Svf`] / [`FilterType`]: TPT state-variable filter with cutoff, resonance and
+//!   LP/BP/HP outputs ([`svf`]).
 //! - [`Lfo`] / [`LfoTarget`]: the sine LFO shared by all voices ([`lfo`]).
+//! - [`FmModulator`]: the sine modulator that phase-modulates oscillator 1 ([`fm`], M8).
+//! - [`Noise`] / [`NoiseColor`]: white and pink noise ([`noise`], M8).
+//! - [`Pluck`]: the Karplus-Strong plucked string ([`pluck`], M8).
 //! - [`SineOsc`] and [`note_to_hz`]: the plain sine used by the engine's M0 test tone.
 //!
-//! The amp ADSR lives in [`crate::params::Adsr`]; the per-voice wiring is in [`crate::voice`].
+//! The ADSRs live in [`crate::params::Adsr`]; the per-voice wiring is in [`crate::voice`].
 
+pub mod fm;
 pub mod lfo;
+pub mod noise;
 pub mod oscillator;
+pub mod pluck;
 pub mod svf;
 
+pub use fm::{FmModulator, MAX_FM_INDEX, fm_index};
 pub use lfo::{Lfo, LfoTarget};
+pub use noise::{Noise, NoiseColor};
 pub use oscillator::{Oscillator, Wave};
-pub use svf::Svf;
+pub use pluck::Pluck;
+pub use svf::{FilterType, Svf};
 
 use core::f64::consts::TAU;
 

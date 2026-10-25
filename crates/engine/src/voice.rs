@@ -1,25 +1,46 @@
 //! Polyphonic voice allocation and the per-voice synth signal path.
 //!
 //! Voices are pre-allocated in `new_engine`; the pool never grows on the audio thread.
-//! Each [`Voice`] (M2) is two band-limited [`Oscillator`]s (wave, detune, mix) into a lowpass
-//! [`Svf`] whose cutoff follows the amp [`Adsr`] (filter envelope amount) and the pool's
-//! shared [`Lfo`], with optional glide between notes. The [`VoicePool`] owns [`MAX_VOICES`]
-//! voices in a fixed array, the shared LFO and the current [`SynthParams`], and sums the
-//! sounding voices per sample.
+//! The [`VoicePool`] owns [`MAX_VOICES`] voices in a fixed array, the shared [`Lfo`] and the
+//! current [`SynthParams`], and sums the sounding voices per sample.
+//!
+//! **Per-voice signal flow (M8):**
+//!
+//! ```text
+//! subtractive mode:
+//!   pitch = note (glide) + pitch env (one-pole decay from PitchEnvAmount) + LFO vibrato
+//!   osc 1 x unison (1..=7 copies, +-Osc1Spread cents, / sqrt(n)) <- FM (sine modulator at
+//!       FmRatio x f1, index 0..=8 rad into the phase)  ... x Osc1Mix
+//!   + osc 2 (own detune)                                       x Osc2Mix
+//!   + sub (sine, one octave below osc 1)                       x SubLevel
+//!   + noise (white | pink)                                     x NoiseLevel
+//! pluck mode: a Karplus-Strong string ([`Pluck`]) replaces all of the above.
+//!   -> SVF (LP | BP | HP; cutoff = base x 2^(filter env x FilterEnvAmount x 4 oct
+//!                        + (note - 60) / 12 x FilterKeyTrack
+//!                        + (vel - 1) x VelToCutoff x 2 oct + LFO) )
+//!   -> x amp env x (1 - VelToAmp + VelToAmp x vel) x voice level
+//! ```
 //!
 //! **Level:** one oscillator at mix `1.0` and velocity `1.0` peaks at [`VOICE_LEVEL_DB`]
 //! (-12 dBFS, same as the M0 test tone) before the filter. The default patch mixes two
 //! oscillators (0.7 + 0.45), so a 16-voice chord sums to roughly +13 dBFS before the master
 //! gain, which the master limiter squashes softly instead of clipping.
 //!
-//! **Modulation rate:** oscillator frequencies are recomputed only while a voice glides or the
-//! LFO targets pitch; the filter coefficients are refreshed every [`MOD_INTERVAL`] samples
-//! (and skipped when nothing changed), which keeps the per-sample cost to the two oscillators,
-//! the filter and the envelope.
+//! **Modulation rate:** oscillator frequencies are recomputed immediately when a note starts
+//! or a parameter changes, and otherwise at most every [`MOD_INTERVAL`] samples while the
+//! pitch moves (glide, pitch envelope, pitch LFO) and only when it moved by more than a tiny
+//! epsilon; the filter coefficients are refreshed every [`MOD_INTERVAL`] samples (and skipped
+//! when nothing changed). Sub, noise and FM cost nothing while their level/amount is zero.
+//!
+//! **Memory:** every voice owns a pre-allocated string delay line (about 1 500 samples at
+//! 48 kHz, sized in [`Voice::new`]); nothing allocates after construction.
 
 use crate::dsp::db_to_gain;
 use crate::params::{Adsr, ParamId};
-use crate::synth::{Lfo, LfoTarget, Oscillator, Svf, Wave, cents_to_ratio, note_to_hz};
+use crate::synth::{
+    FilterType, FmModulator, Lfo, LfoTarget, Noise, NoiseColor, Oscillator, Pluck, Svf, Wave,
+    cents_to_ratio, fm_index, note_to_hz,
+};
 
 /// Maximum number of simultaneously sounding synth voices.
 pub const MAX_VOICES: usize = 16;
@@ -41,9 +62,26 @@ pub const LFO_CUTOFF_OCTAVES: f32 = 2.0;
 /// Semitones of pitch sweep at LFO depth `1.0` when the LFO targets the pitch.
 pub const LFO_PITCH_SEMITONES: f32 = 1.0;
 
+/// Octaves the cutoff drops between velocity `1.0` and `0.0` at `VelToCutoff` `1.0`.
+pub const VEL_CUTOFF_OCTAVES: f32 = 2.0;
+/// Most unison copies of oscillator 1 (`Osc1Unison` range end).
+pub const MAX_UNISON: usize = 7;
+
 /// The glide parameter is the time for the pitch to cover 95 % of the jump (three time
 /// constants of the one-pole slew).
 const GLIDE_TIME_CONSTANTS: f32 = 3.0;
+/// The pitch envelope decay parameter is the time to cover 95 % of the sweep (three time
+/// constants of the one-pole decay).
+const PITCH_ENV_TIME_CONSTANTS: f32 = 3.0;
+/// Pitch envelope magnitude (semitones) below which it snaps to zero.
+const PITCH_ENV_FLOOR: f32 = 1.0e-3;
+/// Pitch change (semitones) below which the oscillators are not retuned.
+const PITCH_EPSILON: f32 = 1.0e-5;
+/// Phase spacing (turns, golden ratio) between unison copies at note start, so a supersaw
+/// does not begin as one coherent spike.
+const UNISON_PHASE_STEP: f64 = 0.618_033_988_749_895;
+/// `OscMode` index of the plucked-string mode.
+const PLUCK_MODE: u8 = 1;
 
 /// Every parameter the voice pool consumes, as typed values. `Copy` and allocation-free so
 /// it can be built on the UI side and handed to the audio thread by value.
@@ -306,6 +344,29 @@ impl SynthParams {
         let tau_samples = sample_rate * self.glide / GLIDE_TIME_CONSTANTS;
         (1.0 - (-1.0 / tau_samples).exp()).clamp(0.0, 1.0)
     }
+
+    /// Pitch envelope per-sample decay multiplier for this decay time.
+    fn pitch_env_coeff(&self, sample_rate: f32) -> f32 {
+        let sr = if sample_rate.is_finite() && sample_rate > 0.0 {
+            sample_rate
+        } else {
+            48_000.0
+        };
+        let decay = if self.pitch_env_decay.is_finite() {
+            self.pitch_env_decay.max(1.0e-3)
+        } else {
+            ParamId::PitchEnvDecay.default_value()
+        };
+        (-PITCH_ENV_TIME_CONSTANTS / (sr * decay))
+            .exp()
+            .clamp(0.0, 1.0)
+    }
+
+    /// `true` when the plucked-string mode is selected.
+    #[must_use]
+    pub fn is_pluck_mode(&self) -> bool {
+        self.osc_mode == PLUCK_MODE
+    }
 }
 
 /// Life cycle of one voice.
@@ -320,14 +381,22 @@ pub enum VoiceState {
     Releasing,
 }
 
-/// One synth voice: two oscillators, lowpass filter, note, velocity, amplitude envelope,
-/// glide state and an age stamp.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One synth voice: oscillator 1 with its unison copies, oscillator 2, sub, noise, FM
+/// modulator and plucked string, the multimode filter, the amp and filter envelopes, the
+/// pitch envelope, note, velocity, glide state and an age stamp.
+///
+/// Not `Copy`: the string's delay line is heap-allocated once in [`Voice::new`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct Voice {
-    osc1: Oscillator,
+    osc1: [Oscillator; MAX_UNISON],
     osc2: Oscillator,
+    sub: Oscillator,
+    noise: Noise,
+    fm: FmModulator,
+    pluck: Pluck,
     filter: Svf,
     env: Adsr,
+    filter_env: Adsr,
     note: u8,
     velocity: f32,
     /// Allocation counter value at the last `note_on`; smaller means older.
@@ -340,6 +409,27 @@ pub struct Voice {
     /// Detune ratios of the two oscillators.
     ratio1: f32,
     ratio2: f32,
+    /// Detune ratio of each unison copy relative to oscillator 1, the number in use and the
+    /// `1 / sqrt(n)` level compensation.
+    unison_ratio: [f32; MAX_UNISON],
+    unison_count: usize,
+    unison_gain: f32,
+    /// Pitch envelope: current offset (semitones), per-sample decay and start value.
+    pitch_env: f32,
+    pitch_env_coeff: f32,
+    pitch_env_amount: f32,
+    /// Semitone value the oscillators were last tuned to.
+    tuned_semis: f32,
+    /// Per-note cutoff offset in octaves (key tracking + velocity).
+    note_octaves: f32,
+    /// Per-note amplitude from velocity (`1 - VelToAmp + VelToAmp * vel`).
+    vel_gain: f32,
+    key_track: f32,
+    vel_to_cutoff: f32,
+    vel_to_amp: f32,
+    pluck_mode: bool,
+    /// A pluck is due as soon as the string is tuned to the new note.
+    pluck_pending: bool,
     /// Set when the oscillator frequencies must be recomputed on the next tick.
     freq_dirty: bool,
     /// Countdown to the next filter coefficient update.
@@ -347,17 +437,35 @@ pub struct Voice {
 }
 
 impl Voice {
-    /// Creates an idle voice for the given sample rate with the envelope `env` and the
-    /// default synth parameters.
+    /// Creates an idle voice for the given sample rate with the amp envelope `env` and the
+    /// default synth parameters. Allocates the string's delay line (once).
     #[must_use]
     pub fn new(sample_rate: f32, env: Adsr) -> Self {
+        Self::with_seed(sample_rate, env, 1)
+    }
+
+    /// Like [`new`](Self::new) with a noise seed, so voices in a pool do not share a noise
+    /// sequence.
+    #[must_use]
+    pub fn with_seed(sample_rate: f32, env: Adsr, seed: u32) -> Self {
         let p = SynthParams::default();
         let hz = note_to_hz(69.0);
         let mut v = Self {
-            osc1: Oscillator::new(p.osc1_wave, hz, sample_rate),
+            osc1: [Oscillator::new(p.osc1_wave, hz, sample_rate); MAX_UNISON],
             osc2: Oscillator::new(p.osc2_wave, hz, sample_rate),
+            sub: Oscillator::new(Wave::Sine, hz * 0.5, sample_rate),
+            noise: Noise::new(seed),
+            fm: FmModulator::new(sample_rate, hz),
+            pluck: Pluck::new(sample_rate, seed.wrapping_mul(0x9E37_79B9)),
             filter: Svf::new(sample_rate, p.cutoff, p.resonance),
             env,
+            filter_env: Adsr::new(
+                sample_rate,
+                p.filter_attack,
+                p.filter_decay,
+                p.filter_sustain,
+                p.filter_release,
+            ),
             note: 0,
             velocity: 0.0,
             age: 0,
@@ -366,6 +474,20 @@ impl Voice {
             glide_coeff: 1.0,
             ratio1: 1.0,
             ratio2: 1.0,
+            unison_ratio: [1.0; MAX_UNISON],
+            unison_count: 1,
+            unison_gain: 1.0,
+            pitch_env: 0.0,
+            pitch_env_coeff: 0.0,
+            pitch_env_amount: 0.0,
+            tuned_semis: f32::NAN,
+            note_octaves: 0.0,
+            vel_gain: 0.0,
+            key_track: 0.0,
+            vel_to_cutoff: 0.0,
+            vel_to_amp: 1.0,
+            pluck_mode: false,
+            pluck_pending: false,
             freq_dirty: true,
             mod_counter: 0,
         };
@@ -420,34 +542,119 @@ impl Voice {
         self.pitch as f32
     }
 
-    /// The lowpass filter (for inspection: current cutoff after modulation).
+    /// The filter (for inspection: current cutoff after modulation, and its type).
     #[must_use]
     pub fn filter(&self) -> &Svf {
         &self.filter
     }
 
-    /// Applies new synth parameters: waveforms, envelope times, detune ratios and glide
-    /// speed. Running voices keep their phase and level; the next tick refreshes frequencies
-    /// and filter coefficients.
+    /// The filter envelope.
+    #[must_use]
+    pub fn filter_env(&self) -> &Adsr {
+        &self.filter_env
+    }
+
+    /// Current pitch envelope offset in semitones (decays towards `0.0`).
+    #[must_use]
+    pub fn pitch_env(&self) -> f32 {
+        self.pitch_env
+    }
+
+    /// The plucked string (for inspection).
+    #[must_use]
+    pub fn pluck(&self) -> &Pluck {
+        &self.pluck
+    }
+
+    /// `true` while the voice renders the plucked string instead of the oscillators.
+    #[must_use]
+    pub fn is_pluck_mode(&self) -> bool {
+        self.pluck_mode
+    }
+
+    /// Number of unison copies of oscillator 1 in use.
+    #[must_use]
+    pub fn unison_count(&self) -> usize {
+        self.unison_count
+    }
+
+    /// Applies new synth parameters: waveforms, pulse widths, unison, envelope times, detune
+    /// ratios, filter type, string damping/brightness, pitch envelope, velocity and glide
+    /// settings. Running voices keep their phase and level; the next tick refreshes
+    /// frequencies and filter coefficients.
     pub fn apply_params(&mut self, p: &SynthParams, sample_rate: f32) {
-        self.osc1.set_wave(p.osc1_wave);
+        for o in &mut self.osc1 {
+            o.set_wave(p.osc1_wave);
+            o.set_pulse_width(p.osc1_pulse);
+        }
         self.osc2.set_wave(p.osc2_wave);
+        self.osc2.set_pulse_width(p.osc2_pulse);
         self.env
             .set_times(sample_rate, p.attack, p.decay, p.sustain, p.release);
+        self.filter_env.set_times(
+            sample_rate,
+            p.filter_attack,
+            p.filter_decay,
+            p.filter_sustain,
+            p.filter_release,
+        );
+        self.filter
+            .set_type(FilterType::from_index(usize::from(p.filter_type)));
         self.ratio1 = cents_to_ratio(p.osc1_detune);
         self.ratio2 = cents_to_ratio(p.osc2_detune);
+
+        let n = usize::from(p.osc1_unison).clamp(1, MAX_UNISON);
+        self.unison_count = n;
+        self.unison_gain = 1.0 / (n as f32).sqrt();
+        for (i, r) in self.unison_ratio.iter_mut().enumerate() {
+            // Symmetric spread: the copies sit at -spread ..= +spread cents (0 for n = 1).
+            let cents = if n > 1 && i < n {
+                p.osc1_spread * (2.0 * i as f32 / (n as f32 - 1.0) - 1.0)
+            } else {
+                0.0
+            };
+            *r = cents_to_ratio(cents);
+        }
+
+        self.noise
+            .set_color(NoiseColor::from_index(usize::from(p.noise_color)));
+        self.fm.set_index(fm_index(p.fm_amount));
+        self.pluck_mode = p.is_pluck_mode();
+        self.pluck.set_damping(p.pluck_damping);
+        self.pluck.set_brightness(p.pluck_bright);
+
         self.glide_coeff = f64::from(p.glide_coeff(sample_rate));
         if self.glide_coeff >= 1.0 {
             self.pitch = self.pitch_target;
         }
+        self.pitch_env_amount = p.pitch_env_amount;
+        self.pitch_env_coeff = p.pitch_env_coeff(sample_rate);
+        self.key_track = p.filter_key_track;
+        self.vel_to_cutoff = p.vel_to_cutoff;
+        self.vel_to_amp = p.vel_to_amp;
+        self.refresh_note_scalars();
         self.freq_dirty = true;
         self.mod_counter = 0;
     }
 
+    /// Recomputes the per-note constants: cutoff offset (key tracking + velocity) and the
+    /// velocity -> amplitude gain.
+    fn refresh_note_scalars(&mut self) {
+        let note = f32::from(self.note);
+        // Velocity is relative to full velocity: a soft note closes the filter by up to
+        // VEL_CUTOFF_OCTAVES x VelToCutoff, a full-velocity note leaves the cutoff knob as set
+        // (so the default VelToCutoff does not shift every patch's cutoff).
+        self.note_octaves = (note - 60.0) / 12.0 * self.key_track
+            + (self.velocity - 1.0) * self.vel_to_cutoff * VEL_CUTOFF_OCTAVES;
+        self.vel_gain = 1.0 - self.vel_to_amp + self.vel_to_amp * self.velocity;
+    }
+
     /// Starts `note` at `velocity`. A voice that is still sounding keeps its oscillator
-    /// phases, filter state and envelope level (click-free retrigger); an idle one restarts
-    /// from the waveforms' zero crossings. With `glide_from = Some(pitch)` (and a non-zero
-    /// glide time) the pitch slews from that MIDI pitch to `note`.
+    /// phases, filter state, string and envelope levels (click-free retrigger); an idle one
+    /// restarts from the waveforms' zero crossings with a cleared string. With
+    /// `glide_from = Some(pitch)` (and a non-zero glide time) the pitch slews from that MIDI
+    /// pitch to `note`. The pitch envelope restarts and, in pluck mode, the string is
+    /// re-excited.
     pub fn note_on(
         &mut self,
         note: u8,
@@ -458,9 +665,18 @@ impl Voice {
     ) {
         let _ = sample_rate;
         if self.env.is_idle() {
-            self.osc1.reset();
+            for (i, o) in self.osc1.iter_mut().enumerate() {
+                o.reset();
+                if i > 0 {
+                    o.set_phase(o.phase() + i as f64 * UNISON_PHASE_STEP);
+                }
+            }
             self.osc2.reset();
+            self.sub.reset();
+            self.fm.reset();
             self.filter.reset();
+            self.filter_env.reset();
+            self.pluck.clear();
         }
         self.note = note;
         self.velocity = velocity;
@@ -470,14 +686,72 @@ impl Voice {
             Some(from) if self.glide_coeff < 1.0 && from.is_finite() => f64::from(from),
             _ => self.pitch_target,
         };
+        self.pitch_env = if self.pitch_env_amount.abs() > PITCH_ENV_FLOOR {
+            self.pitch_env_amount
+        } else {
+            0.0
+        };
+        self.refresh_note_scalars();
+        self.pluck_pending = self.pluck_mode;
         self.freq_dirty = true;
         self.mod_counter = 0;
         self.env.note_on();
+        self.filter_env.note_on();
     }
 
-    /// Releases the voice (envelope enters its release stage).
+    /// Releases the voice (both envelopes enter their release stage).
     pub fn note_off(&mut self) {
         self.env.note_off();
+        self.filter_env.note_off();
+    }
+
+    /// Tunes every pitched source to `semis` (MIDI semitones, after glide, pitch envelope
+    /// and vibrato) and fires a pending pluck.
+    #[inline]
+    fn tune(&mut self, p: &SynthParams, semis: f32) {
+        let hz = note_to_hz(semis);
+        let hz1 = hz * self.ratio1;
+        if self.pluck_mode {
+            self.pluck.set_freq(hz1);
+            if self.pluck_pending {
+                self.pluck.pluck();
+                self.pluck_pending = false;
+            }
+        } else {
+            let n = self.unison_count;
+            for (o, r) in self.osc1[..n].iter_mut().zip(&self.unison_ratio) {
+                o.set_freq(hz1 * r);
+            }
+            self.osc2.set_freq(hz * self.ratio2);
+            self.sub.set_freq(hz1 * 0.5);
+            self.fm.set_freq(hz1 * p.fm_ratio);
+        }
+        self.tuned_semis = semis;
+    }
+
+    /// The subtractive source mix: unison osc 1 (with FM), osc 2, sub and noise.
+    #[inline]
+    fn subtractive(&mut self, p: &SynthParams) -> f32 {
+        let n = self.unison_count;
+        let mut o1 = 0.0;
+        if self.fm.is_off() {
+            for o in &mut self.osc1[..n] {
+                o1 += o.tick();
+            }
+        } else {
+            let pm = self.fm.tick();
+            for o in &mut self.osc1[..n] {
+                o1 += o.tick_pm(pm);
+            }
+        }
+        let mut mix = o1 * self.unison_gain * p.osc1_mix + self.osc2.tick() * p.osc2_mix;
+        if p.sub_level > 0.0 {
+            mix += self.sub.tick() * p.sub_level;
+        }
+        if p.noise_level > 0.0 {
+            mix += self.noise.tick() * p.noise_level;
+        }
+        mix
     }
 
     /// Produces the next sample (already scaled by velocity and [`VOICE_LEVEL_DB`]) using the
@@ -489,9 +763,11 @@ impl Voice {
             return 0.0;
         }
         let env = self.env.tick();
+        let fenv = self.filter_env.tick();
 
-        // Pitch: glide, then LFO vibrato; only recompute frequencies when something moves.
-        let mut gliding = false;
+        // Pitch: glide and pitch envelope advance every sample; the oscillators are retuned
+        // immediately when dirty, otherwise every MOD_INTERVAL samples while something moves.
+        let mut moving = false;
         if self.pitch != self.pitch_target {
             let d = self.pitch_target - self.pitch;
             if d.abs() < 1.0e-3 || self.glide_coeff >= 1.0 {
@@ -499,24 +775,33 @@ impl Voice {
             } else {
                 self.pitch += self.glide_coeff * d;
             }
-            gliding = true;
+            moving = true;
+        }
+        if self.pitch_env != 0.0 {
+            self.pitch_env *= self.pitch_env_coeff;
+            if self.pitch_env.abs() < PITCH_ENV_FLOOR {
+                self.pitch_env = 0.0;
+            }
+            moving = true;
         }
         let lfo_pitch = p.lfo_target == LfoTarget::Pitch && p.lfo_depth > 0.0;
-        if gliding || lfo_pitch || self.freq_dirty {
-            let mut semis = self.pitch as f32;
+        let refresh = self.mod_counter == 0;
+        if self.freq_dirty || (refresh && (moving || lfo_pitch)) {
+            let mut semis = self.pitch as f32 + self.pitch_env;
             if lfo_pitch {
                 semis += lfo * p.lfo_depth * LFO_PITCH_SEMITONES;
             }
-            let hz = note_to_hz(semis);
-            self.osc1.set_freq(hz * self.ratio1);
-            self.osc2.set_freq(hz * self.ratio2);
+            if self.freq_dirty || (semis - self.tuned_semis).abs() > PITCH_EPSILON {
+                self.tune(p, semis);
+            }
             self.freq_dirty = false;
         }
 
-        // Cutoff: base * 2^(env * amount * 4) * 2^(lfo * 2 * depth), refreshed every
-        // MOD_INTERVAL samples (the filter skips the recompute when nothing changed).
-        if self.mod_counter == 0 {
-            let mut octaves = env * p.env_amount * ENV_CUTOFF_OCTAVES;
+        // Cutoff: base * 2^(filter env * amount * 4 + key tracking + velocity + lfo * 2 *
+        // depth), refreshed every MOD_INTERVAL samples (the filter skips the recompute when
+        // nothing changed).
+        if refresh {
+            let mut octaves = fenv * p.env_amount * ENV_CUTOFF_OCTAVES + self.note_octaves;
             if p.lfo_target == LfoTarget::Cutoff {
                 octaves += lfo * p.lfo_depth * LFO_CUTOFF_OCTAVES;
             }
@@ -525,8 +810,12 @@ impl Voice {
         }
         self.mod_counter -= 1;
 
-        let mix = self.osc1.tick() * p.osc1_mix + self.osc2.tick() * p.osc2_mix;
-        self.filter.tick(mix) * env * self.velocity * voice_gain
+        let src = if self.pluck_mode {
+            self.pluck.tick()
+        } else {
+            self.subtractive(p)
+        };
+        self.filter.tick(src) * env * self.vel_gain * voice_gain
     }
 }
 
@@ -534,9 +823,9 @@ impl Voice {
 /// [`SynthParams`].
 ///
 /// Allocation order for `note_on`: the voice already playing that note (retrigger), else an
-/// idle voice, else the oldest releasing voice, else the oldest held voice. Allocation-free;
-/// all voices live in a fixed array.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// idle voice, else the oldest releasing voice, else the oldest held voice. Allocation-free
+/// after construction; all voices live in a fixed array.
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoicePool {
     voices: [Voice; MAX_VOICES],
     sample_rate: f32,
@@ -560,7 +849,7 @@ impl VoicePool {
             params.release,
         );
         Self {
-            voices: [Voice::new(sample_rate, env); MAX_VOICES],
+            voices: core::array::from_fn(|i| Voice::with_seed(sample_rate, env, i as u32 + 1)),
             sample_rate,
             voice_gain: db_to_gain(VOICE_LEVEL_DB),
             counter: 0,
@@ -741,7 +1030,10 @@ impl VoicePool {
     pub fn reset(&mut self) {
         for v in &mut self.voices {
             v.env.reset();
+            v.filter_env.reset();
             v.filter.reset();
+            v.pluck.clear();
+            v.pitch_env = 0.0;
         }
         self.lfo.reset();
     }
