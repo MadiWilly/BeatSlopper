@@ -84,10 +84,30 @@ pub fn window_title(project: Option<&Path>, dirty: bool) -> String {
     title
 }
 
+/// [`window_title`] followed by the tempo and the edit pattern (QOL pass):
+/// `BeatSlopper – beat.beatslopper.json * · 128 BPM · A`.
+#[must_use]
+pub fn window_title_full(project: Option<&Path>, dirty: bool, bpm: &str, pattern: char) -> String {
+    format!("{} · {bpm} BPM · {pattern}", window_title(project, dirty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn full_title_adds_tempo_and_pattern() {
+        assert_eq!(
+            window_title_full(None, false, "120", 'A'),
+            "BeatSlopper · 120 BPM · A"
+        );
+        let path = PathBuf::from("C:/songs/beat.beatslopper.json");
+        assert_eq!(
+            window_title_full(Some(&path), true, "128.5", 'C'),
+            "BeatSlopper – beat.beatslopper.json * · 128.5 BPM · C"
+        );
+    }
 
     #[test]
     fn a_large_monitor_keeps_the_requested_size() {

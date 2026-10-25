@@ -742,3 +742,73 @@ both.
   above the KEYS panel; FULL opens the overlay over the top row and Escape / CLOSE shut it;
   the overlay pills choose a preset and Off hides every drawing; the preset survives
   `save` -> `load_visual_preset`; offline-rendered audio reaches the window and the analyser.
+## QOL pass (2026-10-25, branch `madi/qol-polish-6ccb28`)
+
+Small usability work a producer hits in the first ten minutes. Everything is additive: new
+files where possible (`neu/src/value_edit.rs`, `app/src/{tempo,recent,drag_paint,qol}.rs`,
+`app/src/ui/{tempo,recent_panel}.rs`), small local edits elsewhere, no `ParamId` or project
+format change.
+
+### neu: typed value entry and the wheel (`value_edit`)
+- `readout(ui, theme, id, pos, anchor, text, font, color, name) -> Option<String>`: a
+  clickable numeric readout. A click swaps the text for an inline `egui::TextEdit` styled by
+  the theme (surface fill, no outline, inset-s pill, accent caret, the old text selected).
+  Enter and focus loss commit (the typed string is returned for the caller to parse), Escape
+  cancels. `begin_edit` / `show_edit` / `floating_edit` / `is_editing` / `cancel_edit` are the
+  pieces; an editor opened in the frame of a click (a right-click) starts its text field the
+  next frame, because egui drops the focus of a widget created in the frame of a click
+  elsewhere. Readouts are accessible as buttons named `"<label> value"` whose accesskit value
+  is the shown text (`node.value()` in tests).
+- Parsing: `parse_number(text)` gives the display number of a typed or formatted string
+  (units tolerated: `128 bpm`, `-6 dB`, `70 %`, `2.4k` / `2.4 kHz` = 2400, `1.5 s` = 1500 ms,
+  pan `L 30` = -30 / `C` = 0, decimal comma). `value_for_display(fmt, min, max, log, target)`
+  maps a display number back to the control value through the control's own `fmt`: an affine
+  fit through probes at the ends and the middle (every percent / ms / Hz / cents / semitone /
+  dB-level / pan formatter, so `70 %` is exactly `0.7`), else a bisection over the fraction
+  (the dB-of-gain formatter). `parse_value` combines both and clamps; `parse_int` is the
+  integer variant. Garbage parses to `None` and leaves the value alone.
+- `knob` / `dial` / `vslider` / `fader`: the value text is a readout; a right-click anywhere
+  on the control opens the editor too (floating over the cap for unlabelled small knobs, the
+  only way to type into the sequencer row and mixer strip knobs). `stepper`: the value cell
+  is a readout (`parse_int`).
+- `wheel_notches(ui, response) -> f32`: wheel notches over a control this frame from the raw
+  `MouseWheel` events (positive = up; shift = a quarter notch); when non-zero, egui's smoothed
+  scroll delta is cleared so the panel's scroll area stays put. `wheel_steps` accumulates
+  whole steps for integer controls. Knobs, dials and sliders nudge by one key step (1/50 of
+  the range) per notch; steppers by one.
+
+### app
+- Shortcuts gain `OpenRecent` (Ctrl+Shift+O), `BpmUp` (`+`, `=`, Ctrl+Up) and `BpmDown`
+  (`-`, Ctrl+Down). Home (rewind while playing: a `Play` message restarts at step 0), Escape
+  and the note nudges live in `AppState::handle_keyboard` because they depend on focus and
+  selection: Escape cancels a pending DISCARD / KEEP, drops the bass and roll selections and
+  stops the test tone; a second Escape within 400 ms is the panic (`AllNotesOff`, test tone
+  off, arm cleared, status line). With a bass step selected in the grid, Up / Down move its
+  note by a semitone and PageUp / PageDown by an octave (keys consumed, so a focused knob does
+  not see them). Shortcuts and the piano stay quiet while any text edit has focus
+  (`ctx.text_edit_focused()` also covers the kit's inline editors).
+- Tempo (`tempo.rs`, `ui/tempo.rs`): `fmt_bpm` (whole number, else one decimal),
+  `nudge_bpm`, `TapTempo` (times in seconds on the UI clock; the mean interval of the last
+  four taps, a 2 s gap starts a new series, the pill flashes 250 ms). The transport's BPM
+  group is `(-) <readout in the 22/300 display type> (+)` with the TAP pill centred under
+  it (beside the stepper it crowded out the visualizer strip); the wheel over it nudges.
+- Sequencer (`drag_paint.rs`, `qol.rs`, `ui/sequencer.rs`): cells act on the press.
+  `PaintStroke { row, on, painted }` starts on a press (`begin_paint`: one undo step), and
+  while the button is down every cell of that row under the pointer is painted to `on` once
+  (`paint_step`); the stroke ends when no button is down; pressing an "on" cell starts an
+  erase stroke. Drum rows only (the bass lane keeps click-to-select). A right-click clears the
+  cell (`test-feedback`) and is checked before the press branch. Ctrl-click = shift-click
+  (accent). Double-click a
+  row label to mute its mixer channel (`row_channel`: drum rows map to their channel, the bass
+  lane to `Synth`), shift + double-click to solo; muted labels dim to 45 %, soloed ones get
+  an accent dot. LENGTH is `/2 · <n bars> · x2`: `double_pattern_length` copies the loop
+  into the new half when that half is empty, `halve_pattern_length` keeps the hidden steps.
+  VOL / TUNE legends sit over the row knobs; the hat rows read `C.Hat` / `O.Hat`.
+- Projects (`recent.rs`, `ui/recent_panel.rs`): `RecentList` (last 8 paths, most recent
+  first, de-duplicated; `next_after` cycles; persisted under `recent_projects`). Every save
+  and open pushes. The PROJECT panel's clock button opens the RECENT view in the right
+  column (BACK returns); a click opens an entry, with the DISCARD / KEEP confirm when dirty
+  (`PendingAction::OpenRecent`, the path parked in `pending_recent`); Ctrl+Shift+O opens the
+  next entry after the current project. Missing files are dropped with a status line.
+- Window title: `BeatSlopper – file * · 128 BPM · A` (`window_title_full`).
+- Clean-up: the brand sub-label no longer names a milestone.

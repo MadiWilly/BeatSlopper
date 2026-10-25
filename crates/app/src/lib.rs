@@ -18,17 +18,23 @@
 //! - [`undo`]: the undo / redo snapshot stack.
 //! - [`ui`]: the panels, as functions over `&mut AppState` and `&neu::Theme`.
 //! - [`window`]: window sizing at display scaling and the title with the unsaved marker.
+//! - QOL pass: [`tempo`] (BPM format, tap tempo, nudges), [`recent`] (the RECENT project
+//!   list), [`drag_paint`] (step painting strokes) and [`qol`] (the `AppState` methods).
 
 pub mod app;
 pub mod audio_io;
 pub mod chords;
+pub mod drag_paint;
 pub mod input;
 pub mod midi;
 pub mod plugins;
 pub mod presets;
 pub mod project;
+pub mod qol;
+pub mod recent;
 pub mod shortcuts;
 pub mod spectrum;
+pub mod tempo;
 pub mod ui;
 pub mod undo;
 pub mod window;

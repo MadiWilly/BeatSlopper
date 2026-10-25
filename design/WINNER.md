@@ -130,3 +130,12 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
 - Contrast is checked in code (`neu::contrast_ratio`): secondary text on surface and on the
   playhead tint, on-accent on accent and accent-hover, all at least 4.5:1 in both themes.
 - The transport's sub-label names the current milestone (M8).
+- QOL pass (2026-10-25): the BPM number is the mock's 22/300 display type inside a
+  `(-) 120 (+)` row with the TAP pill centred under it (beside the row it left the
+  visualizer strip no room at 1280). Inline value editors are an inset-s pill in the surface colour with
+  an accent caret and the glow colour as the selection (no outline). The sequencer's LENGTH
+  control is `/2 · 1 bar · x2` (pills around a read-out; the segmented did not fit beside
+  them). VOL / TUNE caps legends sit over the row knobs; hat rows read `C.Hat` / `O.Hat` like
+  the mixer. A muted row label is text-secondary at 45 % alpha, a soloed one carries a 6 pt
+  accent dot. The PROJECT panel's RECENT button is a 28 pt stepper-style circle with a clock
+  glyph; the RECENT view lists rows in the value type with an accent dot on the open project.

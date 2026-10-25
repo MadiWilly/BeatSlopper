@@ -358,7 +358,9 @@ pub fn group_head<R>(
     .inner
 }
 
-/// Items of the right-hand column's tab selector, in [`RightTab`] order.
+/// Items of the right-hand column's tab selector, in [`RightTab`] order. The RECENT panel
+/// (QOL) is a sub-view of PROJECT, reached from its clock button and left by its BACK pill,
+/// so it has no item of its own and selects the `Project` tab while shown.
 pub const RIGHT_TABS: [&str; 3] = ["Project", "Chain", "Visual"];
 
 /// The head row shared by the PROJECT, SONG CHAIN and VISUALIZER panels: the
@@ -372,7 +374,7 @@ pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str)
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
         let before = match state.right_tab {
-            RightTab::Project => 0,
+            RightTab::Project | RightTab::Recent => 0,
             RightTab::Chain => 1,
             RightTab::Visual => 2,
         };

@@ -168,3 +168,44 @@ design is done by DSP reasoning and measurable tests since the build machine can
 - The synth body's rows stop straddling the scroll fold (a group head alone above the edge
   read as an orphaned label). Rows that would be cut start at the fold instead; the resulting
   gap is up to one row of blank panel, accepted over a clipped head row.
+## 2026-10-25: QOL pass (branch `madi/qol-polish-6ccb28`)
+- Typed values are mapped back through each control's *formatter* rather than a new
+  per-control parser field: `KnobSpec` / `SliderSpec` are built in many shared files, so a
+  new field would touch all of them. An affine fit through three probes inverts every
+  formatter in the app exactly (`70 %` -> `0.7`); the non-affine dB-of-gain formatter falls
+  back to a bisection, which lands within display precision.
+- Step cells act on the *press* (not the click) so drag-painting works like FL Studio; a
+  press-and-release is still one toggle. Pressing an "on" cell starts an erase stroke;
+  Ctrl-click is an alias of shift-click for the accent. Right-click clearing was dropped
+  from this branch (the `test-feedback` session implements it, per the main session).
+- `x2` copies the loop into the new half when that half is empty (what a producer expects
+  from "double"), `/2` keeps the hidden steps so `x2` restores them. The M5 three-item LENGTH
+  segmented did not fit the sequencer head beside the pills at the 1280 design width, so the
+  pills flank a length read-out instead (4 bars = two clicks of `x2`).
+- RECENT is a sub-view of the PROJECT panel (a 28 pt clock button, BACK returns) rather than
+  a third right-column tab: `Project | Recent | Chain` beside the panel title overflowed the
+  260 pt column, and a RECENT pill overflowed the NEW / OPEN row by 3 pt.
+- Tap tempo uses egui's clock (`InputState::time`), not `Instant`, so kittests can drive it.
+- Ctrl+Up / Ctrl+Down nudge the tempo as asked; the M9 brief reserves the same keys for
+  preset stepping, so M9 should pick other keys (or drop these) when it lands.
+- The window title carries the BPM and the edit pattern; the existing title tests were
+  updated to the new format (no assertion weakened).
+
+## 2026-10-25: Merging the QOL pass onto main (after the visualizers and design cleanup)
+- The transport bar could not hold QOL's `(-) 128 (+) TAP` row *and* the visualizers' mini
+  strip at the 1280 design width: the display-type readout and the TAP pill made the BPM
+  group about 86 pt wider, which left the strip 35 pt (it hides below 100). The TAP pill now
+  sits centred under the stepper row (the row is as tall as the MASTER dial, so the group has
+  the vertical room) and the strip-on group gap takes one more step down the spacing scale
+  (16 to 12). The strip gets about 120 pt at 1280 again; every QOL control is unchanged.
+- The right column keeps the visualizers' tab-only head (`Project | Chain | Visual`); the
+  RECENT sub-view selects the `Project` tab while shown, as the QOL branch intended.
+- A sequencer cell evaluates the right-click (clear, `test-feedback`) before the QOL press
+  branch (paint / Ctrl accent / Shift), so both keep working; the primary-only press test
+  keeps a right-click from starting a stroke.
+- QOL's typed readout replaced every stepper's value cell, including the VISUALIZER panel's
+  PRESET stepper: the preset name is now the readout's accessible *value* (node
+  `"Preset value"`), and the two visualizer tests read it that way instead of looking for the
+  name as a label.
+- A dimmed knob's value readout (design cleanup) is painted through `ui`, not the dimmed
+  painter, so `knob_dimmed` multiplies the readout colour by `DIMMED_OPACITY` itself.

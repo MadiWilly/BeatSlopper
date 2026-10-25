@@ -22,6 +22,9 @@
 //! * Visualizers ([`visualizer`]): six theme-matched drawings of the master output
 //!   ([`scope`], [`bars`], [`radial`], [`vector`], [`waves`], [`particles`]) over a
 //!   [`VisualInput`] with a [`VisualStyle`], and the [`PRESETS`] table ([`VisualPreset`]).
+//! * QOL pass: [`value_edit`], the typed value entry (click a readout or right-click a
+//!   control, type `128 bpm` / `-6 dB` / `2.4k`, Enter) and the wheel nudge shared by every
+//!   knob, dial, slider and stepper ([`readout`], [`parse_value`], [`wheel_notches`]).
 
 pub mod button;
 pub mod knob;
@@ -36,6 +39,7 @@ pub mod step_cell;
 pub mod stepper;
 pub mod text;
 pub mod theme;
+pub mod value_edit;
 pub mod visualizer;
 
 pub use button::{
@@ -73,6 +77,10 @@ pub use slider::{
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};
 pub use theme::{POPUP_RADIUS, ShadowPair, TOOLTIP_DELAY, Theme, ThemeMode, contrast_ratio};
+pub use value_edit::{
+    ValueEditOutput, begin_edit, cancel_edit, floating_edit, is_editing, parse_int, parse_number,
+    parse_value, readout, show_edit, value_for_display, wheel_notches, wheel_steps,
+};
 pub use visualizer::{
     OFF_PRESET, PRESETS, Palette, VisualInput, VisualPreset, VisualStyle, Visualizer, bars,
     particles, radial, scope, vector, visualizer as show_visualizer, waves,

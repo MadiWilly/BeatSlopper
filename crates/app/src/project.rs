@@ -224,6 +224,7 @@ impl AppState {
         match self.build_project().save(&path) {
             Ok(()) => {
                 self.set_status(format!("Saved {}", file_label(&path)));
+                self.remember_recent(&path);
                 self.project_path = Some(path);
                 self.mark_clean();
                 true
@@ -242,6 +243,7 @@ impl AppState {
             Ok(project) => {
                 self.apply_project(&project);
                 self.set_status(format!("Opened {}", file_label(&path)));
+                self.remember_recent(&path);
                 self.project_path = Some(path);
                 self.pending_action = None;
                 self.mark_clean();
@@ -286,8 +288,12 @@ impl AppState {
     /// pending.
     pub fn confirm_pending(&mut self) -> Option<PendingAction> {
         let action = self.pending_action.take()?;
-        if action == PendingAction::New {
-            self.new_project();
+        match action {
+            PendingAction::New => self.new_project(),
+            PendingAction::OpenRecent => {
+                self.open_pending_recent();
+            }
+            PendingAction::Open => {}
         }
         Some(action)
     }
@@ -295,6 +301,7 @@ impl AppState {
     /// KEEP (or Escape): forgets the pending action; nothing else changes.
     pub fn cancel_pending(&mut self) {
         self.pending_action = None;
+        self.pending_recent = None;
     }
 
     /// What EXPORT renders right now: the whole song in song mode, else the edit pattern

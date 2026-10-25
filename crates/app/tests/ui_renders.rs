@@ -689,13 +689,17 @@ fn unsaved_marker_appears_after_an_edit_and_clears_on_save() {
             .query_by_label(ui::project_bar::UNSAVED_LABEL)
             .is_none()
     );
-    assert_eq!(harness.state().title(), Some("BeatSlopper"));
+    assert_eq!(
+        harness.state().title(),
+        Some("BeatSlopper · 120 BPM · A"),
+        "the title carries the tempo and the edit pattern"
+    );
 
     harness.get_by_label("Clap step 1").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert!(harness.state().state().dirty);
     harness.get_by_label(ui::project_bar::UNSAVED_LABEL);
-    assert_eq!(harness.state().title(), Some("BeatSlopper *"));
+    assert_eq!(harness.state().title(), Some("BeatSlopper * · 120 BPM · A"));
 
     // Save to a known temp file: Ctrl+S needs no dialog once there is a path.
     let path = temp_project_path("marker.beatslopper.json");
@@ -710,7 +714,7 @@ fn unsaved_marker_appears_after_an_edit_and_clears_on_save() {
     );
     assert_eq!(
         harness.state().title(),
-        Some("BeatSlopper – marker.beatslopper.json")
+        Some("BeatSlopper – marker.beatslopper.json · 120 BPM · A")
     );
     assert!(path.is_file());
     harness.get_by_label("marker.beatslopper.json");
@@ -721,7 +725,7 @@ fn unsaved_marker_appears_after_an_edit_and_clears_on_save() {
     harness.get_by_label(ui::project_bar::UNSAVED_LABEL);
     assert_eq!(
         harness.state().title(),
-        Some("BeatSlopper – marker.beatslopper.json *")
+        Some("BeatSlopper – marker.beatslopper.json * · 120 BPM · A")
     );
     let _ = std::fs::remove_file(path);
 }
@@ -855,25 +859,29 @@ fn length_two_bars_shows_the_bar_selector_and_bar_two_edits_absolute_steps() {
         harness.query_by_label(ui::sequencer::BAR_LABEL).is_none(),
         "one bar: no selector"
     );
-    radio(&harness, "2 bars").click();
+    harness.get_by_label("1 bar");
+    harness.get_by_label(ui::sequencer::DOUBLE_LABEL).click();
     harness.run_steps(2);
     assert_eq!(harness.state().pattern().len(), 32);
+    harness.get_by_label("2 bars");
     harness.get_by_label(ui::sequencer::BAR_LABEL);
     radio(&harness, "1");
     radio(&harness, "2").click();
     harness.run_steps(2);
     assert_eq!(harness.state().shown_bar, 1);
     assert!(!harness.state().follow, "picking a bar switches FOLLOW off");
-    // Bar 2: beat numbers 5..8 and absolute cell names.
+    // Bar 2: beat numbers 5..8 and absolute cell names (x2 copied the loop into bar 2, so
+    // step 17 is already on like step 1; step 18 is off like step 2).
     harness.get_by_label("5");
     harness.get_by_label("8");
-    harness.get_by_label("Kick step 17").click();
+    assert!(harness.state().pattern().drums[DrumRow::Kick.index()][16].on);
+    harness.get_by_label("Kick step 18").click();
     harness.run_steps(2);
     let pattern = harness.state().pattern();
-    assert!(pattern.drums[DrumRow::Kick.index()][16].on);
+    assert!(pattern.drums[DrumRow::Kick.index()][17].on);
     assert_eq!(
-        pattern.drums[DrumRow::Kick.index()][0],
-        Pattern::demo().drums[0][0]
+        pattern.drums[DrumRow::Kick.index()][1],
+        Pattern::demo().drums[0][1]
     );
     assert!(harness.query_by_label("Kick step 1").is_none());
 
@@ -881,9 +889,10 @@ fn length_two_bars_shows_the_bar_selector_and_bar_two_edits_absolute_steps() {
     harness.run_steps(2);
     assert!(harness.state().follow);
 
-    radio(&harness, "1 bar").click();
+    harness.get_by_label(ui::sequencer::HALVE_LABEL).click();
     harness.run_steps(2);
     assert_eq!(harness.state().pattern().len(), 16);
+    harness.get_by_label("1 bar");
     assert_eq!(harness.state().shown_bar, 0, "clamped to the new length");
     assert!(harness.query_by_label(ui::sequencer::BAR_LABEL).is_none());
     harness.get_by_label("Kick step 1");
@@ -2225,6 +2234,20 @@ fn transport_strip_renders_in_both_themes_without_growing_the_bar() {
     }
 }
 
+/// Asserts that the VISUALIZER panel's PRESET stepper shows `text`. The QOL pass turned every
+/// stepper value into a typed readout: a button named `"<label> value"` whose accessible value
+/// is the shown text, so the text is no longer a node label of its own.
+fn assert_preset_shows(harness: &Harness<'_, AppState>, text: &str) {
+    assert_eq!(
+        harness
+            .get_by_label(&neu::knob::readout_name(ui::visualizer::PRESET_LABEL))
+            .value()
+            .as_deref(),
+        Some(text),
+        "the PRESET readout"
+    );
+}
+
 #[test]
 fn visualizer_panel_fits_the_right_column_in_both_themes() {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
@@ -2268,7 +2291,7 @@ fn visualizer_panel_fits_the_right_column_in_both_themes() {
         );
         harness.get_by_label(FULL_LABEL);
         harness.get_by_label(ui::visualizer::PRESET_LABEL);
-        harness.get_by_label("Soft Scope");
+        assert_preset_shows(&harness, "Soft Scope");
         assert_eq!(harness.state().right_tab, RightTab::Visual);
         assert!(!harness.state().visual_full);
     }
@@ -2355,10 +2378,10 @@ fn preset_pills_choose_a_preset_and_off_hides_the_drawing() {
     harness.run_steps(2);
     harness.state_mut().set_visual_preset(neu::OFF_PRESET);
     harness.run_steps(1);
-    harness.get_by_label("Off");
+    assert_preset_shows(&harness, "Off");
     harness.state_mut().set_visual_preset(0);
     harness.run_steps(1);
-    harness.get_by_label("Soft Scope");
+    assert_preset_shows(&harness, "Soft Scope");
     assert!(
         !harness.state().dirty,
         "the visualizer is a setting, not a project edit"
@@ -2432,4 +2455,460 @@ fn rendered_audio_reaches_the_visualizer_feed() {
     assert_eq!(input.hits, 0);
     state.set_visual_preset(neu::OFF_PRESET);
     assert!(!state.visuals_active(), "Off never asks for repaints");
+}
+
+// QOL pass: typed values, tap tempo, drag-paint, Ctrl-click, row mute, x2 / /2,
+// note nudges, Escape panic, the RECENT tab.
+
+use app::ui::sequencer::{DOUBLE_LABEL, HALVE_LABEL};
+use app::ui::tempo::{BPM_VALUE_NAME, TAP_LABEL};
+
+/// The whole app plus the engine behind it, so a test can render a block and check what
+/// reached the audio side.
+fn app_harness_with_engine(step_dt: f32) -> (Harness<'static, BeatSlopperApp>, engine::Engine) {
+    let (app, engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1080.0))
+        .with_step_dt(step_dt)
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    (harness, engine)
+}
+
+/// Pushes the UI's queued messages into the engine (one rendered block).
+fn drain(harness: &mut Harness<'_, BeatSlopperApp>, engine: &mut engine::Engine) {
+    harness.state_mut().state_mut().flush_outbox();
+    let mut buf = vec![0.0; 2 * 64];
+    engine.render(&mut buf, 64);
+}
+
+fn type_text(harness: &mut Harness<'_, BeatSlopperApp>, text: &str) {
+    harness.event(Event::Text(text.to_owned()));
+    harness.run_steps(2);
+}
+
+#[test]
+fn clicking_the_bpm_display_and_typing_140_sets_the_tempo_and_sends_set_bpm() {
+    let (mut harness, mut engine) = app_harness_with_engine(1.0 / 60.0);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.get_by_label(BPM_VALUE_NAME).value().as_deref(),
+        Some("120")
+    );
+    harness.get_by_label(BPM_VALUE_NAME).click();
+    harness.run_steps(3);
+    type_text(&mut harness, "140");
+    // Shortcuts stay quiet while the editor has the keyboard.
+    harness.key_press(Key::Space);
+    harness.run_steps(2);
+    assert!(!harness.state().state().playing, "Space typed, not played");
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bpm, 140.0);
+    assert_eq!(
+        harness.get_by_label(BPM_VALUE_NAME).value().as_deref(),
+        Some("140")
+    );
+    assert!(harness.state().state().dirty);
+    drain(&mut harness, &mut engine);
+    assert_eq!(engine.transport().bpm(), 140.0, "SetBpm reached the engine");
+    assert_eq!(harness.state().title(), Some("BeatSlopper * · 140 BPM · A"));
+
+    // Units and decimals: "128.5 bpm"; Escape cancels an edit.
+    harness.get_by_label(BPM_VALUE_NAME).click();
+    harness.run_steps(3);
+    type_text(&mut harness, "128.5 bpm");
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bpm, 128.5);
+    assert_eq!(
+        harness.get_by_label(BPM_VALUE_NAME).value().as_deref(),
+        Some("128.5")
+    );
+    harness.get_by_label(BPM_VALUE_NAME).click();
+    harness.run_steps(3);
+    type_text(&mut harness, "99");
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bpm, 128.5, "Escape cancelled");
+
+    // Plus / minus nudges from a decimal tempo land on whole numbers.
+    harness.key_press(Key::Plus);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bpm, 129.0);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bpm, 128.0);
+}
+
+#[test]
+fn clicking_a_knob_value_and_typing_sets_the_parameter() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    harness.get_by_label("Cutoff value").click();
+    harness.run_steps(3);
+    type_text(&mut harness, "1.2k");
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    let cutoff = harness.state().state().param(engine::ParamId::FilterCutoff);
+    assert!((cutoff - 1200.0).abs() < 1.0, "{cutoff}");
+    assert!(harness.state().state().dirty);
+    assert_eq!(
+        harness.get_by_label("Cutoff value").value().as_deref(),
+        Some("1.2 kHz")
+    );
+    // A percent knob: "70 %" is exactly 0.7; the undo stack has both edits.
+    harness
+        .get_all_by_label("Mix value")
+        .next()
+        .unwrap()
+        .click();
+    harness.run_steps(3);
+    type_text(&mut harness, "60 %");
+    harness.key_press(Key::Enter);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().param(engine::ParamId::Osc1Mix), 0.6);
+    assert_eq!(harness.state().state().undo.len(), 2);
+}
+
+#[test]
+fn dragging_across_three_cells_paints_them_as_one_undo_step() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    let snare = DrumRow::Snare.index();
+    let c2 = harness.get_by_label("Snare step 2").rect().center();
+    let c3 = harness.get_by_label("Snare step 3").rect().center();
+    let c4 = harness.get_by_label("Snare step 4").rect().center();
+    for step in 1..4 {
+        assert!(!harness.state().state().pattern().drums[snare][step].on);
+    }
+    pointer_press(&mut harness, c2);
+    assert!(
+        harness.state().state().pattern().drums[snare][1].on,
+        "the press paints"
+    );
+    harness.event(Event::PointerMoved(c3));
+    harness.step();
+    harness.event(Event::PointerMoved(c4));
+    harness.step();
+    pointer_release(&mut harness, c4);
+    harness.run_steps(2);
+    let drums = &harness.state().state().pattern().drums[snare];
+    assert!(
+        drums[1].on && drums[2].on && drums[3].on,
+        "{:?}",
+        &drums[..4]
+    );
+    assert!(drums[4].on, "the demo hit on step 5 is untouched");
+    assert_eq!(
+        harness.state().state().undo.len(),
+        1,
+        "one stroke, one undo step"
+    );
+    assert!(
+        harness.state().state().paint.is_none(),
+        "the stroke ended on release"
+    );
+
+    // Pressing an "on" cell starts an erase stroke: 2, 3 and 4 go off again.
+    pointer_press(&mut harness, c2);
+    harness.event(Event::PointerMoved(c3));
+    harness.step();
+    harness.event(Event::PointerMoved(c4));
+    harness.step();
+    pointer_release(&mut harness, c4);
+    harness.run_steps(2);
+    let drums = &harness.state().state().pattern().drums[snare];
+    assert!(!drums[1].on && !drums[2].on && !drums[3].on);
+    assert_eq!(harness.state().state().undo.len(), 2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    let drums = &harness.state().state().pattern().drums[snare];
+    assert!(
+        drums[1].on && drums[2].on && drums[3].on,
+        "undo restores the stroke"
+    );
+}
+
+#[test]
+fn ctrl_click_toggles_the_accent() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    let kick = DrumRow::Kick.index();
+    // Demo: kick step 1 is on; a plain click turns it off first.
+    harness.get_by_label("Kick step 1").click();
+    harness.run_steps(2);
+    assert!(!harness.state().state().pattern().drums[kick][0].on);
+
+    harness
+        .get_by_label("Kick step 1")
+        .click_modifiers(Modifiers::COMMAND);
+    harness.run_steps(2);
+    let cell = harness.state().state().pattern().drums[kick][0];
+    assert!(
+        cell.on && cell.accent,
+        "Ctrl-click: on with the accent {cell:?}"
+    );
+    harness
+        .get_by_label("Kick step 1")
+        .click_modifiers(Modifiers::COMMAND);
+    harness.run_steps(2);
+    let cell = harness.state().state().pattern().drums[kick][0];
+    assert!(
+        cell.on && !cell.accent,
+        "Ctrl-click again: accent off {cell:?}"
+    );
+
+    // The bass lane: Ctrl-click flips the accent (an empty cell gets a note).
+    harness
+        .get_by_label("Bass step 3")
+        .click_modifiers(Modifiers::COMMAND);
+    harness.run_steps(2);
+    assert!(harness.state().state().pattern().synth[2].accent);
+}
+
+#[test]
+fn the_tap_pill_sets_the_tempo_from_the_taps() {
+    // The taps use the UI clock, so the expected tempo comes from the frame times of the
+    // frames that processed the clicks (a harness step may run more than one pass).
+    let (mut harness, mut engine) = app_harness_with_engine(0.25);
+    harness.run_steps(2);
+    harness.state_mut().state_mut().set_bpm(90.0);
+    harness.run_steps(1);
+    let mut times = Vec::new();
+    harness.get_by_label(TAP_LABEL).click();
+    harness.step();
+    times.push(harness.ctx.input(|i| i.time));
+    harness.step();
+    assert_eq!(harness.state().state().bpm, 90.0, "one tap sets nothing");
+    assert_eq!(harness.state().state().tap.len(), 1);
+    for _ in 0..3 {
+        harness.get_by_label(TAP_LABEL).click();
+        harness.step();
+        times.push(harness.ctx.input(|i| i.time));
+        harness.step();
+    }
+    let mean = (times[3] - times[0]) / 3.0;
+    let expected = (60.0 / mean as f32).clamp(60.0, 200.0);
+    let bpm = harness.state().state().bpm;
+    assert!(
+        (bpm - expected).abs() < 0.6,
+        "bpm {bpm} vs expected {expected} from taps {times:?}"
+    );
+    assert_ne!(bpm, 90.0);
+    assert_eq!(harness.state().state().tap.len(), 4);
+    drain(&mut harness, &mut engine);
+    assert!((engine.transport().bpm() - bpm).abs() < 0.01);
+}
+
+#[test]
+fn x2_doubles_the_pattern_and_half_brings_it_back() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .get_by_label(HALVE_LABEL)
+            .accesskit_node()
+            .is_disabled()
+    );
+    harness.get_by_label(DOUBLE_LABEL).click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().pattern().len(), 32);
+    harness.get_by_label(ui::sequencer::BAR_LABEL);
+    let kick = DrumRow::Kick.index();
+    assert!(
+        harness.state().state().pattern().drums[kick][16].on,
+        "the loop was copied into bar 2"
+    );
+    harness.get_by_label(HALVE_LABEL).click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().pattern().len(), 16);
+    assert!(harness.query_by_label(ui::sequencer::BAR_LABEL).is_none());
+}
+
+#[test]
+fn up_down_and_page_keys_nudge_the_selected_bass_note() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    let note = harness.state().state().pattern().synth[0].note.unwrap();
+    harness.get_by_label("Bass step 1").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().selected_step, Some(0));
+    harness.key_press(Key::ArrowUp);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().pattern().synth[0].note,
+        Some(note + 1)
+    );
+    harness.key_press(Key::PageUp);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().pattern().synth[0].note,
+        Some(note + 13)
+    );
+    harness.key_press(Key::ArrowDown);
+    harness.key_press(Key::PageDown);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().pattern().synth[0].note, Some(note));
+    assert_eq!(
+        harness.state().state().note_on_count,
+        0,
+        "arrows are not piano keys"
+    );
+}
+
+#[test]
+fn a_double_clicked_row_label_mutes_the_channel() {
+    // Two clicks a 60 Hz frame apart are a double-click to egui.
+    let (mut harness, _engine) = app_harness_with_engine(1.0 / 60.0);
+    harness.run_steps(2);
+    let double_click = |harness: &mut Harness<'_, BeatSlopperApp>, label: &str, mods| {
+        for _ in 0..2 {
+            // The preset list has a "Bass" item too: take the row label (a button).
+            harness
+                .get_all_by_label(label)
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
+                .unwrap()
+                .click_modifiers(mods);
+            harness.step();
+        }
+        harness.run_steps(2);
+    };
+    double_click(&mut harness, "C.Hat", Modifiers::NONE);
+    assert!(
+        harness
+            .state()
+            .state()
+            .mixer
+            .strip(engine::Channel::ClosedHat)
+            .mute
+    );
+    assert!(
+        !harness.state().state().dirty || harness.state().state().undo.len() == 1,
+        "a mute is one mixer edit"
+    );
+    // Wait out the double-click window before the next pair.
+    harness.run_steps(30);
+    double_click(&mut harness, "C.Hat", Modifiers::NONE);
+    assert!(
+        !harness
+            .state()
+            .state()
+            .mixer
+            .strip(engine::Channel::ClosedHat)
+            .mute
+    );
+    harness.run_steps(30);
+    double_click(&mut harness, "Bass", Modifiers::SHIFT);
+    assert!(
+        harness
+            .state()
+            .state()
+            .mixer
+            .strip(engine::Channel::Synth)
+            .solo
+    );
+}
+
+#[test]
+fn escape_once_deselects_and_twice_silences_everything() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    harness.get_by_label("Test tone").click();
+    harness.get_by_label("Bass step 2").click();
+    harness.run_steps(2);
+    assert!(harness.state().state().test_tone);
+    harness.key_down(Key::A);
+    harness.run_steps(2);
+    assert!(harness.state().state().held_notes[60]);
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(
+        !harness.state().state().test_tone,
+        "Escape stops the test tone"
+    );
+    assert_eq!(harness.state().state().selected_step, None);
+    assert!(
+        harness.state().state().held_notes[60],
+        "one Escape keeps the note"
+    );
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    assert!(
+        !harness.state().state().held_notes[60],
+        "double-tap Escape: all notes off"
+    );
+    assert_eq!(
+        harness.state().state().status_text(),
+        Some("Panic: all notes off")
+    );
+}
+
+#[test]
+fn the_recent_tab_lists_saved_projects_and_ctrl_shift_o_cycles_them() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    harness.get_by_label(ui::project_bar::RECENT_LABEL).click();
+    harness.run_steps(2);
+    harness.get_by_label(ui::recent_panel::EMPTY_LABEL);
+    assert_eq!(
+        harness.state().state().right_tab,
+        app::app::RightTab::Recent
+    );
+
+    let a = temp_project_path("recent-a.beatslopper.json");
+    let b = temp_project_path("recent-b.beatslopper.json");
+    harness.state_mut().state_mut().save_project_to(a.clone());
+    harness.state_mut().state_mut().save_project_to(b.clone());
+    harness.run_steps(2);
+    harness.get_by_label(ui::recent_panel::entry_name(0, &b).as_str());
+    harness.get_by_label(ui::recent_panel::entry_name(1, &a).as_str());
+
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::O);
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().project_path.as_deref(),
+        Some(a.as_path()),
+        "Ctrl+Shift+O opened the other entry"
+    );
+    // Opening a project shows the PROJECT panel again; a click on an entry opens it too,
+    // and dirty asks first.
+    assert_eq!(
+        harness.state().state().right_tab,
+        app::app::RightTab::Project
+    );
+    harness.get_by_label("Kick step 2").click();
+    harness.run_steps(2);
+    harness.get_by_label(ui::project_bar::RECENT_LABEL).click();
+    harness.run_steps(2);
+    harness
+        .get_by_label(ui::recent_panel::entry_name(1, &b).as_str())
+        .click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().pending_action,
+        Some(app::app::PendingAction::OpenRecent)
+    );
+    harness.get_by_label(ui::project_bar::DISCARD_QUESTION);
+    harness.get_by_label("Discard").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().project_path.as_deref(),
+        Some(b.as_path())
+    );
+    assert!(!harness.state().state().dirty);
+    harness.get_by_label(ui::project_bar::RECENT_LABEL).click();
+    harness.run_steps(2);
+    harness
+        .get_by_label(ui::recent_panel::CLEAR_LIST_LABEL)
+        .click();
+    harness.run_steps(2);
+    harness.get_by_label(ui::recent_panel::EMPTY_LABEL);
+    let _ = std::fs::remove_file(a);
+    let _ = std::fs::remove_file(b);
 }

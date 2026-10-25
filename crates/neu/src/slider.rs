@@ -16,14 +16,21 @@
 //!
 //! The lamp is a 10 pt circle, inset-s when off and accent + on-glow when on, with its caps
 //! label 10 pt to the right.
+//!
+//! QOL pass: the wheel over the track nudges the value by [`SLIDER_KEY_STEP`] per notch
+//! (shift: a quarter); a click on the value readout above the track, or a right-click on the
+//! track, opens the inline editor of [`crate::value_edit`] (Enter commits the text parsed
+//! back through `spec.fmt`, Escape cancels). The readout is a button named `"<label> value"`.
 
 use egui::{
     Align2, Key, Modifiers, Pos2, Rect, Response, Role, Sense, Ui, Vec2, WidgetInfo, pos2, vec2,
 };
 
 use crate::Theme;
+use crate::knob::readout_name;
 use crate::shadow::{Depth, paint_focus_circle, paint_soft_circle, paint_soft_rect};
 use crate::text::{self, TextKind};
+use crate::value_edit::{begin_edit, parse_value, readout, wheel_notches};
 
 /// How a slider maps and displays its value.
 #[derive(Clone, Copy)]
@@ -178,6 +185,10 @@ fn vertical_slider(
     {
         v = spec.from_frac(vslider_fraction_at(track, pos.y));
     }
+    let notches = wheel_notches(ui, &response);
+    if notches != 0.0 {
+        v = spec.from_frac(spec.to_frac(v) + notches * SLIDER_KEY_STEP);
+    }
     if response.has_focus() {
         let steps = ui.input_mut(|i| {
             i.count_and_consume_key(Modifiers::NONE, Key::ArrowUp) as i64
@@ -211,20 +222,34 @@ fn vertical_slider(
     if inc != dec {
         v = spec.from_frac(spec.to_frac(v) + (inc as f32 - dec as f32) * SLIDER_KEY_STEP);
     }
+    // Typed entry: the readout above the track, or a right-click on the track.
+    let readout_id = block.id.with("readout");
+    if response.secondary_clicked() {
+        begin_edit(ui, readout_id, &spec.format(v));
+    }
+    let typed = readout(
+        ui,
+        theme,
+        readout_id,
+        pos2(rect.center().x, rect.min.y),
+        Align2::CENTER_TOP,
+        &spec.format(v),
+        TextKind::Value.font_id(),
+        theme.text_primary,
+        &readout_name(spec.label),
+    );
+    if let Some(text) = typed
+        && let Some(parsed) = parse_value(&text, spec.min, spec.max, false, spec.fmt)
+    {
+        v = spec.clamp(parsed);
+    }
+
     *value = v;
     if v != before {
         response.mark_changed();
     }
 
     if ui.is_rect_visible(rect) {
-        text::paint_text(
-            &painter,
-            pos2(rect.center().x, rect.min.y),
-            Align2::CENTER_TOP,
-            &spec.format(v),
-            TextKind::Value,
-            theme.text_primary,
-        );
         paint_soft_rect(&painter, track, SLIDER_TRACK_RADIUS, Depth::InsetS, theme);
         for y in [
             track.min.y - SLIDER_MARKER_OFFSET,

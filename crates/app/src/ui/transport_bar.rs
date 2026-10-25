@@ -1,4 +1,4 @@
-//! Transport bar: wordmark, Play / Stop / Record, BPM stepper, SWING knob, the MASTER dial,
+//! Transport bar: wordmark, Play / Stop / Record, BPM group, SWING knob, the MASTER dial,
 //! the MODE selector with the position read-out, the test-tone toggle and the theme toggle.
 //!
 //! Layout follows `design/preview-a.html` `<header class="transport">`: brand on the left
@@ -11,7 +11,7 @@
 //! left before the right-hand group and hiding when there is none), then flush right: the
 //! MIDI group (M4: a "MIDI" lamp lit while a port is open, the connected port's name, a port
 //! selector with a "None" entry, and the small Test tone toggle under it) and the theme
-//! toggle (sun, switch, moon). With the strip on, the group gap tightens from 24 to 16.
+//! toggle (sun, switch, moon). With the strip on, the group gap tightens from 24 to 12.
 //!
 //! Play and Record show their ON state as an accent fill with the on-glow (the mock's
 //! `.icon-btn.on`); `neu::icon_button` has no on-state, so [`transport_button`] paints the
@@ -29,7 +29,7 @@ use neu::button::ICON_STROKE;
 use neu::shadow::Depth;
 use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, EditKey, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
+use crate::app::{AppState, EditKey, MAX_SWING, MIN_SWING, truncate_name};
 use crate::shortcuts::Shortcut;
 use crate::ui::controls::{Knob, fmt_percent};
 use crate::ui::visualizer;
@@ -63,13 +63,14 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             .unwrap_or(ROW_HEIGHT)
             .max(ROW_HEIGHT);
         ui.set_min_height(row_height);
-        // The mock's group gap is 24; with the mini visualizer on, the bar tightens to 16 (the
-        // next step down the spacing scale that frees enough room) so the strip gets a usable
-        // width at 1280 without pushing the right-hand group out of the bar.
+        // The mock's group gap is 24; with the mini visualizer on, the bar tightens to 12 (two
+        // steps down the spacing scale: 16 freed enough room for the strip until the QOL BPM
+        // group grew by its display-type readout) so the strip gets a usable width at 1280
+        // without pushing the right-hand group out of the bar.
         let gap = if state.visual_preset().is_off() {
             theme.space_6
         } else {
-            theme.space_4
+            theme.space_3
         };
         ui.horizontal(|ui| {
             ui.set_min_height(row_height);
@@ -194,13 +195,9 @@ fn transport_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// The BPM stepper (whole BPM, 60..=200).
+/// The BPM group (QOL: typed entry, one decimal, TAP; see `crate::ui::tempo`).
 fn bpm_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let mut bpm = state.bpm.round() as i32;
-    let range = MIN_BPM as i32..=MAX_BPM as i32;
-    if neu::stepper(ui, theme, "BPM", &mut bpm, range).changed() {
-        state.set_bpm(bpm as f32);
-    }
+    crate::ui::tempo::bpm_group(ui, state, theme);
 }
 
 /// The SWING small knob, 0..=75 % of a step.

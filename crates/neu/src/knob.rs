@@ -12,6 +12,14 @@
 //! has keyboard focus (Home restores the default). The response reports `changed()` only
 //! when the value actually moved; the value is clamped to `min..=max` on every frame.
 //!
+//! QOL pass: the mouse wheel over the control nudges it by [`KEY_STEP`] per notch (shift:
+//! a quarter), and the value can be typed: a click on the value readout under a labelled
+//! knob (or beside a dial), or a right-click anywhere on the control (the only way for the
+//! unlabelled small knobs, where the editor floats over the cap), opens the inline editor of
+//! [`crate::value_edit`]; Enter commits the text parsed back through `spec.fmt`
+//! ([`crate::value_edit::parse_value`]: `70 %`, `2.4k`, `-6 dB`, ...), Escape cancels. The
+//! readout is accessible as a button named `"<label> value"`.
+//!
 //! Geometry per `design/WINNER.md` "Control sizes":
 //!
 //! * knob `Md`: block width 52, arc ring 50 (r 23, stroke 2.5), cap 40 raised-s, pointer 2x9;
@@ -32,6 +40,7 @@ use egui::{
 use crate::Theme;
 use crate::shadow::{Depth, paint_focus_circle, paint_soft_circle};
 use crate::text::{self, TextKind};
+use crate::value_edit::{begin_edit, floating_edit, parse_value, readout, wheel_notches};
 
 /// Knob size: `Md` (cap 40, arc 50, block 52) or `Sm` (cap 26, arc 34).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +260,28 @@ pub fn tooltip_text(label: &str, value: &str) -> String {
 
 /// Opacity of a dimmed knob (see [`knob_dimmed`]).
 pub const DIMMED_OPACITY: f32 = 0.5;
+/// Accessible name of the value readout of a control labelled `label`: `"Cutoff value"`.
+pub fn readout_name(label: &str) -> String {
+    format!("{label} value")
+}
+
+/// Applies a committed editor string to `value` (parsed back through `spec.fmt`, clamped);
+/// `true` when the value moved. Garbage leaves the value alone.
+fn apply_typed(value: &mut f32, spec: &KnobSpec<'_>, typed: Option<String>) -> bool {
+    let Some(text) = typed else {
+        return false;
+    };
+    let Some(parsed) = parse_value(&text, spec.min, spec.max, spec.is_log(), spec.fmt) else {
+        return false;
+    };
+    let parsed = spec.clamp(parsed);
+    if parsed != *value {
+        *value = parsed;
+        true
+    } else {
+        false
+    }
+}
 
 /// A rotary knob bound to `value`. `changed()` when the value moved; double-click resets.
 ///
@@ -305,13 +336,17 @@ pub fn knob_dimmed(
         response.mark_changed();
     }
     let v = *value;
+    let centre = pos2(
+        rect.center().x,
+        rect.min.y + label_height + gap + size.ring() * 0.5,
+    );
+    let readout_id = response.id.with("readout");
+    if response.secondary_clicked() {
+        begin_edit(ui, readout_id, &spec.format(v));
+    }
 
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() || response.dragged();
-        let centre = pos2(
-            rect.center().x,
-            rect.min.y + label_height + gap + size.ring() * 0.5,
-        );
         let scale = size.ring() / 50.0;
         paint_arcs(
             &painter,
@@ -351,16 +386,36 @@ pub fn knob_dimmed(
                 TextKind::Label,
                 theme.text_secondary,
             );
-            text::paint_text(
-                &painter,
-                pos2(rect.center().x, rect.max.y),
-                Align2::CENTER_BOTTOM,
-                &spec.format(v),
-                TextKind::Value,
-                theme.text_primary,
-            );
         }
     }
+
+    // The value readout (labelled knobs) or the floating editor over the cap (unlabelled).
+    // The readout paints through `ui`, not the dimmed `painter`, so it dims its colour the
+    // same way `multiply_opacity` would.
+    let value_color = if dimmed.is_some() {
+        theme.text_primary.gamma_multiply(DIMMED_OPACITY)
+    } else {
+        theme.text_primary
+    };
+    let typed = if labelled {
+        readout(
+            ui,
+            theme,
+            readout_id,
+            pos2(rect.center().x, rect.max.y),
+            Align2::CENTER_BOTTOM,
+            &spec.format(v),
+            TextKind::Value.font_id(),
+            value_color,
+            &readout_name(spec.label),
+        )
+    } else {
+        floating_edit(ui, theme, readout_id, centre, TextKind::Value.font_id())
+    };
+    if apply_typed(value, spec, typed) {
+        response.mark_changed();
+    }
+    let v = *value;
 
     declare_slider(ui, &response, spec, v);
     let mut tooltip = tooltip_text(spec.label, &spec.format(v));
@@ -421,7 +476,12 @@ pub fn dial(
         response.mark_changed();
     }
     let v = *value;
+    let readout_id = response.id.with("readout");
+    if response.secondary_clicked() {
+        begin_edit(ui, readout_id, &spec.format(v));
+    }
 
+    let mut typed = None;
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() || response.dragged();
         let (centre, label_pos, label_anchor, value_pos, value_anchor) = match size {
@@ -484,10 +544,22 @@ pub fn dial(
             TextKind::Label,
             theme.text_secondary,
         );
-        let galley = value_galley(v);
-        let value_rect = value_anchor.anchor_size(value_pos, galley.size());
-        painter.galley(value_rect.min, galley, theme.text_primary);
+        typed = readout(
+            ui,
+            theme,
+            readout_id,
+            value_pos,
+            value_anchor,
+            &spec.format(v),
+            value_font,
+            theme.text_primary,
+            &readout_name(spec.label),
+        );
     }
+    if apply_typed(value, spec, typed) {
+        response.mark_changed();
+    }
+    let v = *value;
 
     declare_slider(ui, &response, spec, v);
     response.on_hover_text(tooltip_text(spec.label, &spec.format(v)))
@@ -600,6 +672,12 @@ fn rotary_interact(ui: &mut Ui, response: &Response, value: &mut f32, spec: &Kno
         }
     } else {
         ui.data_mut(|d| d.remove_temp::<f32>(drag_id));
+    }
+
+    // Wheel: one notch is a key step (shift: a quarter); the panel does not scroll.
+    let notches = wheel_notches(ui, response);
+    if notches != 0.0 {
+        v = spec.from_frac(spec.to_frac(v) + notches * KEY_STEP);
     }
 
     if response.has_focus() {

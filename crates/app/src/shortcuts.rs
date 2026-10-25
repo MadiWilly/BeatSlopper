@@ -10,6 +10,13 @@
 //! | Ctrl+O                   | open                                     |
 //! | Ctrl+E                   | export WAV (current repeats)             |
 //! | Ctrl+N                   | new                                      |
+//! | Ctrl+Shift+O             | open the next RECENT project (QOL)       |
+//! | + / = / Ctrl+Up          | tempo up 1 BPM (QOL)                     |
+//! | - / Ctrl+Down            | tempo down 1 BPM (QOL)                   |
+//!
+//! Home (rewind while playing), Escape (deselect / test tone off; twice = panic) and the
+//! Up / Down / PageUp / PageDown note nudges of a selected bass step are handled in
+//! `AppState::handle_keyboard`, because they depend on focus and selection state.
 //!
 //! `Ctrl` is egui's `COMMAND` (Cmd on macOS). The keys are *consumed* so nothing else in the
 //! frame sees them: Space and R are not piano keys and the piano ignores Ctrl combinations
@@ -33,6 +40,7 @@ pub const COMMAND_SHIFT: Modifiers = Modifiers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shortcut {
     SaveAs,
+    OpenRecent,
     Redo,
     Save,
     Undo,
@@ -41,12 +49,15 @@ pub enum Shortcut {
     New,
     PlayStop,
     ToggleArm,
+    BpmUp,
+    BpmDown,
 }
 
 impl Shortcut {
     /// Every shortcut, in check order.
-    pub const ALL: [Shortcut; 9] = [
+    pub const ALL: [Shortcut; 12] = [
         Shortcut::SaveAs,
+        Shortcut::OpenRecent,
         Shortcut::Redo,
         Shortcut::Save,
         Shortcut::Undo,
@@ -55,6 +66,8 @@ impl Shortcut {
         Shortcut::New,
         Shortcut::PlayStop,
         Shortcut::ToggleArm,
+        Shortcut::BpmUp,
+        Shortcut::BpmDown,
     ];
 
     /// The key combinations that trigger this shortcut.
@@ -62,6 +75,7 @@ impl Shortcut {
     pub fn bindings(self) -> &'static [(Modifiers, Key)] {
         match self {
             Shortcut::SaveAs => &[(COMMAND_SHIFT, Key::S)],
+            Shortcut::OpenRecent => &[(COMMAND_SHIFT, Key::O)],
             Shortcut::Redo => &[(COMMAND_SHIFT, Key::Z), (Modifiers::COMMAND, Key::Y)],
             Shortcut::Save => &[(Modifiers::COMMAND, Key::S)],
             Shortcut::Undo => &[(Modifiers::COMMAND, Key::Z)],
@@ -70,6 +84,16 @@ impl Shortcut {
             Shortcut::New => &[(Modifiers::COMMAND, Key::N)],
             Shortcut::PlayStop => &[(Modifiers::NONE, Key::Space)],
             Shortcut::ToggleArm => &[(Modifiers::NONE, Key::R)],
+            // `+` arrives with shift on most layouts; egui's logical matching tolerates it.
+            Shortcut::BpmUp => &[
+                (Modifiers::NONE, Key::Plus),
+                (Modifiers::NONE, Key::Equals),
+                (Modifiers::COMMAND, Key::ArrowUp),
+            ],
+            Shortcut::BpmDown => &[
+                (Modifiers::NONE, Key::Minus),
+                (Modifiers::COMMAND, Key::ArrowDown),
+            ],
         }
     }
 
@@ -78,6 +102,7 @@ impl Shortcut {
     pub fn label(self) -> &'static str {
         match self {
             Shortcut::SaveAs => "Ctrl+Shift+S",
+            Shortcut::OpenRecent => "Ctrl+Shift+O",
             Shortcut::Redo => "Ctrl+Y",
             Shortcut::Save => "Ctrl+S",
             Shortcut::Undo => "Ctrl+Z",
@@ -86,6 +111,8 @@ impl Shortcut {
             Shortcut::New => "Ctrl+N",
             Shortcut::PlayStop => "Space",
             Shortcut::ToggleArm => "R",
+            Shortcut::BpmUp => "+ / Ctrl+Up",
+            Shortcut::BpmDown => "- / Ctrl+Down",
         }
     }
 
@@ -212,6 +239,35 @@ mod tests {
         // The piano keys are still there for `crate::input`.
         assert!(input.key_pressed(Key::A));
         assert!(input.key_pressed(Key::S));
+    }
+
+    #[test]
+    fn tempo_nudges_and_recent_cycling_are_shortcuts() {
+        let mut input = input_with(
+            vec![
+                press(Modifiers::SHIFT, Key::Plus),
+                press(Modifiers::NONE, Key::Minus),
+                press(Modifiers::COMMAND, Key::ArrowUp),
+                press(COMMAND_SHIFT, Key::O),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            take_shortcuts(&mut input),
+            vec![Shortcut::OpenRecent, Shortcut::BpmUp, Shortcut::BpmDown]
+        );
+        // Plain arrows are not shortcuts (they nudge a selected note or a focused knob).
+        let mut input = input_with(
+            vec![
+                press(Modifiers::NONE, Key::ArrowUp),
+                press(Modifiers::NONE, Key::Equals),
+            ],
+            Modifiers::NONE,
+        );
+        assert_eq!(take_shortcuts(&mut input), vec![Shortcut::BpmUp]);
+        assert!(input.key_pressed(Key::ArrowUp));
+        assert!(!Shortcut::OpenRecent.opens_dialog());
+        assert!(!Shortcut::BpmUp.opens_dialog());
     }
 
     #[test]

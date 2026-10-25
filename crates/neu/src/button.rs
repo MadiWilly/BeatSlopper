@@ -30,6 +30,8 @@ pub enum Icon {
     Minus,
     Plus,
     Clear,
+    /// A clock face: the RECENT projects button (QOL).
+    Clock,
 }
 
 /// Height of pill buttons (`.pill` in the mock).
@@ -258,6 +260,7 @@ impl Icon {
             Icon::Minus => "Decrease",
             Icon::Plus => "Increase",
             Icon::Clear => "Clear",
+            Icon::Clock => "Recent",
         }
     }
 }
@@ -344,6 +347,12 @@ pub fn paint_icon(painter: &Painter, icon: Icon, rect: Rect, stroke: Stroke) {
         Icon::Clear => {
             painter.line_segment([p(5.5, 5.5), p(14.5, 14.5)], stroke);
             painter.line_segment([p(14.5, 5.5), p(5.5, 14.5)], stroke);
+        }
+        Icon::Clock => {
+            // Face r 7 at (10,10); hands to 12 and to 3 o'clock-ish.
+            painter.circle_stroke(p(10.0, 10.0), 7.0 * s, stroke);
+            painter.line_segment([p(10.0, 10.0), p(10.0, 5.5)], stroke);
+            painter.line_segment([p(10.0, 10.0), p(13.5, 11.5)], stroke);
         }
     }
 }
