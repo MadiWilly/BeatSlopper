@@ -88,3 +88,19 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
   shadow-dark, the value arc is accent.
 - Theme follows the OS on launch; only a manual toggle is persisted (the mock had to be fixed
   for this, so test it).
+
+## As-built tweaks (recorded after the M3 review, 2026-10-24)
+
+- Playhead column: off cells in the current column are inset-s with the surface lerped 18 %
+  towards shadow-dark (`neu::playhead_tint`), so the column reads even where the inset shadow
+  is faint. This is the one extra fill besides key-black and accent.
+- Panel padding is 20 on every panel (the sequencer and piano use 20 instead of 16 20 18).
+- Sequencer row-label column is 64 wide (not 80) and rows are 4 apart so the six rows plus
+  the PROJECT panel fit beside each other at 1280.
+- A PROJECT panel (250 wide, right of the sequencer) holds New / Open / Save / Save as, the
+  export bar count and Export WAV; it is built from the kit's pills, segmented control and lamp.
+- Default window is 1280x1140 so the whole sequencer is visible without scrolling; minimum
+  stays 1240x760 with vertical scroll.
+- Brand wordmark is 15 px without the +0.16em tracking.
+- Black-key note names use text-primary (text-secondary on key-black is 3.0:1 in light).
+- The velocity control is a soft knob (the mock has no velocity control).

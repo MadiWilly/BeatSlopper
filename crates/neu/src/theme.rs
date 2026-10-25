@@ -219,6 +219,17 @@ impl Theme {
         visuals.widgets.inactive.fg_stroke.color = self.text_secondary;
         visuals.widgets.hovered.fg_stroke.color = self.text_primary;
         visuals.widgets.active.fg_stroke.color = self.text_primary;
+        // Depth comes from the kit's shadows only: no egui outlines anywhere.
+        for w in [
+            &mut visuals.widgets.noninteractive,
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            w.bg_stroke = egui::Stroke::NONE;
+        }
+        visuals.window_stroke = egui::Stroke::NONE;
         visuals.window_shadow = egui::epaint::Shadow::NONE;
         visuals.popup_shadow = egui::epaint::Shadow::NONE;
 

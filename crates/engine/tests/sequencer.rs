@@ -125,21 +125,8 @@ fn steps_trigger_every_6000_samples_at_120_bpm() {
 }
 
 // (a, drums) Every kick step from a fresh engine starts sounding at exactly n * 6000.
-//
-// NOTE: the `DrumKit` DSP is implemented by a separate work item. While it is still the silent
-// stub this test cannot measure anything and returns early after printing a notice; once the
-// kit sounds, the assertions below run unchanged.
 #[test]
 fn kick_steps_trigger_every_6000_samples_at_120_bpm() {
-    let probe = {
-        let (_h, mut engine) = seq_engine();
-        engine.set_drum_step(DrumRow::Kick, 0, true, true);
-        play_and_render(&mut engine, STEP_120)
-    };
-    if is_silent(&probe) {
-        eprintln!("DrumKit is still the silent stub: kick onset test skipped");
-        return;
-    }
     for n in 0..STEPS {
         let (_h, mut engine) = seq_engine();
         engine.set_drum_step(DrumRow::Kick, n as u8, true, n % 4 == 0);

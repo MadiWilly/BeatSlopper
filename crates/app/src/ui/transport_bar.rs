@@ -76,6 +76,7 @@ fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
         );
         match audio_error {
             None => label(ui, theme, "M3 · SOFT CONSOLE"),
+            Some(err) if err.contains("stream error") => label(ui, theme, "AUDIO STREAM ERROR"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };
     });

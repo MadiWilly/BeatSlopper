@@ -288,14 +288,10 @@ fn paint_key(ui: &Ui, theme: &Theme, model: &PianoModel<'_>, key: &PianoKey, hov
     }
 }
 
-/// Note-name colour on a black key: the secondary text colour reads on `key_black` in both
-/// themes; hover lifts it to the primary colour like the white keys.
-fn black_key_note_color(theme: &Theme, hovered: bool) -> Color32 {
-    if hovered {
-        theme.text_primary
-    } else {
-        theme.text_secondary
-    }
+/// Note-name colour on a black key: always the primary text colour, because the secondary
+/// colour on `key_black` is only 3.0:1 in the light theme (WCAG AA needs 4.5:1 at 11 pt).
+fn black_key_note_color(theme: &Theme, _hovered: bool) -> Color32 {
+    theme.text_primary
 }
 
 #[cfg(test)]

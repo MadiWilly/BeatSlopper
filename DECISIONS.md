@@ -55,3 +55,12 @@ redistribution. No copyleft licenses are allowed.
   assertion was weakened; only the setup was made explicit.
 - `FxChain` is self-contained and tested on its own (`tests/fx.rs`), plus two engine-level
   tests for BPM sync through `SetBpm` and an audible echo.
+
+## 2026-10-24: M3 review outcomes
+A read-only reviewer audited the audio path and the UI against the design. No blocking
+real-time findings. Fixed: the cpal error callback now sets a sticky atomic flag instead of
+logging (cpal may run it on the audio thread); the kick onset test no longer returns early
+when the kit is silent; black-key note names use text-primary for AA contrast in light; the
+velocity control is a `neu` knob instead of a stock egui slider; egui widget outlines are
+zeroed so depth comes only from the kit's shadows. Layout deviations from the token sheet are
+recorded in `design/WINNER.md` "As-built tweaks".

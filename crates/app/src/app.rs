@@ -782,6 +782,11 @@ impl BeatSlopperApp {
     /// without an `eframe::Frame`.
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.sync_theme(ctx);
+        if self.state.audio_error.is_none()
+            && self.state.audio.as_ref().is_some_and(|a| a.had_error())
+        {
+            self.state.audio_error = Some("audio stream error".to_owned());
+        }
         self.state.update_playhead();
         self.state.poll_export();
         self.state.expire_status();

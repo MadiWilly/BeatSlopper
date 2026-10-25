@@ -14,6 +14,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedBufferSize};
 use engine::{Engine, EngineHandle};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Scratch size used when the device does not report a maximum buffer size, and the minimum
 /// scratch size in any case (a few extra kilobytes buy robustness against odd hosts).
@@ -102,7 +103,15 @@ impl AudioOutput {
     pub fn sample_format(&self) -> SampleFormat {
         self.sample_format
     }
+
+    /// `true` once the stream reported an error (the flag is sticky; the UI shows it).
+    pub fn had_error(&self) -> bool {
+        AUDIO_ERROR.load(Ordering::Relaxed)
+    }
 }
+
+/// Set by the stream error callback (which cpal may run on the audio thread, so it must not log).
+static AUDIO_ERROR: AtomicBool = AtomicBool::new(false);
 
 fn build_stream<T>(
     device: &cpal::Device,
@@ -116,7 +125,7 @@ where
         .build_output_stream::<T, _, _>(
             *config,
             move |data: &mut [T], _info| renderer.fill(data),
-            |err| eprintln!("beatslopper: audio stream error: {err}"),
+            |_err| AUDIO_ERROR.store(true, Ordering::Relaxed),
             None,
         )
         .map_err(|e| format!("failed to build output stream: {e}"))

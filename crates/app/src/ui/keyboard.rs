@@ -12,7 +12,7 @@
 //! The controls group is built left-to-right and pushed to the right edge using the width it
 //! had last frame (egui's right-to-left layouts put nested vertical groups at the far left).
 
-use egui::{Align2, RichText, Sense, Ui, vec2};
+use egui::{Align2, Sense, Ui, vec2};
 use neu::{PianoModel, TextKind, Theme};
 
 use crate::app::AppState;
@@ -25,8 +25,6 @@ pub const WHITE_KEYS: usize = 14;
 const STEPPER_ROW: f32 = 28.0;
 /// Gap between a control's caps label and its row (matches `neu::stepper`).
 const LABEL_GAP: f32 = 6.0;
-/// Width of the velocity slider track.
-const VELOCITY_SLIDER_WIDTH: f32 = 120.0;
 
 /// Renders the KEYS panel into `ui` and applies any control or key changes to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
@@ -99,30 +97,35 @@ fn octave_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 }
 
 fn velocity_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = LABEL_GAP;
-        let label = neu::label(ui, theme, "Velocity");
-        ui.horizontal(|ui| {
-            ui.set_min_height(STEPPER_ROW);
-            ui.spacing_mut().item_spacing.x = theme.space_2;
-            ui.spacing_mut().slider_width = VELOCITY_SLIDER_WIDTH;
-            let mut velocity = state.input.velocity;
-            let slider = egui::Slider::new(&mut velocity, MIN_VELOCITY..=MAX_VELOCITY)
-                .show_value(false)
-                .trailing_fill(true);
-            if ui.add(slider).labelled_by(label.id).changed() {
-                state.input.set_velocity(velocity);
-            }
-            ui.label(
-                RichText::new(format!(
-                    "{:>3}%",
-                    (state.input.velocity * 100.0).round() as i32
-                ))
-                .size(13.0)
-                .color(theme.text_primary),
-            );
-        });
+    let mut velocity = state.input.velocity;
+    // Label beside a label-less small knob keeps the header row at the stepper height; the
+    // knob shows its value as a tooltip.
+    let spec = neu::KnobSpec {
+        label: "",
+        min: MIN_VELOCITY,
+        max: MAX_VELOCITY,
+        default: DEFAULT_VELOCITY,
+        log: false,
+        bipolar: false,
+        size: neu::KnobSize::Sm,
+        fmt: fmt_velocity,
+    };
+    let row_height = label_height(ui) + LABEL_GAP + STEPPER_ROW;
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_height(row_height);
+        ui.spacing_mut().item_spacing.x = theme.space_2;
+        neu::label(ui, theme, "Velocity");
+        if neu::knob(ui, theme, &mut velocity, &spec).changed() {
+            state.input.set_velocity(velocity);
+        }
     });
+}
+
+/// Velocity knob default (the fixed velocity of played notes until the user changes it).
+const DEFAULT_VELOCITY: f32 = 0.8;
+
+fn fmt_velocity(v: f32) -> String {
+    format!("{}%", (v * 100.0).round() as i32)
 }
 
 fn piano(ui: &mut Ui, state: &mut AppState, theme: &Theme) {

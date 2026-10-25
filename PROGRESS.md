@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M3 (First beat). M0, M1, M2 tagged. design/WINNER.md is the token source of truth.
+**Current milestone:** DONE. M0, M1, M2, M3 tagged. See "Final summary" below. design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -44,25 +44,75 @@
 - [x] Pitch, NaN/peak, delay-sync tests
 - [x] Gate green, tag m2
 
-## M3: First beat
-- [ ] Transport: play/stop, BPM 60-200, swing, 16-step loop, sample-accurate scheduling (test)
-- [ ] Procedural drum kit: kick, snare, clap, closed hat, open hat; per-row volume and tune
-- [ ] Step grid: 5 drum rows + 1 synth lane with per-step note
-- [ ] Note entry: click step + press key; record-arm overdub quantized
-- [ ] Accent/velocity per step; clear-row, clear-all
-- [ ] Save/Load .beatslopper.json (round-trip test)
-- [ ] Export loop to WAV (1/2/4/8 repeats) via offline renderer (test)
-- [ ] UI tests (egui_kittest): theme toggle, step toggle, key press state, both themes render
-- [ ] Reviewer pass: real-time rules + neumorphism fidelity vs WINNER.md
-- [ ] Gate green, tag m3, final summary written here
+## M3: First beat (done 2026-10-24, tag m3)
+- [x] Transport: play/stop, BPM 60-200, swing, 16-step loop, sample-accurate scheduling (test)
+- [x] Procedural drum kit: kick, snare, clap, closed hat, open hat; per-row volume and tune
+- [x] Step grid: 5 drum rows + 1 synth lane with per-step note
+- [x] Note entry: click step + press key; record-arm overdub quantized
+- [x] Accent/velocity per step; clear-row, clear-all
+- [x] Save/Load .beatslopper.json (round-trip test)
+- [x] Export loop to WAV (1/2/4/8 repeats) via offline renderer (test)
+- [x] UI tests (egui_kittest): theme toggle, step toggle, key press state, both themes render
+- [x] Reviewer pass: real-time rules + neumorphism fidelity vs WINNER.md (findings fixed or recorded)
+- [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-24 M2: all green (fmt, clippy -D warnings, 203 tests, deny licenses ok, release build, smoke exit 0).
+2026-10-24 M3 (after review fixes): all green (fmt, clippy -D warnings, 303 tests, deny licenses ok,
+release build, smoke exit 0).
 
 ## Next action
-M3 per docs/ARCHITECTURE.md "M3 additions": write pattern.rs + M3 messages + playhead atomics + step_cell
-stub + rfd dep, then spawn engine-sequencer | engine-drums | engine-project+export | neu step_cell |
-app transport+sequencer+save/load/export; integrate DrumKit into render; gate; final summary.
+None. The brief ends at M3. Ideas live under "Later".
 
 ## Later (ideas beyond M3, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
+
+## Final summary (M3 done, 2026-10-24)
+
+### How to run
+```bash
+cargo run --release -p app
+```
+The window opens at 1280x1140 (minimum 1240x760, scrolls below that) in the OS theme; the
+toggle at the top right switches light/dark and remembers a manual choice. `--smoke-test`
+opens, renders 60 frames and exits 0. Full gate: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+`cargo deny check licenses`, `cargo build --release`, `cargo run --release -p app -- --smoke-test`.
+
+### Key map
+- Piano: `A W S E D F T G Y H U J K O L P ;` = C C# D D# E F F# G G# A A# B C C# D D# E,
+  starting at the octave shown in the KEYS panel (default 4, so `A` = C4, `H` = A4 = 440 Hz).
+- `Z` / `X`: octave down / up (1..=7). OS key repeat is ignored; losing focus releases notes.
+- Keys can also be clicked on screen. Velocity knob in the KEYS panel (default 80 %).
+- Sequencer: click a step to toggle it; shift-click for accent. Bass lane: click a step to
+  select it, then play a key to set its note; shift-click steps the accent; Delete/Backspace
+  clears the selected step; Escape deselects. Record (REC) + Play: notes you play are
+  quantised into the bass lane.
+
+### What works
+- Transport: Play / Stop / Record, BPM 60..=200, swing 0..=75 %, 16-step loop with
+  sample-accurate scheduling in the audio thread; playhead shown on the grid.
+- Synth: 2 PolyBLEP oscillators (sine/saw/square/triangle, detune, mix), TPT lowpass SVF
+  with cutoff, resonance and envelope amount, amp ADSR, LFO (rate, depth, pitch/cutoff),
+  glide, 16 voices with stealing; 8 presets (Bass, Sub, Lead, Pluck, Pad, Keys, Acid, Bell).
+- FX: drive, BPM-synced delay (1/16, 1/8, 1/4, 1/2, feedback, mix), Freeverb reverb (size,
+  damping, mix), master gain with a switchable soft limiter.
+- Drums: procedural kick, snare, clap, closed hat, open hat (closed chokes open), per-row
+  volume and tune; no sample files.
+- Project: New / Open / Save / Save as (`.beatslopper.json`, version 2, lossless round trip);
+  Export WAV of 1/2/4/8 bars plus a 2 s tail, 16-bit stereo, rendered offline on a worker thread.
+- Every control is a neumorphic widget from the `neu` crate built from `design/WINNER.md`:
+  panels, pills, circle buttons, knobs, concentric dials, segmented selectors, vertical sliders,
+  step cells, piano keys, lamps, theme toggle.
+- Tests: 303 across engine (offline renders), neu (egui_kittest) and app (kittest + unit).
+
+### Known issues / notes
+- egui's bundled font is wider than the mock's system font, so some rows are tighter than the
+  mock (row-label column 64 instead of 80, rows 4 apart); see WINNER.md "As-built tweaks".
+- The window may open smaller than requested at 150 % display scaling on some setups
+  (observed with the widget gallery); the app scrolls in that case.
+- Synth lane is monophonic; a repeated pitch under heavy swing retriggers legato.
+- The bass lane has no tune knob; use the preset or the synth panel.
+- If the audio stream fails after start the transport shows "AUDIO STREAM ERROR" (sticky flag);
+  there is no device picker (default output only).
+- MIDI hardware, piano roll, arrangement, recording audio, mixer and VST hosting are out of
+  scope by design.
