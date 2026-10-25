@@ -828,6 +828,8 @@ impl Engine {
             ParamId::MasterGain => self.set_master_gain(value),
             ParamId::LimiterOn => self.limiter_on = value >= 0.5,
             id if id.is_fx() => self.fx.set_param(id, value),
+            // M8 sidechain ducker (`fx/ducker.rs`): stored in `params` only until it is wired.
+            ParamId::SidechainAmount | ParamId::SidechainRelease => {}
             _ => {}
         }
     }

@@ -91,7 +91,7 @@ Then M9: presets subagent (80+ EDM/lofi presets) + app browser; gate, tag m9.
 - [x] Tests per PLAN.md M7; gate green, tag m7, final summary updated
 
 ## M8: Synthesis extensions (EDM + lofi tools)
-- [ ] engine: new ParamIds (pulse, unison 1-7, sub, noise, FM, pluck mode, filter type + ADSR, key track, velocity, pitch env, lo-fi, chorus, sidechain), project v6
+- [x] engine: new ParamIds (pulse, unison 1-7, sub, noise, FM, pluck mode, filter type + ADSR, key track, velocity, pitch env, lo-fi, chorus, sidechain); project v6 bump pending
 - [ ] engine: oscillator/FM/noise/pluck DSP, filter types, filter ADSR, pitch env, velocity, unison
 - [ ] engine: lo-fi insert, chorus, kick-triggered ducker on the synth channel
 - [ ] app: synth panel and FX rack groups for the new parameters

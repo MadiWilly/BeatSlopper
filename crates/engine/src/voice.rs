@@ -61,12 +61,48 @@ pub struct SynthParams {
     pub osc2_detune: f32,
     /// Oscillator 2 level, `0.0..=1.0`.
     pub osc2_mix: f32,
+    /// Oscillator 1 pulse width, `0.05..=0.95` (M8; `0.5` = square).
+    pub osc1_pulse: f32,
+    /// Oscillator 2 pulse width, `0.05..=0.95` (M8).
+    pub osc2_pulse: f32,
+    /// Oscillator 1 unison voice count, `1..=7` (M8).
+    pub osc1_unison: u8,
+    /// Oscillator 1 unison spread, cents (`0.0..=50.0`, M8).
+    pub osc1_spread: f32,
+    /// Sub oscillator level, `0.0..=1.0` (M8).
+    pub sub_level: f32,
+    /// Noise level, `0.0..=1.0` (M8).
+    pub noise_level: f32,
+    /// Noise colour index: 0 white, 1 pink (M8).
+    pub noise_color: u8,
+    /// FM amount, `0.0..=1.0` (M8).
+    pub fm_amount: f32,
+    /// FM modulator ratio, `0.5..=8.0` (M8).
+    pub fm_ratio: f32,
+    /// Oscillator mode index: 0 subtractive, 1 pluck (M8).
+    pub osc_mode: u8,
+    /// Pluck damping, `0.0..=1.0` (M8).
+    pub pluck_damping: f32,
+    /// Pluck brightness, `0.0..=1.0` (M8).
+    pub pluck_bright: f32,
     /// Base filter cutoff, Hz.
     pub cutoff: f32,
     /// Filter resonance, `0.0..=1.0`.
     pub resonance: f32,
     /// Filter envelope amount, `-1.0..=1.0` (+-[`ENV_CUTOFF_OCTAVES`] octaves).
     pub env_amount: f32,
+    /// Filter type index: 0 lowpass, 1 bandpass, 2 highpass (M8).
+    pub filter_type: u8,
+    /// Filter envelope attack, seconds (M8).
+    pub filter_attack: f32,
+    /// Filter envelope decay, seconds (M8).
+    pub filter_decay: f32,
+    /// Filter envelope sustain level, `0.0..=1.0` (M8).
+    pub filter_sustain: f32,
+    /// Filter envelope release, seconds (M8).
+    pub filter_release: f32,
+    /// Filter cutoff key tracking, `0.0..=1.0` (M8).
+    pub filter_key_track: f32,
     /// Amp attack, seconds.
     pub attack: f32,
     /// Amp decay, seconds.
@@ -83,6 +119,21 @@ pub struct SynthParams {
     pub lfo_target: LfoTarget,
     /// Glide time, seconds (`0.0` = off).
     pub glide: f32,
+    /// Pitch envelope amount, semitones (`-24.0..=24.0`, M8).
+    pub pitch_env_amount: f32,
+    /// Pitch envelope decay, seconds (M8).
+    pub pitch_env_decay: f32,
+    /// Velocity -> cutoff amount, `0.0..=1.0` (M8).
+    pub vel_to_cutoff: f32,
+    /// Velocity -> amplitude amount, `0.0..=1.0` (M8).
+    pub vel_to_amp: f32,
+}
+
+/// Rounds a clamped index-style parameter value to its `u8` index.
+#[inline]
+fn index_u8(value: f32) -> u8 {
+    // The value is already clamped into a small non-negative range by `ParamId::clamp`.
+    value.round().clamp(0.0, 255.0) as u8
 }
 
 impl Default for SynthParams {
@@ -103,9 +154,27 @@ impl SynthParams {
             osc2_wave: Wave::from_param(v(ParamId::Osc2Wave)),
             osc2_detune: v(ParamId::Osc2Detune),
             osc2_mix: v(ParamId::Osc2Mix),
+            osc1_pulse: v(ParamId::Osc1Pulse),
+            osc2_pulse: v(ParamId::Osc2Pulse),
+            osc1_unison: index_u8(v(ParamId::Osc1Unison)),
+            osc1_spread: v(ParamId::Osc1Spread),
+            sub_level: v(ParamId::SubLevel),
+            noise_level: v(ParamId::NoiseLevel),
+            noise_color: index_u8(v(ParamId::NoiseColor)),
+            fm_amount: v(ParamId::FmAmount),
+            fm_ratio: v(ParamId::FmRatio),
+            osc_mode: index_u8(v(ParamId::OscMode)),
+            pluck_damping: v(ParamId::PluckDamping),
+            pluck_bright: v(ParamId::PluckBright),
             cutoff: v(ParamId::FilterCutoff),
             resonance: v(ParamId::FilterResonance),
             env_amount: v(ParamId::FilterEnvAmount),
+            filter_type: index_u8(v(ParamId::FilterType)),
+            filter_attack: v(ParamId::FilterAttack),
+            filter_decay: v(ParamId::FilterDecay),
+            filter_sustain: v(ParamId::FilterSustain),
+            filter_release: v(ParamId::FilterRelease),
+            filter_key_track: v(ParamId::FilterKeyTrack),
             attack: v(ParamId::AmpAttack),
             decay: v(ParamId::AmpDecay),
             sustain: v(ParamId::AmpSustain),
@@ -114,6 +183,10 @@ impl SynthParams {
             lfo_depth: v(ParamId::LfoDepth),
             lfo_target: LfoTarget::from_param(v(ParamId::LfoTarget)),
             glide: v(ParamId::Glide),
+            pitch_env_amount: v(ParamId::PitchEnvAmount),
+            pitch_env_decay: v(ParamId::PitchEnvDecay),
+            vel_to_cutoff: v(ParamId::VelToCutoff),
+            vel_to_amp: v(ParamId::VelToAmp),
         }
     }
 
@@ -134,9 +207,27 @@ impl SynthParams {
             ParamId::Osc2Wave => self.osc2_wave = Wave::from_param(value),
             ParamId::Osc2Detune => self.osc2_detune = value,
             ParamId::Osc2Mix => self.osc2_mix = value,
+            ParamId::Osc1Pulse => self.osc1_pulse = value,
+            ParamId::Osc2Pulse => self.osc2_pulse = value,
+            ParamId::Osc1Unison => self.osc1_unison = index_u8(value),
+            ParamId::Osc1Spread => self.osc1_spread = value,
+            ParamId::SubLevel => self.sub_level = value,
+            ParamId::NoiseLevel => self.noise_level = value,
+            ParamId::NoiseColor => self.noise_color = index_u8(value),
+            ParamId::FmAmount => self.fm_amount = value,
+            ParamId::FmRatio => self.fm_ratio = value,
+            ParamId::OscMode => self.osc_mode = index_u8(value),
+            ParamId::PluckDamping => self.pluck_damping = value,
+            ParamId::PluckBright => self.pluck_bright = value,
             ParamId::FilterCutoff => self.cutoff = value,
             ParamId::FilterResonance => self.resonance = value,
             ParamId::FilterEnvAmount => self.env_amount = value,
+            ParamId::FilterType => self.filter_type = index_u8(value),
+            ParamId::FilterAttack => self.filter_attack = value,
+            ParamId::FilterDecay => self.filter_decay = value,
+            ParamId::FilterSustain => self.filter_sustain = value,
+            ParamId::FilterRelease => self.filter_release = value,
+            ParamId::FilterKeyTrack => self.filter_key_track = value,
             ParamId::AmpAttack => self.attack = value,
             ParamId::AmpDecay => self.decay = value,
             ParamId::AmpSustain => self.sustain = value,
@@ -145,6 +236,10 @@ impl SynthParams {
             ParamId::LfoDepth => self.lfo_depth = value,
             ParamId::LfoTarget => self.lfo_target = LfoTarget::from_param(value),
             ParamId::Glide => self.glide = value,
+            ParamId::PitchEnvAmount => self.pitch_env_amount = value,
+            ParamId::PitchEnvDecay => self.pitch_env_decay = value,
+            ParamId::VelToCutoff => self.vel_to_cutoff = value,
+            ParamId::VelToAmp => self.vel_to_amp = value,
             _ => return false,
         }
         true
@@ -160,9 +255,27 @@ impl SynthParams {
             ParamId::Osc2Wave => self.osc2_wave.index() as f32,
             ParamId::Osc2Detune => self.osc2_detune,
             ParamId::Osc2Mix => self.osc2_mix,
+            ParamId::Osc1Pulse => self.osc1_pulse,
+            ParamId::Osc2Pulse => self.osc2_pulse,
+            ParamId::Osc1Unison => f32::from(self.osc1_unison),
+            ParamId::Osc1Spread => self.osc1_spread,
+            ParamId::SubLevel => self.sub_level,
+            ParamId::NoiseLevel => self.noise_level,
+            ParamId::NoiseColor => f32::from(self.noise_color),
+            ParamId::FmAmount => self.fm_amount,
+            ParamId::FmRatio => self.fm_ratio,
+            ParamId::OscMode => f32::from(self.osc_mode),
+            ParamId::PluckDamping => self.pluck_damping,
+            ParamId::PluckBright => self.pluck_bright,
             ParamId::FilterCutoff => self.cutoff,
             ParamId::FilterResonance => self.resonance,
             ParamId::FilterEnvAmount => self.env_amount,
+            ParamId::FilterType => f32::from(self.filter_type),
+            ParamId::FilterAttack => self.filter_attack,
+            ParamId::FilterDecay => self.filter_decay,
+            ParamId::FilterSustain => self.filter_sustain,
+            ParamId::FilterRelease => self.filter_release,
+            ParamId::FilterKeyTrack => self.filter_key_track,
             ParamId::AmpAttack => self.attack,
             ParamId::AmpDecay => self.decay,
             ParamId::AmpSustain => self.sustain,
@@ -171,6 +284,10 @@ impl SynthParams {
             ParamId::LfoDepth => self.lfo_depth,
             ParamId::LfoTarget => self.lfo_target.index() as f32,
             ParamId::Glide => self.glide,
+            ParamId::PitchEnvAmount => self.pitch_env_amount,
+            ParamId::PitchEnvDecay => self.pitch_env_decay,
+            ParamId::VelToCutoff => self.vel_to_cutoff,
+            ParamId::VelToAmp => self.vel_to_amp,
             _ => return None,
         })
     }
@@ -779,6 +896,28 @@ mod tests {
         assert!(!p.set(ParamId::DelayMix, 0.5));
         assert_eq!(p.get(ParamId::DelayMix), None);
         assert_eq!(p.get(ParamId::Osc2Wave), Some(2.0));
+        // M8 ids: every synth id is stored and read back; discrete ones round to an index.
+        let mut m8 = SynthParams::default();
+        for id in ParamId::ALL.iter().filter(|id| id.is_synth()) {
+            let r = id.range();
+            assert!(m8.set(*id, *r.end()), "{id:?}");
+            assert_eq!(m8.get(*id), Some(*r.end()), "{id:?}");
+            assert!(m8.set(*id, id.default_value()), "{id:?}");
+            assert_eq!(m8.get(*id), Some(id.default_value()), "{id:?}");
+        }
+        assert_eq!(m8, SynthParams::default());
+        assert!(m8.set(ParamId::Osc1Unison, 7.4));
+        assert_eq!(m8.osc1_unison, 7);
+        assert_eq!(m8.get(ParamId::Osc1Unison), Some(7.0));
+        assert!(m8.set(ParamId::FilterType, 1.6));
+        assert_eq!(m8.filter_type, 2);
+        assert!(m8.set(ParamId::OscMode, 0.4));
+        assert_eq!(m8.osc_mode, 0);
+        assert!(m8.set(ParamId::PitchEnvAmount, -99.0));
+        assert_eq!(m8.pitch_env_amount, -24.0);
+        assert!(!m8.set(ParamId::SidechainAmount, 0.5));
+        assert_eq!(m8.get(ParamId::SidechainAmount), None);
+        assert_eq!(m8.get(ParamId::LofiMix), None);
         p.glide = f32::NAN;
         pool.set_params(&p);
         assert_eq!(pool.params().glide, ParamId::Glide.default_value());

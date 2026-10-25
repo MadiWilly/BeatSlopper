@@ -21,7 +21,11 @@ const SNAP_EPSILON: f32 = 1.0e-4;
 /// Identifier of a user-facing engine parameter, sent with `Message::SetParam`.
 ///
 /// M1 ships the amplitude envelope and the master gain; M2 adds oscillator, filter, LFO and FX
-/// ids. The enum is deliberately exhaustive (no `#[non_exhaustive]`) so the UI can `match` on it.
+/// ids; M8 adds the oscillator extras (pulse width, unison, sub, noise, FM), the pluck mode,
+/// the filter type and its own ADSR, key tracking, pitch envelope, velocity routing, lo-fi and
+/// chorus. The enum is deliberately exhaustive (no `#[non_exhaustive]`) so the UI can `match`
+/// on it. Declaration order **must** match [`ParamId::ALL`]: [`index`](Self::index) relies on
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamId {
     /// Oscillator 1 waveform index: 0 sine, 1 saw, 2 square, 3 triangle.
@@ -36,12 +40,48 @@ pub enum ParamId {
     Osc2Detune,
     /// Oscillator 2 level, `0.0..=1.0`.
     Osc2Mix,
-    /// Lowpass filter cutoff, Hz (log scale in the UI).
+    /// Oscillator 1 pulse width (square wave duty cycle), `0.05..=0.95`; `0.5` is a square.
+    Osc1Pulse,
+    /// Oscillator 2 pulse width (square wave duty cycle), `0.05..=0.95`; `0.5` is a square.
+    Osc2Pulse,
+    /// Oscillator 1 unison voice count, `1..=7` (index; 7 is the classic supersaw).
+    Osc1Unison,
+    /// Oscillator 1 unison detune spread, cents (`0.0..=50.0`).
+    Osc1Spread,
+    /// Sub oscillator (sine, one octave below osc 1) level, `0.0..=1.0`.
+    SubLevel,
+    /// Noise generator level, `0.0..=1.0`.
+    NoiseLevel,
+    /// Noise colour index: 0 white, 1 pink.
+    NoiseColor,
+    /// FM amount (osc 2 phase-modulating osc 1), `0.0..=1.0` (mapped to index `0..=8`).
+    FmAmount,
+    /// FM modulator frequency ratio, `0.5..=8.0`.
+    FmRatio,
+    /// Oscillator mode index: 0 subtractive, 1 pluck (Karplus-Strong).
+    OscMode,
+    /// Pluck string damping, `0.0..=1.0`.
+    PluckDamping,
+    /// Pluck excitation brightness, `0.0..=1.0`.
+    PluckBright,
+    /// Filter cutoff, Hz (log scale in the UI).
     FilterCutoff,
-    /// Lowpass filter resonance, `0.0..=1.0`.
+    /// Filter resonance, `0.0..=1.0`.
     FilterResonance,
-    /// Filter envelope amount, `-1.0..=1.0` (+-4 octaves driven by the amp envelope).
+    /// Filter envelope amount, `-1.0..=1.0` (+-4 octaves driven by the filter envelope).
     FilterEnvAmount,
+    /// Filter type index: 0 lowpass, 1 bandpass, 2 highpass.
+    FilterType,
+    /// Filter envelope attack time, seconds.
+    FilterAttack,
+    /// Filter envelope decay time, seconds.
+    FilterDecay,
+    /// Filter envelope sustain level, `0.0..=1.0`.
+    FilterSustain,
+    /// Filter envelope release time, seconds.
+    FilterRelease,
+    /// Filter cutoff key tracking, `0.0..=1.0` (`1.0` = cutoff follows the note 1:1).
+    FilterKeyTrack,
     /// Amplitude envelope attack time, seconds.
     AmpAttack,
     /// Amplitude envelope decay time, seconds.
@@ -58,6 +98,18 @@ pub enum ParamId {
     LfoTarget,
     /// Glide (portamento) time, seconds; 0 = off.
     Glide,
+    /// Pitch envelope amount, semitones (`-24.0..=24.0`); 0 = off.
+    PitchEnvAmount,
+    /// Pitch envelope decay time, seconds.
+    PitchEnvDecay,
+    /// Velocity -> filter cutoff amount, `0.0..=1.0`.
+    VelToCutoff,
+    /// Velocity -> amplitude amount, `0.0..=1.0` (`0.0` = every note at full level).
+    VelToAmp,
+    /// Sidechain (kick-triggered) ducking depth on the synth channel, `0.0..=1.0`.
+    SidechainAmount,
+    /// Sidechain ducking release time, seconds.
+    SidechainRelease,
     /// Drive amount, `0.0..=1.0`.
     DriveAmount,
     /// Drive dry/wet mix, `0.0..=1.0`.
@@ -74,6 +126,24 @@ pub enum ParamId {
     ReverbDamping,
     /// Reverb dry/wet mix, `0.0..=1.0`.
     ReverbMix,
+    /// Lo-fi bit depth, `4.0..=16.0` bits.
+    LofiBits,
+    /// Lo-fi sample-rate divisor, `1.0..=16.0` (`1.0` = none).
+    LofiRate,
+    /// Lo-fi tape wobble (pitch flutter) depth, `0.0..=1.0`.
+    LofiWobble,
+    /// Lo-fi vinyl noise and crackle amount, `0.0..=1.0`.
+    LofiNoise,
+    /// Lo-fi high cut, Hz (`1000.0..=20000.0`).
+    LofiTone,
+    /// Lo-fi dry/wet mix, `0.0..=1.0`.
+    LofiMix,
+    /// Chorus rate, Hz.
+    ChorusRate,
+    /// Chorus depth, `0.0..=1.0`.
+    ChorusDepth,
+    /// Chorus dry/wet mix, `0.0..=1.0`.
+    ChorusMix,
     /// Master output gain, linear (`1.0` = unity, `4.0` = +12 dB).
     MasterGain,
     /// Soft limiter enabled: 0 off, 1 on.
@@ -89,9 +159,27 @@ impl ParamId {
         ParamId::Osc2Wave,
         ParamId::Osc2Detune,
         ParamId::Osc2Mix,
+        ParamId::Osc1Pulse,
+        ParamId::Osc2Pulse,
+        ParamId::Osc1Unison,
+        ParamId::Osc1Spread,
+        ParamId::SubLevel,
+        ParamId::NoiseLevel,
+        ParamId::NoiseColor,
+        ParamId::FmAmount,
+        ParamId::FmRatio,
+        ParamId::OscMode,
+        ParamId::PluckDamping,
+        ParamId::PluckBright,
         ParamId::FilterCutoff,
         ParamId::FilterResonance,
         ParamId::FilterEnvAmount,
+        ParamId::FilterType,
+        ParamId::FilterAttack,
+        ParamId::FilterDecay,
+        ParamId::FilterSustain,
+        ParamId::FilterRelease,
+        ParamId::FilterKeyTrack,
         ParamId::AmpAttack,
         ParamId::AmpDecay,
         ParamId::AmpSustain,
@@ -100,6 +188,12 @@ impl ParamId {
         ParamId::LfoDepth,
         ParamId::LfoTarget,
         ParamId::Glide,
+        ParamId::PitchEnvAmount,
+        ParamId::PitchEnvDecay,
+        ParamId::VelToCutoff,
+        ParamId::VelToAmp,
+        ParamId::SidechainAmount,
+        ParamId::SidechainRelease,
         ParamId::DriveAmount,
         ParamId::DriveMix,
         ParamId::DelayTime,
@@ -108,6 +202,15 @@ impl ParamId {
         ParamId::ReverbSize,
         ParamId::ReverbDamping,
         ParamId::ReverbMix,
+        ParamId::LofiBits,
+        ParamId::LofiRate,
+        ParamId::LofiWobble,
+        ParamId::LofiNoise,
+        ParamId::LofiTone,
+        ParamId::LofiMix,
+        ParamId::ChorusRate,
+        ParamId::ChorusDepth,
+        ParamId::ChorusMix,
         ParamId::MasterGain,
         ParamId::LimiterOn,
     ];
@@ -121,7 +224,7 @@ impl ParamId {
         self as usize
     }
 
-    /// `true` for the effect-chain parameters (drive, delay, reverb).
+    /// `true` for the effect-chain parameters (drive, delay, reverb, lo-fi, chorus).
     #[must_use]
     pub const fn is_fx(self) -> bool {
         matches!(
@@ -134,10 +237,20 @@ impl ParamId {
                 | ParamId::ReverbSize
                 | ParamId::ReverbDamping
                 | ParamId::ReverbMix
+                | ParamId::LofiBits
+                | ParamId::LofiRate
+                | ParamId::LofiWobble
+                | ParamId::LofiNoise
+                | ParamId::LofiTone
+                | ParamId::LofiMix
+                | ParamId::ChorusRate
+                | ParamId::ChorusDepth
+                | ParamId::ChorusMix
         )
     }
 
-    /// `true` for the synth-voice parameters (oscillators, filter, amp envelope, LFO, glide):
+    /// `true` for the synth-voice parameters (oscillators and their extras, pluck mode, filter
+    /// and its envelope, amp envelope, LFO, glide, pitch envelope, velocity routing):
     /// everything the [`VoicePool`](crate::voice::VoicePool) consumes.
     #[must_use]
     pub const fn is_synth(self) -> bool {
@@ -149,9 +262,27 @@ impl ParamId {
                 | ParamId::Osc2Wave
                 | ParamId::Osc2Detune
                 | ParamId::Osc2Mix
+                | ParamId::Osc1Pulse
+                | ParamId::Osc2Pulse
+                | ParamId::Osc1Unison
+                | ParamId::Osc1Spread
+                | ParamId::SubLevel
+                | ParamId::NoiseLevel
+                | ParamId::NoiseColor
+                | ParamId::FmAmount
+                | ParamId::FmRatio
+                | ParamId::OscMode
+                | ParamId::PluckDamping
+                | ParamId::PluckBright
                 | ParamId::FilterCutoff
                 | ParamId::FilterResonance
                 | ParamId::FilterEnvAmount
+                | ParamId::FilterType
+                | ParamId::FilterAttack
+                | ParamId::FilterDecay
+                | ParamId::FilterSustain
+                | ParamId::FilterRelease
+                | ParamId::FilterKeyTrack
                 | ParamId::AmpAttack
                 | ParamId::AmpDecay
                 | ParamId::AmpSustain
@@ -160,17 +291,26 @@ impl ParamId {
                 | ParamId::LfoDepth
                 | ParamId::LfoTarget
                 | ParamId::Glide
+                | ParamId::PitchEnvAmount
+                | ParamId::PitchEnvDecay
+                | ParamId::VelToCutoff
+                | ParamId::VelToAmp
         )
     }
 
-    /// `true` for parameters that are an index into a fixed list (waveform, LFO target, delay
-    /// division, limiter switch) and should be shown as a segmented control.
+    /// `true` for parameters that are an index into a fixed list (waveform, unison count,
+    /// noise colour, oscillator mode, filter type, LFO target, delay division, limiter switch)
+    /// and should be shown as a segmented control.
     #[must_use]
     pub const fn is_discrete(self) -> bool {
         matches!(
             self,
             ParamId::Osc1Wave
                 | ParamId::Osc2Wave
+                | ParamId::Osc1Unison
+                | ParamId::NoiseColor
+                | ParamId::OscMode
+                | ParamId::FilterType
                 | ParamId::LfoTarget
                 | ParamId::DelayTime
                 | ParamId::LimiterOn
@@ -187,9 +327,26 @@ impl ParamId {
             ParamId::Osc2Wave => 0.0,
             ParamId::Osc2Detune => 0.0,
             ParamId::Osc2Mix => 0.45,
+            ParamId::Osc1Pulse | ParamId::Osc2Pulse => 0.5,
+            ParamId::Osc1Unison => 1.0,
+            ParamId::Osc1Spread => 10.0,
+            ParamId::SubLevel => 0.0,
+            ParamId::NoiseLevel => 0.0,
+            ParamId::NoiseColor => 0.0,
+            ParamId::FmAmount => 0.0,
+            ParamId::FmRatio => 1.0,
+            ParamId::OscMode => 0.0,
+            ParamId::PluckDamping => 0.5,
+            ParamId::PluckBright => 0.7,
             ParamId::FilterCutoff => 2400.0,
             ParamId::FilterResonance => 0.22,
             ParamId::FilterEnvAmount => 0.4,
+            ParamId::FilterType => 0.0,
+            ParamId::FilterAttack => 0.005,
+            ParamId::FilterDecay => 0.25,
+            ParamId::FilterSustain => 0.2,
+            ParamId::FilterRelease => 0.3,
+            ParamId::FilterKeyTrack => 0.3,
             ParamId::AmpAttack => 0.01,
             ParamId::AmpDecay => 0.2,
             ParamId::AmpSustain => 0.7,
@@ -198,6 +355,12 @@ impl ParamId {
             ParamId::LfoDepth => 0.25,
             ParamId::LfoTarget => 1.0,
             ParamId::Glide => 0.0,
+            ParamId::PitchEnvAmount => 0.0,
+            ParamId::PitchEnvDecay => 0.1,
+            ParamId::VelToCutoff => 0.3,
+            ParamId::VelToAmp => 1.0,
+            ParamId::SidechainAmount => 0.0,
+            ParamId::SidechainRelease => 0.25,
             ParamId::DriveAmount => 0.35,
             ParamId::DriveMix => 0.5,
             ParamId::DelayTime => 1.0,
@@ -206,6 +369,15 @@ impl ParamId {
             ParamId::ReverbSize => 0.6,
             ParamId::ReverbDamping => 0.4,
             ParamId::ReverbMix => 0.2,
+            ParamId::LofiBits => 16.0,
+            ParamId::LofiRate => 1.0,
+            ParamId::LofiWobble => 0.0,
+            ParamId::LofiNoise => 0.0,
+            ParamId::LofiTone => 20000.0,
+            ParamId::LofiMix => 0.0,
+            ParamId::ChorusRate => 0.8,
+            ParamId::ChorusDepth => 0.3,
+            ParamId::ChorusMix => 0.0,
             ParamId::MasterGain => 1.0,
             ParamId::LimiterOn => 1.0,
         }
@@ -217,26 +389,58 @@ impl ParamId {
         match self {
             ParamId::Osc1Wave | ParamId::Osc2Wave | ParamId::DelayTime => 0.0..=3.0,
             ParamId::Osc1Detune | ParamId::Osc2Detune => -50.0..=50.0,
+            ParamId::Osc1Pulse | ParamId::Osc2Pulse => 0.05..=0.95,
+            ParamId::Osc1Unison => 1.0..=7.0,
+            ParamId::Osc1Spread => 0.0..=50.0,
+            ParamId::FmRatio => 0.5..=8.0,
             ParamId::FilterCutoff => 20.0..=20000.0,
             ParamId::FilterEnvAmount => -1.0..=1.0,
-            ParamId::AmpAttack | ParamId::AmpDecay => 0.001..=2.0,
-            ParamId::AmpRelease => 0.001..=4.0,
+            ParamId::FilterType => 0.0..=2.0,
+            ParamId::AmpAttack
+            | ParamId::AmpDecay
+            | ParamId::FilterAttack
+            | ParamId::FilterDecay
+            | ParamId::PitchEnvDecay => 0.001..=2.0,
+            ParamId::AmpRelease | ParamId::FilterRelease => 0.001..=4.0,
             ParamId::LfoRate => 0.1..=20.0,
-            ParamId::LfoTarget | ParamId::LimiterOn => 0.0..=1.0,
+            ParamId::LfoTarget | ParamId::NoiseColor | ParamId::OscMode | ParamId::LimiterOn => {
+                0.0..=1.0
+            }
             ParamId::Glide => 0.0..=1.0,
+            ParamId::PitchEnvAmount => -24.0..=24.0,
+            ParamId::SidechainRelease => 0.05..=1.0,
             ParamId::DelayFeedback => 0.0..=0.95,
+            ParamId::LofiBits => 4.0..=16.0,
+            ParamId::LofiRate => 1.0..=16.0,
+            ParamId::LofiTone => 1000.0..=20000.0,
+            ParamId::ChorusRate => 0.1..=5.0,
             ParamId::MasterGain => 0.0..=4.0,
             ParamId::Osc1Mix
             | ParamId::Osc2Mix
+            | ParamId::SubLevel
+            | ParamId::NoiseLevel
+            | ParamId::FmAmount
+            | ParamId::PluckDamping
+            | ParamId::PluckBright
             | ParamId::FilterResonance
+            | ParamId::FilterSustain
+            | ParamId::FilterKeyTrack
             | ParamId::AmpSustain
             | ParamId::LfoDepth
+            | ParamId::VelToCutoff
+            | ParamId::VelToAmp
+            | ParamId::SidechainAmount
             | ParamId::DriveAmount
             | ParamId::DriveMix
             | ParamId::DelayMix
             | ParamId::ReverbSize
             | ParamId::ReverbDamping
-            | ParamId::ReverbMix => 0.0..=1.0,
+            | ParamId::ReverbMix
+            | ParamId::LofiWobble
+            | ParamId::LofiNoise
+            | ParamId::LofiMix
+            | ParamId::ChorusDepth
+            | ParamId::ChorusMix => 0.0..=1.0,
         }
     }
 
@@ -247,23 +451,50 @@ impl ParamId {
             ParamId::Osc1Wave | ParamId::Osc2Wave => "Wave",
             ParamId::Osc1Detune | ParamId::Osc2Detune => "Detune",
             ParamId::Osc1Mix | ParamId::Osc2Mix | ParamId::DriveMix => "Mix",
-            ParamId::DelayMix | ParamId::ReverbMix => "Mix",
+            ParamId::DelayMix | ParamId::ReverbMix | ParamId::LofiMix | ParamId::ChorusMix => "Mix",
+            ParamId::Osc1Pulse | ParamId::Osc2Pulse => "Pulse",
+            ParamId::Osc1Unison => "Unison",
+            ParamId::Osc1Spread => "Spread",
+            ParamId::SubLevel => "Sub",
+            ParamId::NoiseLevel => "Noise",
+            ParamId::NoiseColor => "Colour",
+            ParamId::FmAmount => "FM Amt",
+            ParamId::FmRatio => "FM Ratio",
+            ParamId::OscMode => "Mode",
+            ParamId::PluckDamping => "Damp",
+            ParamId::PluckBright => "Bright",
             ParamId::FilterCutoff => "Cutoff",
             ParamId::FilterResonance => "Res",
             ParamId::FilterEnvAmount => "Env",
+            ParamId::FilterType => "Type",
+            ParamId::FilterAttack => "F.Att",
+            ParamId::FilterDecay => "F.Dec",
+            ParamId::FilterSustain => "F.Sus",
+            ParamId::FilterRelease => "F.Rel",
+            ParamId::FilterKeyTrack => "Key Trk",
             ParamId::AmpAttack => "A",
             ParamId::AmpDecay => "D",
             ParamId::AmpSustain => "S",
             ParamId::AmpRelease => "R",
-            ParamId::LfoRate => "Rate",
-            ParamId::LfoDepth => "Depth",
+            ParamId::LfoRate | ParamId::LofiRate | ParamId::ChorusRate => "Rate",
+            ParamId::LfoDepth | ParamId::ChorusDepth => "Depth",
             ParamId::LfoTarget => "Target",
             ParamId::Glide => "Glide",
+            ParamId::PitchEnvAmount => "P.Env",
+            ParamId::PitchEnvDecay => "P.Dec",
+            ParamId::VelToCutoff => "Vel>Cut",
+            ParamId::VelToAmp => "Vel>Amp",
+            ParamId::SidechainAmount => "Pump",
+            ParamId::SidechainRelease => "Pump Rel",
             ParamId::DriveAmount => "Amount",
             ParamId::DelayTime => "Time",
             ParamId::DelayFeedback => "Feedback",
             ParamId::ReverbSize => "Size",
             ParamId::ReverbDamping => "Damping",
+            ParamId::LofiBits => "Bits",
+            ParamId::LofiWobble => "Wobble",
+            ParamId::LofiNoise => "Vinyl",
+            ParamId::LofiTone => "Tone",
             ParamId::MasterGain => "Master",
             ParamId::LimiterOn => "Limit",
         }
@@ -282,9 +513,27 @@ impl ParamId {
             ParamId::Osc2Wave => "osc2_wave",
             ParamId::Osc2Detune => "osc2_detune",
             ParamId::Osc2Mix => "osc2_mix",
+            ParamId::Osc1Pulse => "osc1_pulse",
+            ParamId::Osc2Pulse => "osc2_pulse",
+            ParamId::Osc1Unison => "osc1_unison",
+            ParamId::Osc1Spread => "osc1_spread",
+            ParamId::SubLevel => "sub_level",
+            ParamId::NoiseLevel => "noise_level",
+            ParamId::NoiseColor => "noise_color",
+            ParamId::FmAmount => "fm_amount",
+            ParamId::FmRatio => "fm_ratio",
+            ParamId::OscMode => "osc_mode",
+            ParamId::PluckDamping => "pluck_damping",
+            ParamId::PluckBright => "pluck_bright",
             ParamId::FilterCutoff => "filter_cutoff",
             ParamId::FilterResonance => "filter_resonance",
             ParamId::FilterEnvAmount => "filter_env_amount",
+            ParamId::FilterType => "filter_type",
+            ParamId::FilterAttack => "filter_attack",
+            ParamId::FilterDecay => "filter_decay",
+            ParamId::FilterSustain => "filter_sustain",
+            ParamId::FilterRelease => "filter_release",
+            ParamId::FilterKeyTrack => "filter_key_track",
             ParamId::AmpAttack => "amp_attack",
             ParamId::AmpDecay => "amp_decay",
             ParamId::AmpSustain => "amp_sustain",
@@ -293,6 +542,12 @@ impl ParamId {
             ParamId::LfoDepth => "lfo_depth",
             ParamId::LfoTarget => "lfo_target",
             ParamId::Glide => "glide",
+            ParamId::PitchEnvAmount => "pitch_env_amount",
+            ParamId::PitchEnvDecay => "pitch_env_decay",
+            ParamId::VelToCutoff => "vel_to_cutoff",
+            ParamId::VelToAmp => "vel_to_amp",
+            ParamId::SidechainAmount => "sidechain_amount",
+            ParamId::SidechainRelease => "sidechain_release",
             ParamId::DriveAmount => "drive_amount",
             ParamId::DriveMix => "drive_mix",
             ParamId::DelayTime => "delay_time",
@@ -301,6 +556,15 @@ impl ParamId {
             ParamId::ReverbSize => "reverb_size",
             ParamId::ReverbDamping => "reverb_damping",
             ParamId::ReverbMix => "reverb_mix",
+            ParamId::LofiBits => "lofi_bits",
+            ParamId::LofiRate => "lofi_rate",
+            ParamId::LofiWobble => "lofi_wobble",
+            ParamId::LofiNoise => "lofi_noise",
+            ParamId::LofiTone => "lofi_tone",
+            ParamId::LofiMix => "lofi_mix",
+            ParamId::ChorusRate => "chorus_rate",
+            ParamId::ChorusDepth => "chorus_depth",
+            ParamId::ChorusMix => "chorus_mix",
             ParamId::MasterGain => "master_gain",
             ParamId::LimiterOn => "limiter_on",
         }
@@ -676,19 +940,78 @@ mod tests {
             assert_eq!(id.clamp(1.0e9), *r.end());
             assert_eq!(id.clamp(-1.0e9), *r.start());
         }
-        assert_eq!(ParamId::COUNT, 27);
+        assert_eq!(ParamId::COUNT, 60);
         assert!(ParamId::DelayMix.is_fx() && !ParamId::FilterCutoff.is_fx());
+        assert!(ParamId::LofiMix.is_fx() && ParamId::ChorusMix.is_fx());
         assert!(ParamId::FilterCutoff.is_synth() && !ParamId::DelayMix.is_synth());
+        assert!(ParamId::Osc1Pulse.is_synth() && ParamId::VelToAmp.is_synth());
         assert!(!ParamId::MasterGain.is_synth() && !ParamId::LimiterOn.is_synth());
+        assert!(!ParamId::SidechainAmount.is_synth() && !ParamId::SidechainAmount.is_fx());
+        assert!(!ParamId::SidechainRelease.is_synth() && !ParamId::SidechainRelease.is_fx());
         for id in ParamId::ALL {
             assert!(!(id.is_synth() && id.is_fx()), "{id:?}");
         }
         assert!(ParamId::Osc1Wave.is_discrete() && !ParamId::Osc1Mix.is_discrete());
+        for id in [
+            ParamId::Osc1Unison,
+            ParamId::NoiseColor,
+            ParamId::OscMode,
+            ParamId::FilterType,
+        ] {
+            assert!(id.is_discrete(), "{id:?}");
+        }
         assert_eq!(ParamId::AmpAttack.default_value(), 0.01);
         assert_eq!(ParamId::AmpDecay.default_value(), 0.2);
         assert_eq!(ParamId::AmpSustain.default_value(), 0.7);
         assert_eq!(ParamId::AmpRelease.default_value(), 0.3);
         assert_eq!(ParamId::MasterGain.default_value(), 1.0);
+    }
+
+    #[test]
+    fn param_keys_are_unique_and_reversible() {
+        for (i, id) in ParamId::ALL.iter().enumerate() {
+            let key = id.key();
+            assert!(!key.is_empty(), "{id:?}");
+            assert!(
+                key.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{id:?} key {key:?} is not snake_case"
+            );
+            assert!(
+                ParamId::ALL[..i].iter().all(|other| other.key() != key),
+                "{id:?} shares key {key:?} with an earlier id"
+            );
+            assert_eq!(ParamId::from_key(key), Some(*id));
+        }
+        assert_eq!(ParamId::from_key("Osc1Pulse"), None);
+        assert_eq!(ParamId::Osc1Pulse.key(), "osc1_pulse");
+        assert_eq!(ParamId::SidechainRelease.key(), "sidechain_release");
+        assert_eq!(ParamId::LofiNoise.key(), "lofi_noise");
+        assert_eq!(ParamId::ChorusMix.key(), "chorus_mix");
+    }
+
+    #[test]
+    fn defaults_in_range_and_discrete_defaults_are_integers() {
+        for id in ParamId::ALL {
+            let d = id.default_value();
+            assert!(d.is_finite(), "{id:?}");
+            assert!(id.range().contains(&d), "{id:?} default {d} out of range");
+            assert_eq!(id.clamp(d), d, "{id:?}");
+            if id.is_discrete() {
+                assert_eq!(
+                    d,
+                    d.round(),
+                    "{id:?} discrete default {d} is not an integer"
+                );
+                assert_eq!(*id.range().start(), id.range().start().round(), "{id:?}");
+                assert_eq!(*id.range().end(), id.range().end().round(), "{id:?}");
+            }
+        }
+        assert_eq!(ParamId::Osc1Unison.range(), 1.0..=7.0);
+        assert_eq!(ParamId::Osc1Unison.default_value(), 1.0);
+        assert_eq!(ParamId::FilterType.range(), 0.0..=2.0);
+        assert_eq!(ParamId::SidechainRelease.default_value(), 0.25);
+        assert_eq!(ParamId::LofiTone.default_value(), 20000.0);
     }
 
     #[test]

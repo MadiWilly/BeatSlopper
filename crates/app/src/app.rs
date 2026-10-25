@@ -4067,7 +4067,8 @@ mod tests {
         assert_eq!(state.bpm, 150.0);
         assert!(state.undo()); // bpm
         assert_eq!(state.bpm, DEFAULT_BPM);
-        engine.process_messages();
+        // Four resends of every parameter exceed one queue's worth: play the frames.
+        sync(&mut state, &mut engine);
         assert_eq!(engine.bpm(), DEFAULT_BPM);
         assert_eq!(engine.transport().swing(), 0.0);
         assert_eq!(
@@ -4085,7 +4086,7 @@ mod tests {
         assert_eq!(state.preset_index, 3);
         assert_eq!(state.bpm, 150.0);
         assert_eq!(state.swing, 0.5);
-        engine.process_messages();
+        sync(&mut state, &mut engine);
         assert_eq!(engine.bpm(), 150.0);
         for id in ParamId::ALL {
             assert_eq!(engine.param(*id), state.param(*id), "{id:?}");
