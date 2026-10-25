@@ -213,3 +213,4 @@ opens, renders 60 frames and exits 0. Full gate: `cargo fmt --all -- --check`,
 - [x] engine: lock-free master spectrum tap + FFT analyser (`spectrum.rs`); project v6 (`eq`, `reverb`)
 - [x] app: deferred-viewport windows (EQ graph with draggable nodes + analyser; reverb envelope + wet meter), preset lists with MODIFIED lamp, PLUGINS pills in the FX / MIXER head, geometry persisted, shortcuts forwarded
 - [x] tests: 12 engine offline tests, 9 kittest / state tests, unit tests; gate green on the branch
+- [x] reverb audit (branch `madi/reverb-audit-087b74`, 2026-10-25): the rack's SIZE / DAMPING / MIX and the window's `ReverbState` never disagree (engine + app, proven by 4 engine and 2 app tests); `set_reverb_state` snaps its smoothers so exports honour the pre-delay from the first hit; MORE pill in the rack's REVERB group, "shared with the FX rack" hint in the window, MIX = return level / REV = send notes (see DECISIONS.md)
