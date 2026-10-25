@@ -11,8 +11,8 @@ use common::{SAMPLE_RATE, all_finite, is_silent, left, ms_to_frames, peak, rende
 use engine::export::render_loop;
 use engine::project::FORMAT_VERSION;
 use engine::{
-    Channel, ChannelParam, DrumRow, Engine, EngineHandle, Message, Meters, MixerState, ParamId,
-    Project, STEPS, new_engine,
+    Channel, ChannelParam, DrumRow, Engine, EngineHandle, InsertParam, Message, Meters, MixerState,
+    ParamId, Project, STEPS, new_engine,
 };
 
 /// One 16-step bar at 120 BPM / 48 kHz.
@@ -266,14 +266,20 @@ fn synth_default_still_runs_through_drive_delay_and_reverb() {
     let hot = crest(1.0, 1.0);
     assert!(hot < clean * 0.85, "driven crest {hot} vs clean {clean}");
 
-    // Pulling the synth's sends to zero removes the effects from it.
+    // Pulling the synth's sends to zero removes the effects from it. Since M11 the sends
+    // live on the track's insert (track 1 -> insert 6); the strip's own sends are 0.
     let (_h, mut engine) = new_engine(SAMPLE_RATE);
     engine.set_param(ParamId::DelayFeedback, 0.0);
     engine.set_param(ParamId::DelayTime, 0.0);
     engine.set_param(ParamId::AmpAttack, 0.001);
     engine.set_param(ParamId::AmpRelease, 0.001);
-    engine.set_mixer(Channel::Synth, ChannelParam::DelaySend, 0.0);
-    engine.set_mixer(Channel::Synth, ChannelParam::ReverbSend, 0.0);
+    assert_eq!(engine.mixer().route(Channel::Synth), 6);
+    assert_eq!(
+        engine.mixer().get(Channel::Synth, ChannelParam::DelaySend),
+        0.0
+    );
+    engine.set_insert(6, InsertParam::DelaySend, 0.0);
+    engine.set_insert(6, InsertParam::ReverbSend, 0.0);
     let _settle = render(&mut engine, ms_to_frames(100.0));
     engine.note_on(69, 1.0);
     let mut out = render(&mut engine, 960);

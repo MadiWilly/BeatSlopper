@@ -21,13 +21,17 @@
 //! - [`eq`]: the seven-band master parametric EQ ([`EqState`] / [`EqBand`] / [`EqParam`]).
 //! - [`chain`]: the three in series, driven by [`crate::ParamId`] values and synced to the BPM.
 //! - [`limiter`]: the master soft clipper (M0).
+//! - [`compressor`]: the feed-forward peak compressor of the M11 insert slots.
+//! - [`eq3`]: the three-band insert EQ of the M11 inserts ([`Eq3State`] / [`Eq3`]).
 
 pub mod chain;
 pub mod chorus;
+pub mod compressor;
 pub mod delay;
 pub mod drive;
 pub mod ducker;
 pub mod eq;
+pub mod eq3;
 pub mod limiter;
 pub mod lofi;
 pub mod mod_delay;
@@ -35,10 +39,12 @@ pub mod reverb;
 
 pub use chain::{FxChain, MAX_DELAY_SECONDS, division_seconds};
 pub use chorus::Chorus;
+pub use compressor::Compressor;
 pub use delay::StereoDelay;
 pub use drive::Drive;
 pub use ducker::Ducker;
 pub use eq::{BAND_COUNT, EqBand, EqKind, EqParam, EqPreset, EqState, ParametricEq};
+pub use eq3::{Eq3, Eq3State};
 pub use limiter::Limiter;
 pub use lofi::Lofi;
 pub use mod_delay::ModDelay;
