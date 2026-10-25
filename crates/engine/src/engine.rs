@@ -1,30 +1,46 @@
-//! Engine core: message queue, polyphonic voices, drum kit, step sequencer, mixer, test tone,
-//! smoothed master gain and the master limiter.
+//! Engine core: message queue, instrument tracks (polyphonic voices plus a stereo insert
+//! each), drum kit, step sequencer, mixer, test tone, smoothed master gain and the master
+//! limiter.
 //!
 //! The public API below is the contract the `app` crate builds against (docs/ARCHITECTURE.md).
 //!
-//! # Signal flow (M6)
+//! # Signal flow (M6, tracks since M10)
 //!
-//! Per sample, six mixer channels ([`Channel`]): the five drum rows from
-//! [`DrumKit::tick_rows`] and the synth voices' sum, the latter through the drive insert
-//! (`DriveAmount` / `DriveMix` of the FX chain). Each channel is scaled by its smoothed gain
-//! (fader level times the mute/solo decision, [`MixerState::effective_gain`]), panned
+//! Per sample, [`Channel::COUNT`] mixer channels ([`Channel`]): the five drum rows from
+//! [`DrumKit::tick_rows`] and one channel per instrument [`Track`]. An **active** track sums
+//! its voices (`pool.tick()`) and runs them through its own stereo insert
+//! (`insert.process(x)`: drive -> lo-fi -> chorus -> sidechain ducker, see
+//! [`crate::track::SynthInsert`]); an inactive track costs nothing (it is skipped once its
+//! voices have faded) and an idle voice returns early. Each channel is scaled by its smoothed
+//! gain (fader level times the mute/solo decision, [`MixerState::effective_gain`]), panned
 //! ([`crate::mixer::pan_gains`], smoothed) into the stereo dry bus, and its post-fader signal
 //! is also sent (smoothed send levels, same pan) into a stereo delay bus and a stereo reverb
 //! bus. [`FxChain::process_bus`] returns `dry + delay * DelayMix + reverb * ReverbMix`; then
-//! `(+ TestTone) -> master gain (smoothed) -> Limiter (bypassable via LimiterOn) ->
-//! interleaved stereo`. The diagnostic test tone bypasses the mixer and the effects.
+//! `-> master EQ -> (+ TestTone) -> master gain (smoothed) -> Limiter (bypassable via
+//! LimiterOn) -> interleaved stereo`. The diagnostic test tone bypasses the mixer and the
+//! effects. Every kick hit triggers the ducker of every active track.
 //!
-//! With the default [`MixerState`] (every strip at unity and centre, the synth sent fully to
-//! both effects) the synth is driven, delayed and reverberated as in M2-M5 and the dry
-//! levels are unchanged (the pan law is unity at the centre). Differences from the pre-mixer
-//! engine: the drums no longer pass through the drive (it is the synth's insert), the delay
-//! output no longer feeds the reverb (the buses are parallel), and `DelayMix` / `ReverbMix`
-//! are return levels rather than dry/wet crossfades, so the dry synth is no longer attenuated
-//! by `(1 - mix)` (about +4 dB dry at the defaults, with the same wet level).
+//! With the default [`MixerState`] (every strip at unity and centre, the tracks sent fully to
+//! both effects) a single track renders exactly as the pre-M10 synth did: the v6 regression
+//! test in `tests/tracks.rs` checks this bit for bit.
 //!
 //! Block peaks of every channel (post-fader) and of the master output are published once per
 //! `render` as [`Meters`] through lock-free atomics ([`EngineHandle::meters`]).
+//!
+//! # Tracks (M10)
+//!
+//! The engine holds [`MAX_TRACKS`] fixed [`Track`] slots and an *edit track*
+//! ([`Engine::edit_track`]): the track that `NoteOn` / `NoteOff` / `SetParam` (with a
+//! per-track id, [`ParamId::is_track`]), the MIDI queue, the grid-lane messages
+//! (`SetSynthStep`, `ClearSynth`, `ClearAll`) and the keyboard address. The explicit forms
+//! (`SetTrackParam`, `SetNote { track, .. }`, `ClearNotes { pattern, track }`) carry a track
+//! index so the UI can edit any track. Every pattern's `synth` lane is rebuilt for the edit
+//! track whenever it changes ([`Pattern::rebuild_lane`]). Lifecycle: `SetTrackActive`
+//! (off = release the voices, clear the track's notes in every pattern, reset its parameters,
+//! keep its mixer strip), `CopyTrack` (parameters only; marks the target active) and
+//! `SwapTracks` (parameters, insert, voices, notes in every pattern, strips; the edit track
+//! follows its content). Everything is fixed-size array work: no allocation on the audio
+//! thread.
 //!
 //! # Sequencer (M3, polyphonic notes since M7)
 //!
@@ -33,17 +49,18 @@
 //! the start of the 16-step bar; step `n` fires when `pos` reaches
 //! [`Transport::step_trigger_sample`] (`round((n + swing_offset) * samples_per_step)`), and the
 //! bar wraps to `pos = 0` after `round(16 * samples_per_step)` samples, where step 0 fires
-//! again. Drum steps call [`DrumKit::trigger`]. Synth notes ([`Note`]) of the playing pattern
-//! start when their `start` step (`bar * 16 + step`) fires: `voices.note_on(pitch, velocity)`
-//! for every note starting there (chords are simply several notes), and a note-off is
-//! scheduled for **the trigger sample of step `start + length` minus one sample** (with that
-//! step's swing offset), so a length-1 note on step 0 at 120 BPM / 48 kHz sounds for samples
-//! `0..=5998`, a note of length 3 on step 2 for `12 000..=29 998`, and a note that ends where
-//! another of the same pitch starts hands its voice over cleanly (one release sample, then the
-//! retrigger). A note that runs past the pattern end is released at the pattern's last
-//! sample (its wrap); a pattern switch, song advance, stop or play releases every active
-//! sequencer note. Active sequencer notes live in a fixed array of `(pitch, off sample)` pairs,
-//! one per voice ([`MAX_VOICES`]); a pitch is tracked once (a new note on a sounding pitch
+//! again. Drum steps call [`DrumKit::trigger`]. The notes ([`Note`]) of every active track of
+//! the playing pattern start when their `start` step (`bar * 16 + step`) fires:
+//! `pool.note_on(pitch, velocity)` on that track for every note starting there (chords are
+//! simply several notes), and a note-off is scheduled for **the trigger sample of step
+//! `start + length` minus one sample** (with that step's swing offset), so a length-1 note on
+//! step 0 at 120 BPM / 48 kHz sounds for samples `0..=5998`, a note of length 3 on step 2 for
+//! `12 000..=29 998`, and a note that ends where another of the same pitch starts hands its
+//! voice over cleanly (one release sample, then the retrigger). A note that runs past the
+//! pattern end is released at the pattern's last sample (its wrap); a pattern switch, song
+//! advance, stop or play releases every active sequencer note. Active sequencer notes live in
+//! a fixed array of `(pitch, off sample)` pairs per track, one slot per voice
+//! ([`MAX_VOICES`]); a pitch is tracked once per track (a new note on a sounding pitch
 //! releases and reuses its slot) and when the array is full the note ending soonest is cut,
 //! so polyphony is bounded by the voice pool's stealing. Sequencer notes are tracked
 //! separately from keyboard notes so a held key is never cut by the sequencer. A tempo change
@@ -92,6 +109,7 @@ use crate::pattern::{
 use crate::scope::{self, ScopeReader, ScopeTap};
 use crate::spectrum::{SpectrumReader, SpectrumTap, spectrum_pair};
 use crate::synth::SineOsc;
+use crate::track::{MAX_TRACKS, Track, TrackId, track_index};
 use crate::transport::Transport;
 use crate::voice::{MAX_VOICES, SynthParams, VoicePool};
 
@@ -126,22 +144,24 @@ pub enum Message {
     TestTone(bool),
     /// Master output gain, linear (1.0 = unity). Clamped to `0.0..=`[`MAX_MASTER_GAIN`].
     MasterGain(f32),
-    /// Start a synth voice for MIDI `note` (69 = A4) at `velocity` in `0.0..=1.0`.
-    /// A note that is already sounding retriggers its own voice.
+    /// Start a voice of the edit track for MIDI `note` (69 = A4) at `velocity` in
+    /// `0.0..=1.0`. A note that is already sounding retriggers its own voice.
     NoteOn {
         /// MIDI note number, `0..=127`.
         note: u8,
         /// Velocity, `0.0..=1.0`; scales the voice amplitude linearly.
         velocity: f32,
     },
-    /// Release every voice playing MIDI `note` (envelope enters its release stage).
+    /// Release every voice playing MIDI `note` on the edit track (and on any track still
+    /// holding it from the keyboard); the envelope enters its release stage.
     NoteOff {
         /// MIDI note number, `0..=127`.
         note: u8,
     },
-    /// Release every sounding voice (panic button / focus lost).
+    /// Release every sounding voice of every track (panic button / focus lost).
     AllNotesOff,
-    /// Set a parameter; the value is clamped to [`ParamId::range`].
+    /// Set a parameter; the value is clamped to [`ParamId::range`]. A per-track id
+    /// ([`ParamId::is_track`]) lands on the edit track; see [`Message::SetTrackParam`].
     SetParam(ParamId, f32),
     /// Tempo in beats per minute (60..=200); used by the BPM-synced delay and the M3 transport.
     SetBpm(f32),
@@ -162,7 +182,7 @@ pub enum Message {
         /// Accented (full velocity).
         accent: bool,
     },
-    /// Set one synth-lane step of the edit pattern.
+    /// Set one synth-lane step of the edit pattern on the edit track.
     SetSynthStep {
         /// Step index `0..length` of the edit pattern (wraps).
         step: u8,
@@ -173,9 +193,10 @@ pub enum Message {
     },
     /// Clear one drum row of the edit pattern.
     ClearRow(DrumRow),
-    /// Clear the synth lane of the edit pattern.
+    /// Clear the edit track's notes (the synth lane) of the edit pattern.
     ClearSynth,
-    /// Clear every row and the synth lane of the edit pattern.
+    /// Clear every drum row and the edit track's notes of the edit pattern (other tracks'
+    /// notes are kept).
     ClearAll,
     /// Per-row drum volume in dB (-24..=6) of the edit pattern.
     SetDrumVolume {
@@ -209,7 +230,8 @@ pub enum Message {
         /// Destination pattern index.
         to: u8,
     },
-    /// Clear every step of a pattern (length, volume and tune are kept).
+    /// Clear every step of a pattern, every track's notes included (length, volume and tune
+    /// are kept).
     ClearPattern(u8),
     /// Select a pattern: it becomes the edit pattern and the selected (`current`) one. In
     /// pattern mode while playing the switch is queued to the next 16-step bar boundary
@@ -229,27 +251,38 @@ pub enum Message {
     },
     /// Set the number of valid chain entries (`0..=MAX_CHAIN`).
     SetChainLen(u8),
-    /// Set or add a synth note of pattern `pattern` (M7): `index < note_count` replaces that
-    /// note, `index == note_count` appends, anything larger is ignored, as is a note with
-    /// `length == 0` or a `start` at or beyond the pattern length. The note list stays sorted
-    /// (so the note's index may change) and the grid lane is rebuilt.
+    /// Set or add a note of track `track` in pattern `pattern` (M7, per track since M10):
+    /// `index < note_count` replaces that note, `index == note_count` appends, anything
+    /// larger is ignored, as is a note with `length == 0` or a `start` at or beyond the
+    /// pattern length. The note list stays sorted (so the note's index may change) and the
+    /// grid lane is rebuilt.
     SetNote {
         /// Pattern index `0..PATTERN_COUNT`.
         pattern: u8,
-        /// Position in the sorted note list, `0..=note_count`.
+        /// Track slot `0..MAX_TRACKS`.
+        track: u8,
+        /// Position in the track's sorted note list, `0..=note_count`.
         index: u8,
         /// The note (clamped into range).
         note: Note,
     },
-    /// Remove synth note `index` of pattern `pattern` (out-of-range indices are ignored).
+    /// Remove note `index` of track `track` in pattern `pattern` (out-of-range indices are
+    /// ignored).
     RemoveNote {
         /// Pattern index `0..PATTERN_COUNT`.
         pattern: u8,
-        /// Position in the sorted note list, `0..note_count`.
+        /// Track slot `0..MAX_TRACKS`.
+        track: u8,
+        /// Position in the track's sorted note list, `0..note_count`.
         index: u8,
     },
-    /// Remove every synth note of a pattern (same as `ClearSynth` for that pattern).
-    ClearNotes(u8),
+    /// Remove every note of track `track` in pattern `pattern`.
+    ClearNotes {
+        /// Pattern index `0..PATTERN_COUNT`.
+        pattern: u8,
+        /// Track slot `0..MAX_TRACKS`.
+        track: u8,
+    },
     /// Set one mixer value; it is clamped with [`ChannelParam::clamp`] (mute/solo snap to
     /// 0/1) and smoothed over about [`MIXER_SMOOTH_MS`].
     SetMixer {
@@ -282,6 +315,39 @@ pub enum Message {
         /// New value (clamped by [`ReverbParam::clamp`]).
         value: f32,
     },
+    /// Choose the edit track (`0..MAX_TRACKS`, wraps): the target of `NoteOn` / `NoteOff`,
+    /// `SetParam` with a per-track id, the MIDI queue and the grid-lane messages. Every
+    /// pattern's lane is rebuilt for it (M10).
+    SetEditTrack(u8),
+    /// Set a per-track parameter of track `track` (clamped). Global ids are ignored here
+    /// (use [`Message::SetParam`]).
+    SetTrackParam {
+        /// Track slot `0..MAX_TRACKS`.
+        track: u8,
+        /// A [`ParamId::is_track`] id.
+        id: ParamId,
+        /// New value.
+        value: f32,
+    },
+    /// Switch a track slot on or off. Off releases its voices, clears its notes in every
+    /// pattern and resets its parameters to the defaults; its mixer strip is kept.
+    SetTrackActive {
+        /// Track slot `0..MAX_TRACKS`.
+        track: u8,
+        /// `true` = active.
+        on: bool,
+    },
+    /// Copy track `from`'s parameters (synth and insert settings) over track `to` and mark
+    /// `to` active. Notes, voices and strips are not copied (FL "clone").
+    CopyTrack {
+        /// Source slot.
+        from: u8,
+        /// Destination slot.
+        to: u8,
+    },
+    /// Swap two track slots: parameters, insert and voice state, notes in every pattern and
+    /// mixer strips. The edit track follows its content.
+    SwapTracks(u8, u8),
 }
 
 /// Block peak levels (linear, `0.0` = silence) as last published by the audio thread.
@@ -681,17 +747,31 @@ struct Buses {
 }
 
 /// Audio-side engine. Owns all DSP state. Lives on the audio thread (or in a test).
+/// One sequencer note slot: `(pitch, clock value at which it is released)`.
+type SeqSlot = Option<(u8, u64)>;
+
+/// Audio-side engine. Owns all DSP state. Lives on the audio thread (or in a test).
 pub struct Engine {
     sample_rate: f32,
     consumer: Consumer<Message>,
     /// Messages from the MIDI input thread (second SPSC queue).
     midi_consumer: Consumer<Message>,
     tone: TestTone,
-    voices: VoicePool,
-    /// Current value of every [`ParamId`] (clamped), indexed by [`ParamId::index`].
+    /// The instrument tracks (M10): voices, insert and parameters each. Boxed once in
+    /// [`new_engine`] so the engine stays small enough to move around by value.
+    tracks: Box<[Track; MAX_TRACKS]>,
+    /// The track that keyboard / MIDI notes, `SetParam` with per-track ids and the grid-lane
+    /// messages address.
+    edit_track: TrackId,
+    /// Tracks switched off while still sounding: rendered until their voices fade, then
+    /// skipped.
+    draining: [bool; MAX_TRACKS],
+    /// Current value of every global [`ParamId`] (clamped), indexed by [`ParamId::index`];
+    /// per-track ids live in `tracks[*].params`.
     params: [f32; ParamId::COUNT],
     master_gain: Smoother,
-    /// Drive -> delay -> reverb, between the voices and the master stage.
+    /// The shared delay and reverb (plus the M2 serial drive), between the mixer buses and
+    /// the master stage.
     fx: FxChain,
     limiter: Limiter,
     /// `ParamId::LimiterOn`: when `false` the limiter stage is bypassed.
@@ -743,15 +823,15 @@ pub struct Engine {
     next_step: usize,
     /// Monotonic sample clock used to time the sequencer note-offs.
     clock: u64,
-    /// The synth notes the sequencer is currently sounding: `(pitch, clock value at which
-    /// it is released)`, at most one entry per pitch, one slot per voice.
-    seq_active: [Option<(u8, u64)>; MAX_VOICES],
+    /// The notes the sequencer is currently sounding, per track: `(pitch, clock value at
+    /// which it is released)`, at most one entry per pitch, one slot per voice.
+    seq_active: [[SeqSlot; MAX_VOICES]; MAX_TRACKS],
     /// Earliest `off` among `seq_active` (`u64::MAX` when none), so the per-sample tick only
     /// scans the slots when a release is due.
     seq_next_off: u64,
-    /// Notes currently held from the keyboard (`note_on` without `note_off`); the sequencer
-    /// never releases these.
-    kbd_held: [bool; 128],
+    /// Notes currently held from the keyboard per track (`note_on` without `note_off`); the
+    /// sequencer never releases these.
+    kbd_held: [[bool; 128]; MAX_TRACKS],
     /// Master parametric EQ (plugins milestone): after the effect returns, before the master
     /// gain and the limiter.
     eq: ParametricEq,
@@ -767,7 +847,8 @@ pub struct Engine {
 ///
 /// All buffers and DSP state are allocated here, once; the returned [`Engine`] does not
 /// allocate afterwards. `sample_rate` is in Hz (tests use 48 000). The bank starts empty
-/// (every pattern blank, chain `[A x1]`, pattern mode).
+/// (every pattern blank, chain `[A x1]`, pattern mode); track 0 is active with the default
+/// parameters, tracks 1..8 are inactive; the edit track is 0.
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     // A non-finite or non-positive rate would make the step length 0 and fire every step on
     // every sample; fall back to 48 kHz like the kit and the FX chain do.
@@ -790,6 +871,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let mixer = MixerState::default();
     let strips = Channel::ALL.map(|ch| StripDsp::new(sample_rate, &mixer, ch));
     let (spectrum_tap, spectrum_reader) = spectrum_pair();
+    let mut tracks: Box<[Track; MAX_TRACKS]> =
+        Box::new(core::array::from_fn(|_| Track::new(sample_rate)));
+    tracks[0].active = true;
     (
         EngineHandle {
             producer,
@@ -803,7 +887,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             consumer,
             midi_consumer,
             tone: TestTone::new(sample_rate),
-            voices: VoicePool::new(sample_rate),
+            tracks,
+            edit_track: 0,
+            draining: [false; MAX_TRACKS],
             params,
             master_gain: Smoother::new(
                 sample_rate,
@@ -835,9 +921,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             pos: 0,
             next_step: 0,
             clock: 0,
-            seq_active: [None; MAX_VOICES],
+            seq_active: [[None; MAX_VOICES]; MAX_TRACKS],
             seq_next_off: u64::MAX,
-            kbd_held: [false; 128],
+            kbd_held: [[false; 128]; MAX_TRACKS],
             eq: ParametricEq::new(sample_rate),
             reverb_state: ReverbState::default(),
             spectrum: spectrum_tap,
@@ -890,40 +976,63 @@ impl Engine {
         self.master_gain.target()
     }
 
-    /// Starts a synth voice for MIDI `note` (69 = A4 = 440 Hz) at `velocity` (`0.0..=1.0`,
-    /// clamped). A note that is already sounding retriggers its own voice; when all
-    /// [`MAX_VOICES`](crate::voice::MAX_VOICES) are busy the oldest releasing (else oldest
-    /// held) voice is stolen.
+    /// Starts a voice of the edit track for MIDI `note` (69 = A4 = 440 Hz) at `velocity`
+    /// (`0.0..=1.0`, clamped). A note that is already sounding retriggers its own voice; when
+    /// all [`MAX_VOICES`](crate::voice::MAX_VOICES) are busy the oldest releasing (else
+    /// oldest held) voice is stolen. Ignored while the edit track is inactive.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
-        self.kbd_held[usize::from(note.min(127))] = true;
-        self.voices.note_on(note, velocity);
+        self.track_note_on(self.edit_track, note, velocity);
     }
 
-    /// Releases every voice playing MIDI `note`; it fades out over the release time.
+    /// [`note_on`](Self::note_on) on an explicit track.
+    pub fn track_note_on(&mut self, track: TrackId, note: u8, velocity: f32) {
+        let t = track_index(track);
+        if !self.tracks[t].active {
+            return;
+        }
+        self.kbd_held[t][usize::from(note.min(127))] = true;
+        self.tracks[t].pool.note_on(note, velocity);
+    }
+
+    /// Releases every voice playing MIDI `note` on the edit track, and on every other track
+    /// that still holds it from the keyboard (the edit track may have changed since the key
+    /// went down); they fade out over their release time.
     pub fn note_off(&mut self, note: u8) {
-        self.kbd_held[usize::from(note.min(127))] = false;
-        self.voices.note_off(note);
+        let n = usize::from(note.min(127));
+        let edit = track_index(self.edit_track);
+        for t in 0..MAX_TRACKS {
+            if t == edit || self.kbd_held[t][n] {
+                self.kbd_held[t][n] = false;
+                self.tracks[t].pool.note_off(note);
+            }
+        }
     }
 
-    /// Releases every sounding voice (keyboard and sequencer notes alike).
+    /// Releases every sounding voice of every track (keyboard and sequencer notes alike).
     pub fn all_notes_off(&mut self) {
-        self.kbd_held = [false; 128];
-        self.seq_active = [None; MAX_VOICES];
+        self.kbd_held = [[false; 128]; MAX_TRACKS];
+        self.seq_active = [[None; MAX_VOICES]; MAX_TRACKS];
         self.seq_next_off = u64::MAX;
-        self.voices.all_notes_off();
+        for track in self.tracks.iter_mut() {
+            track.pool.all_notes_off();
+        }
     }
 
     /// Sets parameter `id` to `value`, clamped to [`ParamId::range`] (non-finite values
-    /// become the default). Synth parameters (oscillators, filter, envelope, LFO, glide) reach
-    /// every voice immediately, running ones included; the master gain is smoothed as in
-    /// [`set_master_gain`](Self::set_master_gain); `LimiterOn` switches the limiter stage.
+    /// become the default). A per-track id ([`ParamId::is_track`]: oscillators, filter,
+    /// envelopes, LFO, glide, drive, lo-fi, chorus, sidechain) goes to the **edit track**
+    /// ([`set_track_param`](Self::set_track_param)) and reaches its voices immediately,
+    /// running ones included; the master gain is smoothed as in
+    /// [`set_master_gain`](Self::set_master_gain); `LimiterOn` switches the limiter stage;
+    /// delay and reverb ids go to the shared [`FxChain`].
     pub fn set_param(&mut self, id: ParamId, value: f32) {
+        if id.is_track() {
+            self.set_track_param(self.edit_track, id, value);
+            return;
+        }
         let value = id.clamp(value);
         self.params[id.index()] = value;
         match id {
-            id if id.is_synth() => {
-                self.voices.set_param(id, value);
-            }
             ParamId::MasterGain => self.set_master_gain(value),
             ParamId::LimiterOn => self.limiter_on = value >= 0.5,
             // The reverb's size / damping / mix are shared with the plugin's `ReverbState`.
@@ -940,12 +1049,143 @@ impl Engine {
                 self.fx.set_param(id, value);
             }
             id if id.is_fx() => self.fx.set_param(id, value),
-            // M8 sidechain ducker (`fx/ducker.rs`) on the synth insert, triggered by the kick.
-            ParamId::SidechainAmount | ParamId::SidechainRelease => self.fx.set_ducker(
-                self.params[ParamId::SidechainAmount.index()],
-                self.params[ParamId::SidechainRelease.index()],
-            ),
             _ => {}
+        }
+    }
+
+    /// Current (clamped) value of parameter `id`: the edit track's value for a per-track id,
+    /// the global value otherwise.
+    #[must_use]
+    pub fn param(&self, id: ParamId) -> f32 {
+        if id.is_track() {
+            self.track(self.edit_track).params[id.index()]
+        } else {
+            self.params[id.index()]
+        }
+    }
+
+    // --- tracks (M10) ---------------------------------------------------------------------
+
+    /// The track slots (voices, insert, parameters, active flag each).
+    #[must_use]
+    pub fn tracks(&self) -> &[Track; MAX_TRACKS] {
+        &self.tracks
+    }
+
+    /// Track `track` (wraps into `0..MAX_TRACKS`).
+    #[must_use]
+    pub fn track(&self, track: TrackId) -> &Track {
+        &self.tracks[track_index(track)]
+    }
+
+    /// The edit track: the target of keyboard / MIDI notes, `SetParam` with per-track ids and
+    /// the grid-lane messages.
+    #[must_use]
+    pub fn edit_track(&self) -> TrackId {
+        self.edit_track
+    }
+
+    /// Chooses the edit track (`0..MAX_TRACKS`, wraps) and rebuilds every pattern's grid lane
+    /// for it. Held keyboard notes keep sounding on the track they started on.
+    pub fn set_edit_track(&mut self, track: TrackId) {
+        self.edit_track = track_index(track) as u8;
+        let t = self.edit_track;
+        for p in &mut self.bank.patterns {
+            p.rebuild_lane(t);
+        }
+    }
+
+    /// `true` when track `track` is switched on.
+    #[must_use]
+    pub fn track_active(&self, track: TrackId) -> bool {
+        self.track(track).active
+    }
+
+    /// Number of active tracks.
+    #[must_use]
+    pub fn active_track_count(&self) -> usize {
+        self.tracks.iter().filter(|t| t.active).count()
+    }
+
+    /// Every parameter value of track `track` (only the [`ParamId::is_track`] ids are
+    /// meaningful).
+    #[must_use]
+    pub fn track_params(&self, track: TrackId) -> &[f32; ParamId::COUNT] {
+        &self.track(track).params
+    }
+
+    /// Current (clamped) value of per-track parameter `id` on track `track`.
+    #[must_use]
+    pub fn track_param(&self, track: TrackId, id: ParamId) -> f32 {
+        self.track(track).params[id.index()]
+    }
+
+    /// Sets per-track parameter `id` of track `track` (clamped; voices and insert follow at
+    /// once). Global ids are ignored. Returns the stored value.
+    pub fn set_track_param(&mut self, track: TrackId, id: ParamId, value: f32) -> f32 {
+        self.tracks[track_index(track)].set_param(id, value)
+    }
+
+    /// Switches track `track` on or off. Off releases its voices (they fade out, then the
+    /// track costs nothing), clears its notes in every pattern and resets its parameters to
+    /// the defaults; its mixer strip is kept. On simply enables the slot (its parameters are
+    /// whatever they were last set to; a fresh slot has the defaults).
+    pub fn set_track_active(&mut self, track: TrackId, on: bool) {
+        let t = track_index(track);
+        if on {
+            self.tracks[t].active = true;
+            return;
+        }
+        self.tracks[t].active = false;
+        self.release_track_seq_notes(t);
+        self.kbd_held[t] = [false; 128];
+        self.tracks[t].pool.all_notes_off();
+        self.draining[t] = self.tracks[t].pool.is_active();
+        for p in &mut self.bank.patterns {
+            p.clear_notes(t as u8);
+        }
+        self.tracks[t].reset_params();
+    }
+
+    /// Copies track `from`'s parameters (synth and insert settings) over track `to` and marks
+    /// `to` active. Notes, sounding voices and mixer strips are untouched.
+    pub fn copy_track(&mut self, from: TrackId, to: TrackId) {
+        let (from, to) = (track_index(from), track_index(to));
+        if from != to {
+            let params = self.tracks[from].params;
+            let dst = &mut self.tracks[to];
+            for &id in ParamId::ALL {
+                if id.is_track() {
+                    dst.set_param(id, params[id.index()]);
+                }
+            }
+        }
+        self.tracks[to].active = true;
+    }
+
+    /// Swaps track slots `a` and `b`: parameters, insert and voice state, sequencer and
+    /// keyboard bookkeeping, notes in every pattern and mixer strips. The edit track follows
+    /// its content (`a` becomes `b` and vice versa).
+    pub fn swap_tracks(&mut self, a: TrackId, b: TrackId) {
+        let (a, b) = (track_index(a), track_index(b));
+        if a == b {
+            return;
+        }
+        self.tracks.swap(a, b);
+        self.seq_active.swap(a, b);
+        self.kbd_held.swap(a, b);
+        self.draining.swap(a, b);
+        for p in &mut self.bank.patterns {
+            p.swap_tracks(a as u8, b as u8);
+        }
+        let (ca, cb) = (Channel::from_track(a as u8), Channel::from_track(b as u8));
+        self.mixer.swap(ca, cb);
+        self.strips.swap(ca.index(), cb.index());
+        let edit = track_index(self.edit_track);
+        if edit == a {
+            self.set_edit_track(b as u8);
+        } else if edit == b {
+            self.set_edit_track(a as u8);
         }
     }
 
@@ -1013,13 +1253,13 @@ impl Engine {
         self.fx.snap_reverb();
     }
 
-    /// The synth parameters currently applied to the voices.
+    /// The synth parameters currently applied to the edit track's voices.
     #[must_use]
     pub fn synth_params(&self) -> &SynthParams {
-        self.voices.params()
+        self.track(self.edit_track).pool.params()
     }
 
-    /// The effect chain (read-only; parameters go through [`set_param`](Self::set_param)).
+    /// The shared effect chain (read-only; parameters go through [`set_param`](Self::set_param)).
     #[must_use]
     pub fn fx(&self) -> &FxChain {
         &self.fx
@@ -1160,19 +1400,24 @@ impl Engine {
 
     // --- bank -----------------------------------------------------------------------------
 
-    /// All patterns, the chain, the play mode and the selected pattern.
+    /// All patterns, the chain, the play mode and the selected pattern. Every pattern's grid
+    /// lane mirrors the edit track.
     #[must_use]
     pub fn bank(&self) -> &Bank {
         &self.bank
     }
 
-    /// Replaces the whole bank (project load). Copies and normalises `bank`, makes its
-    /// `current` pattern the edit pattern and rewinds to the start (restarting playback if
-    /// the transport is running). Meant to be called before the stream starts; on the audio
-    /// thread it is a fixed-size copy, not an allocation.
+    /// Replaces the whole bank (project load). Copies and normalises `bank`, rebuilds every
+    /// lane for the edit track, makes its `current` pattern the edit pattern and rewinds to
+    /// the start (restarting playback if the transport is running). Meant to be called before
+    /// the stream starts; on the audio thread it is a fixed-size copy, not an allocation.
     pub fn set_bank(&mut self, bank: &Bank) {
         self.bank = bank.clone();
         self.bank.normalise();
+        let t = self.edit_track;
+        for p in &mut self.bank.patterns {
+            p.rebuild_lane(t);
+        }
         self.edit = self.bank.current;
         if self.transport.is_playing() {
             self.play();
@@ -1262,39 +1507,46 @@ impl Engine {
         }
     }
 
-    /// Clears every step of pattern `index` (length, volume and tune are kept).
+    /// Clears every step of pattern `index`, every track's notes included (length, volume
+    /// and tune are kept).
     pub fn clear_pattern(&mut self, index: u8) {
         self.bank.clear_pattern(index);
     }
 
-    // --- notes (M7) -----------------------------------------------------------------------
+    // --- notes (M7, per track since M10) --------------------------------------------------
 
-    /// Sets or adds a synth note of pattern `pattern`: `index < note_count` replaces that
-    /// note, `index == note_count` appends. Returns the note's index in the (re-sorted) list,
-    /// or `None` when `index` is out of range or the note is invalid (`length == 0`, or
-    /// `start` at or beyond the pattern length); nothing changes then. The grid lane is
-    /// rebuilt. Notes already sounding are unaffected.
-    pub fn set_note(&mut self, pattern: u8, index: u8, note: Note) -> Option<usize> {
+    /// Sets or adds a note of track `track` in pattern `pattern`: `index < note_count`
+    /// replaces that note, `index == note_count` appends. Returns the note's index in the
+    /// (re-sorted) list, or `None` when `index` is out of range or the note is invalid
+    /// (`length == 0`, or `start` at or beyond the pattern length); nothing changes then. The
+    /// grid lane is rebuilt. Notes already sounding are unaffected.
+    pub fn set_note(
+        &mut self,
+        pattern: u8,
+        track: TrackId,
+        index: u8,
+        note: Note,
+    ) -> Option<usize> {
         let p = self.bank.pattern_mut(pattern);
         let index = usize::from(index);
-        match index.cmp(&p.notes().len()) {
-            std::cmp::Ordering::Less => p.set_note(index, note),
-            std::cmp::Ordering::Equal => p.add_note(note),
+        match index.cmp(&p.notes(track).len()) {
+            std::cmp::Ordering::Less => p.set_note(track, index, note),
+            std::cmp::Ordering::Equal => p.add_note(track, note),
             std::cmp::Ordering::Greater => None,
         }
     }
 
-    /// Removes synth note `index` of pattern `pattern`. Returns `false` when `index` is out
-    /// of range. The grid lane is rebuilt.
-    pub fn remove_note(&mut self, pattern: u8, index: u8) -> bool {
+    /// Removes note `index` of track `track` in pattern `pattern`. Returns `false` when
+    /// `index` is out of range. The grid lane is rebuilt.
+    pub fn remove_note(&mut self, pattern: u8, track: TrackId, index: u8) -> bool {
         self.bank
             .pattern_mut(pattern)
-            .remove_note(usize::from(index))
+            .remove_note(track, usize::from(index))
     }
 
-    /// Removes every synth note of pattern `pattern` (the grid lane becomes rests).
-    pub fn clear_notes(&mut self, pattern: u8) {
-        self.bank.pattern_mut(pattern).clear_notes();
+    /// Removes every note of track `track` in pattern `pattern`.
+    pub fn clear_notes(&mut self, pattern: u8, track: TrackId) {
+        self.bank.pattern_mut(pattern).clear_notes(track);
     }
 
     /// Sets chain entry `index` (`0..MAX_CHAIN`), growing the chain to include it. Takes
@@ -1323,18 +1575,22 @@ impl Engine {
 
     // --- edit pattern ---------------------------------------------------------------------
 
-    /// The edit pattern (what the step/row/volume/tune setters change).
+    /// The edit pattern (what the step/row/volume/tune setters change); its grid lane shows
+    /// the edit track.
     #[must_use]
     pub fn pattern(&self) -> &Pattern {
         self.bank.pattern(self.edit)
     }
 
     /// Replaces the edit pattern (call before the stream starts or accept a one-off
-    /// fixed-size copy on the audio thread). Kit volume/tune follow if it is playing.
+    /// fixed-size copy on the audio thread). Its lane is rebuilt for the edit track; kit
+    /// volume/tune follow if it is playing.
     pub fn set_pattern(&mut self, pattern: &Pattern) {
+        let t = self.edit_track;
         let slot = self.bank.pattern_mut(self.edit);
         *slot = pattern.clone();
         slot.normalise();
+        slot.rebuild_lane(t);
         if self.edit_is_playing() {
             self.apply_kit_settings(self.playing);
         }
@@ -1345,9 +1601,25 @@ impl Engine {
         self.edit_mut().set_drum_step(row, step, on, accent);
     }
 
-    /// Sets one synth-lane step of the edit pattern.
+    /// Sets one synth-lane step of the edit pattern on the edit track.
     pub fn set_synth_step(&mut self, step: u8, note: Option<u8>, accent: bool) {
-        self.edit_mut().set_synth_step(step, note, accent);
+        let t = self.edit_track;
+        self.edit_mut().set_synth_step(t, step, note, accent);
+    }
+
+    /// Clears the edit track's notes (the synth lane) of the edit pattern.
+    pub fn clear_synth(&mut self) {
+        let t = self.edit_track;
+        self.edit_mut().clear_notes(t);
+    }
+
+    /// Clears every drum row and the edit track's notes of the edit pattern; other tracks'
+    /// notes, the length, volume and tune are kept (the grid's "clear all").
+    pub fn clear_all(&mut self) {
+        let t = self.edit_track;
+        let p = self.edit_mut();
+        p.clear_rows();
+        p.clear_notes(t);
     }
 
     /// Per-row drum volume in dB of the edit pattern; applied to the kit when that pattern
@@ -1370,30 +1642,36 @@ impl Engine {
         }
     }
 
-    /// Current (clamped) value of parameter `id`.
-    #[must_use]
-    pub fn param(&self, id: ParamId) -> f32 {
-        self.params[id.index()]
-    }
-
-    /// The voice pool (for inspection: active voice count, per-voice state).
+    /// The edit track's voice pool (for inspection: active voice count, per-voice state).
     #[must_use]
     pub fn voices(&self) -> &VoicePool {
-        &self.voices
+        &self.track(self.edit_track).pool
     }
 
-    /// Number of synth voices currently sounding (held or releasing).
+    /// Track `track`'s voice pool.
+    #[must_use]
+    pub fn track_voices(&self, track: TrackId) -> &VoicePool {
+        &self.track(track).pool
+    }
+
+    /// Number of the edit track's voices currently sounding (held or releasing).
     #[must_use]
     pub fn active_voices(&self) -> usize {
-        self.voices.active_voices()
+        self.voices().active_voices()
     }
 
-    /// `true` while the engine would produce non-silent output or is about to: any voice or
-    /// drum sounding, the tone on or fading out, or the sequencer running.
+    /// Number of voices sounding over every track.
+    #[must_use]
+    pub fn total_active_voices(&self) -> usize {
+        self.tracks.iter().map(|t| t.pool.active_voices()).sum()
+    }
+
+    /// `true` while the engine would produce non-silent output or is about to: any voice of
+    /// any track or any drum sounding, the tone on or fading out, or the sequencer running.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.tone.is_active()
-            || self.voices.is_active()
+            || self.tracks.iter().any(|t| t.pool.is_active())
             || self.drums.is_active()
             || self.transport.is_playing()
     }
@@ -1508,18 +1786,30 @@ impl Engine {
         (step as u8, frac)
     }
 
-    /// Releases a sequencer pitch, unless the keyboard holds the same note.
-    fn release_pitch(&mut self, pitch: u8) {
-        if !self.kbd_held[usize::from(pitch.min(127))] {
-            self.voices.note_off(pitch);
+    /// Releases a sequencer pitch on track `t`, unless the keyboard holds the same note there.
+    fn release_pitch(&mut self, t: usize, pitch: u8) {
+        if !self.kbd_held[t][usize::from(pitch.min(127))] {
+            self.tracks[t].pool.note_off(pitch);
         }
     }
 
-    /// Releases every active sequencer note (keyboard-held pitches excepted).
-    fn release_seq_notes(&mut self) {
+    /// Releases every active sequencer note of track `t` (keyboard-held pitches excepted).
+    fn release_track_seq_notes(&mut self, t: usize) {
         for i in 0..MAX_VOICES {
-            if let Some((pitch, _)) = self.seq_active[i].take() {
-                self.release_pitch(pitch);
+            if let Some((pitch, _)) = self.seq_active[t][i].take() {
+                self.release_pitch(t, pitch);
+            }
+        }
+        self.refresh_next_off();
+    }
+
+    /// Releases every active sequencer note of every track (keyboard-held pitches excepted).
+    fn release_seq_notes(&mut self) {
+        for t in 0..MAX_TRACKS {
+            for i in 0..MAX_VOICES {
+                if let Some((pitch, _)) = self.seq_active[t][i].take() {
+                    self.release_pitch(t, pitch);
+                }
             }
         }
         self.seq_next_off = u64::MAX;
@@ -1530,6 +1820,7 @@ impl Engine {
         self.seq_next_off = self
             .seq_active
             .iter()
+            .flatten()
             .flatten()
             .map(|&(_, off)| off)
             .min()
@@ -1553,23 +1844,23 @@ impl Engine {
                 .step_trigger_sample(step % STEPS, self.samples_per_step)
     }
 
-    /// Starts `note` (which begins on the step being fired) and schedules its release for
-    /// one sample before the trigger of step `start + length` (the pattern's wrap at the
-    /// latest). A pitch that is already sounding from the sequencer is released and its slot
-    /// reused; when every slot is taken the note ending soonest is cut.
-    fn trigger_note(&mut self, note: Note) {
+    /// Starts `note` on track `t` (it begins on the step being fired) and schedules its
+    /// release for one sample before the trigger of step `start + length` (the pattern's wrap
+    /// at the latest). A pitch that is already sounding from the sequencer on that track is
+    /// released and its slot reused; when every slot is taken the note ending soonest is cut.
+    fn trigger_note(&mut self, t: usize, note: Note) {
         let pitch = note.pitch.min(127);
         let off = self
             .step_clock(note.end())
             .saturating_sub(1)
             .max(self.clock);
-        let slot = self
-            .seq_active
+        let slots = &self.seq_active[t];
+        let slot = slots
             .iter()
             .position(|s| s.is_some_and(|(p, _)| p == pitch))
-            .or_else(|| self.seq_active.iter().position(Option::is_none))
+            .or_else(|| slots.iter().position(Option::is_none))
             .or_else(|| {
-                self.seq_active
+                slots
                     .iter()
                     .enumerate()
                     .filter_map(|(i, s)| s.map(|(_, off)| (i, off)))
@@ -1577,16 +1868,17 @@ impl Engine {
                     .map(|(i, _)| i)
             })
             .unwrap_or(0);
-        if let Some((old, _)) = self.seq_active[slot].take() {
-            self.release_pitch(old);
+        if let Some((old, _)) = self.seq_active[t][slot].take() {
+            self.release_pitch(t, old);
         }
-        self.voices.note_on(pitch, note.velocity);
-        self.seq_active[slot] = Some((pitch, off));
+        self.tracks[t].pool.note_on(pitch, note.velocity);
+        self.seq_active[t][slot] = Some((pitch, off));
         self.seq_next_off = self.seq_next_off.min(off);
     }
 
     /// Fires every drum and synth event of step `step` of the current bar of the playing
-    /// pattern: drum hits, then every note whose `start` is that pattern step.
+    /// pattern: drum hits (a kick dips every active track's ducker), then, track by track,
+    /// every note whose `start` is that pattern step.
     fn fire_step(&mut self, step: usize) {
         let index = (usize::from(self.bar) * STEPS + step).min(MAX_STEPS - 1);
         let pattern = self.bank.pattern(self.playing);
@@ -1594,37 +1886,46 @@ impl Engine {
         for row in DrumRow::ALL {
             drums[row.index()] = pattern.drums[row.index()][index];
         }
-        let note_count = pattern.notes().len();
         for row in DrumRow::ALL {
             if let Some(velocity) = drums[row.index()].velocity() {
                 self.drums.trigger(row, velocity);
                 self.hit_bits |= 1 << row.index();
                 if row == DrumRow::Kick {
-                    // Sidechain pump (M8): every kick hit dips the synth insert.
-                    self.fx.ducker_trigger();
+                    // Sidechain pump (M8): every kick hit dips every active track's insert.
+                    for track in self.tracks.iter_mut().filter(|t| t.active) {
+                        track.insert.trigger_ducker();
+                    }
                 }
             }
         }
         // Notes are sorted by start, so the matching ones are contiguous; the scan over at
-        // most MAX_NOTES fixed slots is cheap and allocation-free.
-        for i in 0..note_count {
-            let note = self.bank.pattern(self.playing).notes[i];
-            if usize::from(note.start) == index {
-                self.trigger_note(note);
-            } else if usize::from(note.start) > index {
-                break;
+        // most MAX_NOTES fixed slots per track is cheap and allocation-free.
+        for t in 0..MAX_TRACKS {
+            if !self.tracks[t].active {
+                continue;
+            }
+            let note_count = self.bank.pattern(self.playing).tracks[t].notes().len();
+            for i in 0..note_count {
+                let note = self.bank.pattern(self.playing).tracks[t].notes[i];
+                if usize::from(note.start) == index {
+                    self.trigger_note(t, note);
+                } else if usize::from(note.start) > index {
+                    break;
+                }
             }
         }
     }
 
     /// Releases every sequencer note whose off sample has come.
     fn release_due_notes(&mut self) {
-        for i in 0..MAX_VOICES {
-            if let Some((pitch, off)) = self.seq_active[i]
-                && self.clock >= off
-            {
-                self.seq_active[i] = None;
-                self.release_pitch(pitch);
+        for t in 0..MAX_TRACKS {
+            for i in 0..MAX_VOICES {
+                if let Some((pitch, off)) = self.seq_active[t][i]
+                    && self.clock >= off
+                {
+                    self.seq_active[t][i] = None;
+                    self.release_pitch(t, pitch);
+                }
             }
         }
         self.refresh_next_off();
@@ -1691,8 +1992,8 @@ impl Engine {
             } => self.set_drum_step(row, step, on, accent),
             Message::SetSynthStep { step, note, accent } => self.set_synth_step(step, note, accent),
             Message::ClearRow(row) => self.edit_mut().clear_row(row),
-            Message::ClearSynth => self.edit_mut().clear_synth(),
-            Message::ClearAll => self.edit_mut().clear_all(),
+            Message::ClearSynth => self.clear_synth(),
+            Message::ClearAll => self.clear_all(),
             Message::SetDrumVolume { row, db } => self.set_drum_volume(row, db),
             Message::SetDrumTune { row, semitones } => self.set_drum_tune(row, semitones),
             Message::SetEditPattern(index) => self.set_edit_pattern(index),
@@ -1709,15 +2010,20 @@ impl Engine {
             Message::SetChainLen(len) => self.set_chain_len(len),
             Message::SetNote {
                 pattern,
+                track,
                 index,
                 note,
             } => {
-                self.set_note(pattern, index, note);
+                self.set_note(pattern, track, index, note);
             }
-            Message::RemoveNote { pattern, index } => {
-                self.remove_note(pattern, index);
+            Message::RemoveNote {
+                pattern,
+                track,
+                index,
+            } => {
+                self.remove_note(pattern, track, index);
             }
-            Message::ClearNotes(pattern) => self.clear_notes(pattern),
+            Message::ClearNotes { pattern, track } => self.clear_notes(pattern, track),
             Message::SetMixer {
                 channel,
                 param,
@@ -1735,6 +2041,13 @@ impl Engine {
             Message::SetReverb { param, value } => {
                 self.set_reverb(param, value);
             }
+            Message::SetEditTrack(track) => self.set_edit_track(track),
+            Message::SetTrackParam { track, id, value } => {
+                self.set_track_param(track, id, value);
+            }
+            Message::SetTrackActive { track, on } => self.set_track_active(track, on),
+            Message::CopyTrack { from, to } => self.copy_track(from, to),
+            Message::SwapTracks(a, b) => self.swap_tracks(a, b),
         }
     }
 
@@ -1750,7 +2063,7 @@ impl Engine {
             let post_l = if xl.is_finite() { xl * g } else { 0.0 };
             let post_r = if xr.is_finite() { xr * g } else { 0.0 };
             // The pan gains act on the pair, so a mono source (`xl == xr`) mixes exactly as
-            // before M8 and a stereo one (the synth insert's chorus) keeps its width.
+            // before M8 and a stereo one (a track insert's chorus) keeps its width.
             let (pl, pr) = (strip.pan_l.tick(), strip.pan_r.tick());
             let (l, r) = (post_l * pl, post_r * pr);
             let post = post_l.abs().max(post_r.abs());
@@ -1767,6 +2080,28 @@ impl Engine {
             }
         }
         buses
+    }
+
+    /// One sample of every track: an active (or still draining) track sums its voices and
+    /// runs them through its insert; the rest contribute silence.
+    #[inline]
+    fn tick_tracks(&mut self, inputs: &mut [(f32, f32); Channel::COUNT]) {
+        for t in 0..MAX_TRACKS {
+            let track = &mut self.tracks[t];
+            let slot = &mut inputs[DrumRow::COUNT + t];
+            if track.active {
+                let x = track.pool.tick();
+                *slot = track.insert.process(x);
+            } else if self.draining[t] {
+                let x = track.pool.tick();
+                *slot = track.insert.process(x);
+                if !track.pool.is_active() {
+                    self.draining[t] = false;
+                }
+            } else {
+                *slot = (0.0, 0.0);
+            }
+        }
     }
 
     /// Renders `frames` frames of **interleaved stereo** into `out` (`out.len() >= frames * 2`).
@@ -1786,14 +2121,14 @@ impl Engine {
         let mut inputs = [(0.0_f32, 0.0_f32); Channel::COUNT];
         for [l, r] in stereo_frames {
             self.sequencer_tick();
-            // Five drum rows (mono) plus the synth through its M8 insert (drive -> lo-fi ->
-            // chorus -> sidechain ducker, stereo) feed the mixer; the diagnostic test tone
+            // Five drum rows (mono) plus every active track through its stereo insert (drive
+            // -> lo-fi -> chorus -> sidechain ducker) feed the mixer; the diagnostic test tone
             // bypasses mixer, effects and the master EQ.
             self.drums.tick_rows(&mut rows);
             for (input, row) in inputs.iter_mut().zip(rows.iter()) {
                 *input = (*row, *row);
             }
-            inputs[Channel::Synth.index()] = self.fx.process_synth_insert(self.voices.tick());
+            self.tick_tracks(&mut inputs);
             let buses = self.mix_frame(&inputs);
             let (fl, fr) = self.fx.process_bus(buses.dry, buses.delay, buses.reverb);
             let (wl, wr) = self.fx.last_reverb_wet();
@@ -1862,5 +2197,28 @@ mod tests {
         assert_eq!(shared.read(), pos);
         assert_eq!(pos.pattern_step(), 25);
         assert_eq!(Position::default(), Position::stopped(0));
+    }
+
+    #[test]
+    fn engine_stays_movable_by_value() {
+        // The eight tracks are boxed; the rest (bank, strips, kit, chain) is inline and must
+        // stay far below a thread's stack budget since `new_engine` returns by value.
+        let size = core::mem::size_of::<Engine>();
+        assert!(size < 256 * 1024, "Engine is {size} bytes");
+        let (_h, e) = new_engine(48_000.0);
+        assert_eq!(e.active_track_count(), 1);
+        assert_eq!(e.edit_track(), 0);
+        assert!(e.track_active(0) && !e.track_active(1));
+    }
+
+    #[test]
+    fn messages_stay_small_and_copy() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<Message>();
+        assert!(
+            core::mem::size_of::<Message>() <= 16,
+            "{}",
+            core::mem::size_of::<Message>()
+        );
     }
 }

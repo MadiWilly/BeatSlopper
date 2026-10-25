@@ -892,3 +892,156 @@ format change.
   `insert: u8` (`0` = master). `fx/compressor.rs`, `fx/eq3.rs`. Render: sources -> their
   track inserts -> insert buses (summed, processed in ascending number order so a route to a
   higher insert is already available) -> master. Project v8.
+
+## M10 as built (engine)
+
+Everything below lives in `crates/engine`; the app and neu crates are untouched by this pass
+(the app does not compile against it until adapted). The v6 demo project renders bit for bit
+as before the refactor (`tests/tracks.rs`,
+`v6_project_renders_sample_identical_after_the_track_refactor`: FNV-1a hash and per-100 ms
+RMS of a 1 s render captured pre-refactor from `tests/fixtures/v6_demo.json`).
+
+### `track.rs` (new; re-exported at the crate root)
+- `pub const MAX_TRACKS: usize = 8`, `pub type TrackId = u8`, `pub const MAX_NAME_LEN: usize
+  = 16`, `pub const COLOUR_COUNT: u8 = 8`, `pub const fn track_index(TrackId) -> usize`
+  (wraps), `pub fn default_name(slot) -> String` (`"Synth"` for slot 0, `"Track N"` else),
+  `pub fn default_track_params() -> BTreeMap<String, f32>`.
+- `pub struct SynthInsert` (`drive -> lo-fi -> chorus -> x ducker`, mono in / stereo out; the
+  drive amount/mix smoothers live here and tick once per `process`, *after* the drive used
+  them, which is what keeps the pre-M10 sample sequence): `new(sample_rate)`,
+  `set_param(ParamId, f32) -> bool` (only `is_synth_insert` ids; `SidechainAmount` /
+  `SidechainRelease` reach the ducker at once), `param(ParamId) -> f32`,
+  `process(x: f32) -> (f32, f32)`, `trigger_ducker()`, `reset()`, `snap()`, `sample_rate()`,
+  `drive()` / `lofi()` / `chorus()` / `ducker()` accessors.
+- `pub struct Track { pub active: bool, pub pool: VoicePool, pub insert: SynthInsert, pub
+  params: [f32; ParamId::COUNT] }`: `new(sample_rate)` (inactive, defaults),
+  `set_param(id, v) -> f32` (clamps, stores, routes to pool or insert; global ids ignored),
+  `param(id)`, `synth_params() -> &SynthParams`, `reset_params()`,
+  `copy_settings_from(&Track)`, `is_sounding()`.
+- `pub struct TrackState { pub slot: u8, pub name: String, pub colour: u8, pub active: bool,
+  pub preset: String, pub params: BTreeMap<String, f32> }` (serde, `#[serde(default)]`;
+  `Default` = `TrackState::new(0)`): `new(slot)` (active, default name, colour = slot % 8,
+  preset `""`, every `is_track` id at its default), `from_track(slot, &Track)`,
+  `param(id)`, `set_param(id, v)`, `apply_to(&mut Track)`, `normalise()` (slot/colour wrap,
+  name truncated to 16 chars, only track ids kept, missing ones filled).
+
+### `params.rs`
+- `ParamId::is_synth_insert()` = DriveAmount, DriveMix, Lofi*, Chorus*, SidechainAmount,
+  SidechainRelease. `ParamId::is_track()` = `is_synth() || is_synth_insert()`.
+  `ParamId::is_global()` = `!is_track()` (delay, reverb, master gain, limiter).
+- `ParamId::is_fx()` now means "what `FxChain` processes": drive (its M2 serial path), delay
+  and reverb. Lo-fi / chorus / sidechain are **not** `is_fx` any more. The app's FX rack
+  should group by `is_synth_insert()` (per track, says the track name) versus `is_global()`
+  (shared).
+
+### `fx/chain.rs`
+- `FxChain` keeps drive (serial `process` only), delay, reverb and `process_bus`. Removed:
+  `process_synth_insert`, `set_ducker`, `ducker_trigger`, `lofi()`, `chorus()`, `ducker()`.
+  Use the per-track `SynthInsert` instead (`engine.track(t).insert`).
+
+### `pattern.rs`
+- `pub struct NoteTrack { pub notes: [Note; MAX_NOTES], pub note_count: u8 }` (`Copy`,
+  `NoteTrack::EMPTY`): `notes() -> &[Note]`, `is_empty()`, `note_at(step, pitch)`,
+  `clear()`, `normalise()`, `insert(Note) -> Option<usize>` (no pattern-length check),
+  `remove(index) -> bool`, `remove_starting_at(step)`. `Note::EMPTY_SLOT` is the unused-slot
+  value.
+- `Pattern` fields: `length`, `drums`, `synth` (the lane), **`lane_track: TrackId`** (which
+  track `synth` mirrors; not serialised, 0 after a load), **`tracks: [NoteTrack;
+  MAX_TRACKS]`** (replaces `notes` / `note_count`), `drum_volume`, `drum_tune`. `PartialEq`
+  is manual and ignores `synth` and `lane_track` (they are views of the content).
+- Note helpers take the track first: `track(t) -> &NoteTrack`, `notes(t) -> &[Note]`,
+  `note_count() -> usize` (over all tracks), `add_note(t, note)`, `remove_note(t, index)`,
+  `set_note(t, index, note)`, `note_at(t, step, pitch)`, `clear_notes(t)`,
+  `clear_all_notes()`, `swap_tracks(a, b)`, `set_synth_step(t, step, note, accent)`,
+  `rebuild_lane(t)` (sets `lane_track = t` and rebuilds; every helper rebuilds the lane for
+  the current lane track). `clear_rows()` (drums only) is new; `clear_all()` = rows plus
+  every track's notes; `clear_synth()` is gone. `is_empty()` / `used_steps()` consider every
+  track. The app should call `pattern.rebuild_lane(edit_track)` on its own copies.
+- Serde: a pattern writes `"tracks": [{ "track": n, "notes": [...] }, ...]` for non-empty
+  tracks only (no `tracks` key when there are none; `notes` is never written). On load
+  `tracks` wins; else a v5/v6 `notes` array lands on track 0; else a v4 `synth` lane is
+  converted onto track 0. A track index >= 8, or more than 64 notes in one track, is an
+  error; duplicate entries for a track merge.
+
+### `mixer.rs`
+- `pub enum Channel { Kick, Snare, Clap, ClosedHat, OpenHat, Track(u8) }`,
+  `Channel::COUNT = 13`, `Channel::ALL` (drums, then `Track(0)..Track(7)`), `index()` (track
+  `t` -> `5 + t`, wraps), `from_index`, `from_row`, `drum_row()`, **`from_track(TrackId)`**,
+  **`track() -> Option<TrackId>`**, `label()` (`"T1"`..`"T8"`), `key()`
+  (`"track_1"`..`"track_8"`). `#[allow(non_upper_case_globals)] pub const Synth: Channel =
+  Channel::Track(0)` keeps old call sites compiling (as a `const` it does not make a `match`
+  exhaustive, so update matches to `Channel::Track(_)`). Serde of `Channel::Track(n)` is
+  externally tagged: `{"track": n}`.
+- `ChannelParam::default_value`: every `Track(_)` gets delay send 1.0 and reverb send 1.0
+  (what `Synth` had).
+- `MixerState.strips: [Strip; 13]`; a custom `Deserialize` pads a shorter `strips` array
+  with the missing channels' defaults (a 6-strip v6 mixer maps its synth strip onto
+  `Track(0)`); more than 13 is an error. New `MixerState::swap(a, b)`.
+
+### `engine.rs`
+- New `Message` variants (all `Copy`, `size_of::<Message>() <= 16`): `SetEditTrack(u8)`,
+  `SetTrackParam { track: u8, id: ParamId, value: f32 }`, `SetTrackActive { track: u8, on:
+  bool }`, `CopyTrack { from: u8, to: u8 }`, `SwapTracks(u8, u8)`. Changed: `SetNote {
+  pattern, track, index, note }`, `RemoveNote { pattern, track, index }`, `ClearNotes {
+  pattern, track }` (a struct variant now). Unchanged in shape but **edit-track scoped**:
+  `NoteOn`, `NoteOff`, `AllNotesOff` (every track), `SetParam` (per-track id -> edit track;
+  global id -> as before), `SetSynthStep`, `ClearSynth`, `ClearAll` (rows plus the edit
+  track's notes only). MIDI-queue notes go to the edit track too.
+- Engine state: `tracks: Box<[Track; MAX_TRACKS]>` (boxed once in `new_engine`; `Engine`
+  stays under 256 KiB), `edit_track`, per-track `seq_active` / `kbd_held`, a `draining`
+  flag per track (a switched-off track renders until its voices fade, then costs nothing).
+  `new_engine` starts with track 0 active, the rest inactive, edit track 0.
+- Render per sample: drums -> rows; every active (or draining) track: `pool.tick()` ->
+  `insert.process(x)` -> `inputs[Channel::Track(t).index()]`; a kick hit calls
+  `insert.trigger_ducker()` on every active track. The sequencer fires each active track's
+  notes of the playing pattern (per-track note-off bookkeeping, the M7 timing rules).
+- Direct setters / accessors (mirror the messages): `edit_track() -> TrackId`,
+  `set_edit_track(t)` (rebuilds every pattern's lane for `t`), `tracks() -> &[Track;
+  MAX_TRACKS]`, `track(t) -> &Track`, `track_active(t) -> bool`, `active_track_count()`,
+  `track_params(t) -> &[f32; ParamId::COUNT]`, `track_param(t, id) -> f32`,
+  `set_track_param(t, id, v) -> f32`, `set_track_active(t, on)`, `copy_track(from, to)`,
+  `swap_tracks(a, b)` (the edit track follows its content: `a` <-> `b`),
+  `track_note_on(t, note, vel)`, `track_voices(t) -> &VoicePool`, `total_active_voices()`,
+  `set_note(pattern, track, index, note)`, `remove_note(pattern, track, index)`,
+  `clear_notes(pattern, track)`, `clear_synth()`, `clear_all()`. `param(id)` returns the
+  edit track's value for a per-track id; `voices()`, `active_voices()`, `synth_params()`
+  read the edit track. `note_on` on an inactive edit track is ignored; `note_off` releases
+  the note on the edit track and on any track still holding it from the keyboard.
+  `set_bank` / `set_pattern` rebuild the lanes for the edit track.
+- `Preset::apply_to_track(&self, engine, track)` (per-track ids only); `Preset::apply`
+  still resets every id and lands the per-track ids on the edit track.
+
+### `project.rs` (format version 7)
+- `FORMAT_VERSION = 7`. `Project` fields: `version`, `bpm`, `swing`, `bank`, `params`
+  (**global ids only**), `mixer` (13 strips), `eq`, `reverb`, **`tracks: Vec<TrackState>`**
+  (`#[serde(default = one "Synth" track)]`; an explicit `[]` means no track; sorted by
+  slot, one entry per slot after a load), `octave`, `velocity`. **`preset_index` is gone**
+  (the preset name lives in `TrackState.preset`).
+- `Project::from_engine(engine, octave, velocity)` (no preset index): writes every active
+  track with `TrackState::from_track` defaults for name / colour / preset; the app decorates
+  them through `track_mut(slot)` before saving (or builds the `Project` itself, as
+  `build_project` does today). `apply_to` pushes globals, mixer, reverb, EQ, the active
+  tracks' params, then the bank, then switches every unlisted slot off (which also drops
+  notes the file held on an inactive slot) and moves the edit track to the first active
+  slot if it ended up inactive.
+- Helpers: `track(slot) -> Option<&TrackState>`, `track_mut(slot)`, `track_or_insert(slot)`,
+  `track_param(slot, id)`, `set_track_param(slot, id, v)`. `param(id)` / `set_param(id, v)`
+  route a per-track id to slot 0 (the pre-M10 synth) as a compatibility convenience.
+- Loading v6 and older: the file's track-id `params` plus `preset_index` (mapped to
+  `presets::ALL[i].name`, else `""`) become `tracks = [TrackState { slot: 0, name: "Synth",
+  colour: 0, active: true, .. }]`; the patterns' `notes` land on track 0 (pattern
+  deserializer) and the 6-strip mixer pads (mixer deserializer). The "refuse newer" probe is
+  version 8 now.
+- On-disk shape of a track entry: `{ "slot": 0, "name": "Synth", "colour": 0, "active":
+  true, "preset": "Bass", "params": { "amp_attack": 0.01, ... per-track ids only } }`.
+
+### Tests
+- `tests/tracks.rs` (10, plus 1 ignored): the v6 regression, sum-of-tracks linearity, mute
+  isolation, note isolation, `SetEditTrack` routing, `SetTrackActive off`, `CopyTrack`,
+  `SwapTracks`, the 8-track v7 round trip, a finite long render under every lifecycle
+  message, and `#[ignore] eight_tracks_render_faster_than_real_time` (1 s of 8-track audio
+  in about 0.06 s in release; gate `< 0.5 s`).
+- `tests/engine_alloc.rs`: counting global allocator; `render` plus every track message with
+  8 active tracks is allocation-free.
+- `tests/fx_m8.rs` insert tests now drive a `SynthInsert`; `tests/fixtures/v6_demo.json` is
+  the pre-M10 `Project::default()`.

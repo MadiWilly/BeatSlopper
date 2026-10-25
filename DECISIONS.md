@@ -283,3 +283,21 @@ list of them, modelled on how FL Studio and Ableton Live do it. The model and th
   (https://www.ableton.com/en/live-manual/12/mixing/), Instrument, Drum and Effect Racks
   (https://www.ableton.com/en/live-manual/12/instrument-drum-and-effect-racks/), Working with
   Instruments and Effects (https://www.ableton.com/en/live-manual/12/working-with-instruments-and-effects/).
+
+## 2026-10-25: M10 engine (instrument tracks) as built
+- `ParamId::is_fx()` is narrowed to the global chain (drive for the M2 serial path, delay,
+  reverb); lo-fi, chorus and sidechain are `is_synth_insert()` ids, and `is_track()` /
+  `is_global()` are the partition the app groups by. Drive, lo-fi, chorus and the ducker live
+  in a per-track `SynthInsert`, which ticks its drive smoothers at the end of `process` so the
+  v6 regression render stays bit-identical (hash pinned in `tests/tracks.rs`).
+- `Pattern` equality ignores the derived `synth` lane and `lane_track` (content equality).
+- `preset_index` left the project file in v7; the preset name lives per track
+  (`TrackState.preset`); the v6 loader maps the index to a name.
+- `SwapTracks` moves the edit track with its content and swaps voice and insert state (no
+  click) rather than releasing voices. A switched-off track keeps rendering until its voices
+  fade ("draining"), then costs nothing; `NoteOn` on an inactive edit track is ignored.
+- `Channel::Synth` stays as a `const` alias of `Channel::Track(0)` (not a variant: `match`
+  arms use `Channel::Track(_)`); every track channel defaults to delay and reverb send 1.0.
+- `Project.tracks` missing means one default "Synth" track; an explicit empty list means none.
+- The engine's eight tracks are boxed once at construction (real-time safe) so `Engine` stays
+  movable by value.

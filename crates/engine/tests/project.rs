@@ -49,15 +49,23 @@ fn custom_project() -> Project {
     let mut p = Project {
         bpm: 133.0,
         swing: 0.3,
-        preset_index: 5,
         octave: 2,
         velocity: 0.55,
         ..Project::default()
     };
+    // M10: the synth track carries a preset name; a second track ("Keys", slot 3) with its
+    // own params and notes.
+    p.track_mut(0).unwrap().preset = "Pad".to_owned();
+    p.set_track_param(3, ParamId::Osc1Wave, 3.0);
+    p.set_track_param(3, ParamId::ChorusMix, 0.4);
+    let keys = p.track_mut(3).unwrap();
+    keys.name = "Keys".to_owned();
+    keys.colour = 5;
+    keys.preset = "Keys".to_owned();
     p.bank.patterns[0].clear_row(DrumRow::Kick);
     p.bank.patterns[0].set_drum_step(DrumRow::Kick, 2, true, true);
-    p.bank.patterns[0].set_synth_step(0, Some(48), true);
-    p.bank.patterns[0].set_synth_step(1, None, false);
+    p.bank.patterns[0].set_synth_step(0, 0, Some(48), true);
+    p.bank.patterns[0].set_synth_step(0, 1, None, false);
     p.bank.patterns[0].set_drum_volume(DrumRow::Snare, -6.5);
     p.bank.patterns[0].set_drum_tune(DrumRow::ClosedHat, 3.25);
     // M5: a two-bar pattern B with a hit in its second bar, a four-bar C, a chain and song mode.
@@ -65,7 +73,7 @@ fn custom_project() -> Project {
     p.bank.set_length(1, PatternLength::Bar2);
     p.bank.patterns[1].set_drum_step(DrumRow::Clap, 30, true, false);
     p.bank.set_length(2, PatternLength::Bar4);
-    p.bank.patterns[2].set_synth_step(63, Some(72), true);
+    p.bank.patterns[2].set_synth_step(0, 63, Some(72), true);
     p.bank.truncate(0);
     p.bank.push(ChainEntry::new(0, 2));
     p.bank.push(ChainEntry::new(1, 1));
@@ -83,7 +91,12 @@ fn custom_project() -> Project {
     p.mixer.set(Channel::Clap, ChannelParam::Mute, 1.0);
     p.mixer.set(Channel::ClosedHat, ChannelParam::Solo, 1.0);
     p.mixer.set(Channel::OpenHat, ChannelParam::DelaySend, 0.6);
-    p.mixer.set(Channel::Synth, ChannelParam::ReverbSend, 0.15);
+    p.mixer
+        .set(Channel::Track(0), ChannelParam::ReverbSend, 0.15);
+    p.mixer.set(Channel::Track(3), ChannelParam::Level, -2.5);
+    p.bank.patterns[1]
+        .add_note(3, Note::new(2, 4, 72, 0.7))
+        .unwrap();
     p
 }
 
@@ -112,6 +125,13 @@ fn json_layout_is_as_documented() {
         "{json}"
     );
     for field in [
+        "\"tracks\": [",
+        "\"track\": 0",
+        "\"slot\": 0",
+        "\"name\": \"Synth\"",
+        "\"colour\": 0",
+        "\"active\": true",
+        "\"preset\": \"\"",
         "\"notes\": [",
         "\"start\": 0",
         "\"pitch\": 36",
@@ -128,7 +148,6 @@ fn json_layout_is_as_documented() {
         "\"current\": 0",
         "\"length\": 16",
         "\"params\"",
-        "\"preset_index\": 0",
         "\"octave\": 4",
         "\"velocity\": 0.8",
         "\"osc1_wave\": 1.0",
@@ -173,19 +192,37 @@ fn param_keys_are_unique_snake_case_and_reversible() {
 fn unknown_param_keys_are_ignored_and_missing_ones_default() {
     let mut json = serde_json::to_value(Project::default()).unwrap();
     let params = json["params"].as_object_mut().unwrap();
-    params.remove("filter_cutoff");
+    params.remove("delay_feedback");
     params.insert("flux_capacitor".into(), serde_json::json!(1.21));
-    params.insert("osc1_mix".into(), serde_json::json!(0.33));
+    params.insert("delay_mix".into(), serde_json::json!(0.33));
+    let track_params = json["tracks"][0]["params"].as_object_mut().unwrap();
+    track_params.remove("filter_cutoff");
+    track_params.insert("flux_capacitor".into(), serde_json::json!(1.21));
+    track_params.insert("osc1_mix".into(), serde_json::json!(0.33));
     let text = serde_json::to_string(&json).unwrap();
 
     let p = Project::from_json(&text).expect("unknown and missing params must not fail");
+    assert_eq!(
+        p.param(ParamId::DelayFeedback),
+        ParamId::DelayFeedback.default_value()
+    );
+    assert_eq!(p.param(ParamId::DelayMix), 0.33);
+    assert!(!p.params.contains_key("flux_capacitor"));
+    assert_eq!(
+        p.params.len(),
+        ParamId::ALL.iter().filter(|id| id.is_global()).count()
+    );
     assert_eq!(
         p.param(ParamId::FilterCutoff),
         ParamId::FilterCutoff.default_value()
     );
     assert_eq!(p.param(ParamId::Osc1Mix), 0.33);
-    assert!(!p.params.contains_key("flux_capacitor"));
-    assert_eq!(p.params.len(), ParamId::COUNT);
+    let synth = p.track(0).unwrap();
+    assert!(!synth.params.contains_key("flux_capacitor"));
+    assert_eq!(
+        synth.params.len(),
+        ParamId::ALL.iter().filter(|id| id.is_track()).count()
+    );
 
     // Missing top-level fields default as well.
     let minimal = Project::from_json(r#"{ "version": 2, "bpm": 90.0 }"#).unwrap();
@@ -233,13 +270,24 @@ fn apply_to_then_from_engine_reproduces_the_project() {
     assert!(!engine.limiter_on());
     assert_eq!(engine.mixer(), &original.mixer);
     assert_eq!(engine.mixer().get(Channel::Kick, ChannelParam::Level), -4.5);
+    assert!(engine.track_active(0) && engine.track_active(3));
+    assert_eq!(engine.active_track_count(), 2);
+    assert_eq!(engine.track_param(3, ParamId::Osc1Wave), 3.0);
+    assert_eq!(engine.track_param(3, ParamId::ChorusMix), 0.4);
+    assert_eq!(engine.bank().pattern(1).notes(3).len(), 1);
 
-    let back = Project::from_engine(
-        &engine,
-        original.preset_index,
-        original.octave,
-        original.velocity,
-    );
+    // The engine holds no names / colours / preset names: `from_engine` gives the defaults
+    // and the UI decorates the entries afterwards.
+    let mut back = Project::from_engine(&engine, original.octave, original.velocity);
+    assert_eq!(back.tracks.len(), 2);
+    assert_eq!(back.track(3).unwrap().name, "Track 4");
+    for slot in [0, 3] {
+        let src = original.track(slot).unwrap();
+        let dst = back.track_mut(slot).unwrap();
+        dst.name.clone_from(&src.name);
+        dst.colour = src.colour;
+        dst.preset.clone_from(&src.preset);
+    }
     assert_eq!(back, original);
 }
 
@@ -444,10 +492,17 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     assert_eq!(p.version, FORMAT_VERSION);
     assert_eq!(p.bpm, 101.0);
     assert_eq!(p.swing, 0.1);
-    assert_eq!(p.preset_index, 2);
+    assert_eq!(
+        p.track(0).unwrap().preset,
+        engine::presets::ALL[2].name,
+        "preset_index 2 maps to the preset's name"
+    );
+    assert_eq!(p.track(0).unwrap().name, "Synth");
+    assert_eq!(p.tracks.len(), 1);
     assert_eq!(p.octave, 3);
     assert_eq!(p.velocity, 0.6);
     assert_eq!(p.param(ParamId::Osc1Wave), 3.0);
+    assert_eq!(p.track_param(0, ParamId::Osc1Wave), 3.0);
 
     let a = &p.bank.patterns[0];
     assert_eq!(a.len(), 16, "16-entry rows load as a one-bar pattern");
@@ -462,7 +517,7 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     assert_eq!(a.synth.iter().filter(|s| s.note.is_some()).count(), 1);
     assert!(a.synth[16..].iter().all(|s| s.note.is_none()), "padding");
     assert_eq!(
-        a.notes(),
+        a.notes(0),
         &[Note::new(7, 1, 43, 0.8)],
         "the lane step became a length-1 note"
     );
@@ -482,8 +537,10 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     assert!(v5.starts_with(&head));
     assert!(v5.contains("\"bank\""));
     assert!(v5.contains("\"mixer\""));
+    assert!(v5.contains("\"tracks\""));
     assert!(v5.contains("\"notes\""));
     assert!(!v5.contains("\"synth\""));
+    assert!(!v5.contains("\"preset_index\""));
     assert!(!v5.contains("\n  \"pattern\""));
     let back = Project::from_json(&v5).unwrap();
     assert_eq!(back, p);
@@ -533,14 +590,17 @@ fn row_lengths_follow_the_pattern_length_in_json() {
         "no derived lane in the file"
     );
     assert_eq!(
-        patterns[0]["notes"].as_array().unwrap().len(),
+        patterns[0]["tracks"][0]["notes"].as_array().unwrap().len(),
         9,
         "the demo bassline's notes"
     );
     assert_eq!(patterns[1]["length"], 32);
     assert_eq!(patterns[1]["drums"][0].as_array().unwrap().len(), 32);
     assert_eq!(patterns[2]["length"], 16);
-    assert_eq!(patterns[2]["notes"].as_array().unwrap().len(), 0);
+    assert!(
+        patterns[2].get("tracks").is_none(),
+        "an empty pattern writes no track entries"
+    );
     assert_eq!(value["bank"]["chain"].as_array().unwrap().len(), 1);
     assert_eq!(value["bank"]["chain"][0]["pattern"], 0);
     assert_eq!(value["bank"]["chain"][0]["repeats"], 1);

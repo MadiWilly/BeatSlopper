@@ -27,7 +27,7 @@ fn single_note(engine: &mut Engine, index: u8, step: u8, length: PatternLength) 
     engine.set_edit_pattern(index);
     let mut p = Pattern::empty();
     p.set_length(length);
-    p.set_synth_step(step, Some(A4), false);
+    p.set_synth_step(0, step, Some(A4), false);
     engine.set_pattern(&p);
 }
 

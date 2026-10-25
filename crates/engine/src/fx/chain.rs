@@ -1,56 +1,39 @@
-//! The effect chain: drive -> delay -> reverb (M2), the M6 bus topology, and the M8 synth
-//! channel insert (drive -> lo-fi -> chorus -> sidechain ducker), driven by [`ParamId`]
-//! values.
+//! The global effect chain: drive -> delay -> reverb (M2) and the M6 bus topology, driven by
+//! [`ParamId`] values.
 //!
-//! [`FxChain`] owns every effect plus one [`Smoother`] per continuous parameter, so a knob
-//! move glides over about 10 ms instead of stepping. The delay time is the one discrete
-//! parameter: it is a note division synced to the BPM (see [`division_seconds`]) and the
-//! [`StereoDelay`] crossfades between the old and new time itself. The lo-fi and chorus
-//! stages smooth their own parameters ([`Lofi`], [`Chorus`]).
+//! [`FxChain`] owns the shared delay and reverb plus one [`Smoother`] per continuous
+//! parameter, so a knob move glides over about 10 ms instead of stepping. The delay time is
+//! the one discrete parameter: it is a note division synced to the BPM (see
+//! [`division_seconds`]) and the [`StereoDelay`] crossfades between the old and new time
+//! itself.
+//!
+//! The per-track synth insert (`drive -> lo-fi -> chorus -> sidechain ducker`, M8) used to
+//! live here too; since M10 every instrument track owns one as a
+//! [`SynthInsert`](crate::track::SynthInsert). The chain keeps its own [`Drive`] only for the
+//! M2 serial path ([`FxChain::process`]).
 //!
 //! The master gain and the limiter are *not* part of the chain; the engine applies them after
 //! [`FxChain::process`] / [`FxChain::process_bus`].
 //!
-//! # Engine wiring (M8)
-//!
-//! Per sample the engine:
-//!
-//! 1. sums the synth voices to mono and feeds that through
-//!    [`FxChain::process_synth_insert`], which returns the **stereo** synth channel:
-//!    `drive -> lo-fi -> chorus -> x ducker gain`. (Before M8 the engine applied
-//!    [`FxChain::drive`] itself; `process_synth_insert` replaces that call and the synth
-//!    strip's pan/level/sends then operate on the stereo pair.)
-//! 2. feeds the drum rows through their own strips as before (no insert);
-//! 3. sums the post-fader dry mix and sends and calls [`FxChain::process_bus`];
-//! 4. calls [`FxChain::ducker_trigger`] whenever the kick fires, and
-//!    [`FxChain::set_ducker`] when `SidechainAmount` / `SidechainRelease` change (those two
-//!    ids are not FX ids; `Engine::set_param` routes them here directly).
-//!
-//! Three entry points share the same delay and reverb:
+//! Two entry points share the same delay and reverb:
 //!
 //! - [`FxChain::process`] (M2): the serial insert, `drive -> delay -> reverb`, each with its
 //!   dry/wet mix (`x + (wet - x) * mix`). Equivalent to sending one signal through the whole
 //!   chain, the way the pre-mixer engine did.
-//! - [`FxChain::process_bus`] (M6): the mixer topology. The engine applies the drive to the
-//!   synth channel itself (via [`FxChain::drive`]) and sums per-channel post-fader sends into
-//!   a stereo delay bus and a stereo reverb bus; `process_bus` returns
+//! - [`FxChain::process_bus`] (M6): the mixer topology. The engine runs every track through
+//!   its own insert and sums per-channel post-fader sends into a stereo delay bus and a
+//!   stereo reverb bus; `process_bus` returns
 //!   `dry + delay(delay_in) * DelayMix + reverb(reverb_in) * ReverbMix`, so the two mix
 //!   parameters act as *return levels* and the dry signal passes untouched.
-//! - [`FxChain::process_synth_insert`] (M8): the synth channel insert described above. With
-//!   `LofiMix`, `ChorusMix` and the ducker amount at zero it returns the drive output on both
-//!   channels bit for bit.
 //!
 //! Real-time safe after [`FxChain::new`]: nothing here allocates, locks, logs or panics.
-//! Every heap buffer (delay, reverb, lo-fi wobble line, chorus line) is allocated in `new`
-//! and only indexed afterwards; `tests/fx_m8.rs` checks this with a counting allocator.
+//! Every heap buffer (delay, reverb) is allocated in `new` and only indexed afterwards;
+//! `tests/fx_m8.rs` checks this with a counting allocator.
 
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 
-use super::chorus::Chorus;
 use super::delay::StereoDelay;
 use super::drive::Drive;
-use super::ducker::Ducker;
-use super::lofi::Lofi;
 use super::reverb::Reverb;
 
 /// Longest delay the chain can produce, in seconds (the pre-allocated buffer length).
@@ -90,8 +73,7 @@ pub fn division_seconds(index: f32, bpm: f32) -> f32 {
     DIVISION_BEATS[i] * 60.0 / bpm
 }
 
-/// Drive -> delay -> reverb plus the lo-fi / chorus / ducker synth insert, with smoothed
-/// parameters and BPM-synced delay time.
+/// Drive -> delay -> reverb with smoothed parameters and BPM-synced delay time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FxChain {
     sample_rate: f32,
@@ -101,9 +83,6 @@ pub struct FxChain {
     drive: Drive,
     delay: StereoDelay,
     reverb: Reverb,
-    lofi: Lofi,
-    chorus: Chorus,
-    ducker: Ducker,
     drive_amount: Smoother,
     drive_mix: Smoother,
     delay_feedback: Smoother,
@@ -141,9 +120,6 @@ impl FxChain {
             drive: Drive::new(),
             delay: StereoDelay::new(sample_rate, MAX_DELAY_SECONDS),
             reverb: Reverb::new(sample_rate),
-            lofi: Lofi::new(sample_rate),
-            chorus: Chorus::new(sample_rate),
-            ducker: Ducker::new(sample_rate),
             drive_amount: smoother(ParamId::DriveAmount),
             drive_mix: smoother(ParamId::DriveMix),
             delay_feedback: smoother(ParamId::DelayFeedback),
@@ -200,8 +176,7 @@ impl FxChain {
     }
 
     /// Sets an effect parameter. The value is clamped with [`ParamId::clamp`]; non-FX ids are
-    /// ignored. Continuous parameters glide to the new value; the delay time crossfades; the
-    /// `Lofi*` and `Chorus*` ids are forwarded to [`Lofi::set_param`] / [`Chorus::set_param`].
+    /// ignored. Continuous parameters glide to the new value; the delay time crossfades.
     pub fn set_param(&mut self, id: ParamId, value: f32) {
         if !id.is_fx() {
             return;
@@ -217,47 +192,8 @@ impl FxChain {
             ParamId::ReverbSize => self.reverb_size.set_target(v),
             ParamId::ReverbDamping => self.reverb_damping.set_target(v),
             ParamId::ReverbMix => self.reverb_mix.set_target(v),
-            ParamId::LofiBits
-            | ParamId::LofiRate
-            | ParamId::LofiWobble
-            | ParamId::LofiNoise
-            | ParamId::LofiTone
-            | ParamId::LofiMix => self.lofi.set_param(id, v),
-            ParamId::ChorusRate | ParamId::ChorusDepth | ParamId::ChorusMix => {
-                self.chorus.set_param(id, v);
-            }
             _ => {}
         }
-    }
-
-    /// Sets the sidechain ducker's dip depth (`0.0..=1.0`) and release time in seconds; see
-    /// [`Ducker::set`]. These are the `SidechainAmount` / `SidechainRelease` ids, which the
-    /// engine routes here rather than through [`set_param`](Self::set_param).
-    pub fn set_ducker(&mut self, amount: f32, release: f32) {
-        self.ducker.set(amount, release);
-    }
-
-    /// Starts a sidechain dip (the engine calls this when the kick fires).
-    pub fn ducker_trigger(&mut self) {
-        self.ducker.trigger();
-    }
-
-    /// The lo-fi stage of the synth insert.
-    #[must_use]
-    pub fn lofi(&self) -> &Lofi {
-        &self.lofi
-    }
-
-    /// The chorus stage of the synth insert.
-    #[must_use]
-    pub fn chorus(&self) -> &Chorus {
-        &self.chorus
-    }
-
-    /// The sidechain ducker of the synth insert.
-    #[must_use]
-    pub fn ducker(&self) -> &Ducker {
-        &self.ducker
     }
 
     /// Current (clamped target) value of an effect parameter. Non-FX ids return `0.0`.
@@ -276,9 +212,6 @@ impl FxChain {
     pub fn reset(&mut self) {
         self.delay.reset();
         self.reverb.reset();
-        self.lofi.reset();
-        self.chorus.reset();
-        self.ducker.reset();
         for s in [
             &mut self.drive_amount,
             &mut self.drive_mix,
@@ -333,29 +266,12 @@ impl FxChain {
         self.apply_smoothed();
     }
 
-    /// The drive stage with its current (smoothed) amount and mix, for use as a channel
-    /// insert: the engine applies it to the synth channel before the mixer. It reflects the
-    /// smoother state as of the last `process` / `process_bus` call.
+    /// The drive stage of the M2 serial path with its current (smoothed) amount and mix. It
+    /// reflects the smoother state as of the last `process` / `process_bus` call. (The
+    /// engine's per-track drives live in each track's `SynthInsert` since M10.)
     #[must_use]
     pub fn drive(&self) -> &Drive {
         &self.drive
-    }
-
-    /// The M8 synth channel insert: `drive -> lo-fi -> chorus -> x ducker gain`, mono in,
-    /// stereo out. The drive uses the smoothed amount/mix as of the last
-    /// [`process`](Self::process) / [`process_bus`](Self::process_bus) call (like
-    /// [`drive`](Self::drive)); lo-fi and chorus tick their own smoothers here, and the
-    /// ducker advances one sample. Call it once per sample, before `process_bus`.
-    ///
-    /// With `LofiMix = 0`, `ChorusMix = 0` and no dip running, the result is the drive output
-    /// on both channels exactly. Non-finite input is treated as `0.0`; the output is finite.
-    #[inline]
-    pub fn process_synth_insert(&mut self, x: f32) -> (f32, f32) {
-        let x = self.drive.process(x);
-        let x = self.lofi.process(x);
-        let (l, r) = self.chorus.process(x);
-        let g = self.ducker.tick();
-        (l * g, r * g)
     }
 
     /// The reverb (plugins milestone hook): pre-delay, width and the wet filters are set
@@ -395,7 +311,7 @@ impl FxChain {
     /// `dry + delay(delay_in) * DelayMix + reverb(reverb_in) * ReverbMix`.
     ///
     /// `dry` is the summed post-fader, panned mix; `delay_in` / `reverb_in` are the summed
-    /// post-fader sends. The drive is **not** applied here (see [`drive`](Self::drive)); the
+    /// post-fader sends. The drive is **not** applied here (the tracks' inserts are); the
     /// delay feedback, reverb size and damping work as in [`process`](Self::process). With a
     /// return level of `0.0` an effect contributes nothing; with silent sends the effects stay
     /// exactly silent. Non-finite inputs are treated as `0.0`; the output is always finite.

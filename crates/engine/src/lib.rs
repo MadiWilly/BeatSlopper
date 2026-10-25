@@ -20,8 +20,10 @@
 //! - [`pattern`]: patterns, lengths and the [`Bank`] (patterns A..H, song chain, play mode).
 //! - [`drums`], [`transport`], [`project`], [`export`]: drum kit, transport, project file,
 //!   offline WAV export.
-//! - [`mixer`]: the six channel strips (level, pan, mute, solo, delay/reverb sends) and the
-//!   pan law; [`engine::Meters`] carries the per-block peaks to the UI.
+//! - [`mixer`]: the channel strips (five drum rows plus eight tracks: level, pan, mute,
+//!   solo, delay/reverb sends) and the pan law; [`engine::Meters`] carries the per-block
+//!   peaks to the UI.
+//! - [`track`]: the M10 instrument tracks ([`Track`], [`SynthInsert`], [`TrackState`]).
 //! - [`spectrum`]: the lock-free master-output tap and FFT analyser behind the EQ plugin's
 //!   display; `fx::eq` and `fx::reverb` hold the plugin states ([`EqState`], [`ReverbState`]).
 //! - [`scope`]: the lock-free master-output tap ([`ScopeTap`] / [`ScopeReader`]) and the
@@ -42,6 +44,7 @@ pub mod project;
 pub mod scope;
 pub mod spectrum;
 pub mod synth;
+pub mod track;
 pub mod transport;
 pub mod voice;
 
@@ -56,10 +59,11 @@ pub use engine::{Meters, MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
 pub use mixer::{Channel, ChannelParam, MixerState, Strip};
 pub use pattern::{
-    BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_NOTES, MAX_STEPS, Note, PATTERN_COUNT,
-    Pattern, PatternLength, PlayMode, STEPS, SynthStep,
+    BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_NOTES, MAX_STEPS, Note, NoteTrack,
+    PATTERN_COUNT, Pattern, PatternLength, PlayMode, STEPS, SynthStep,
 };
 pub use project::{Project, ProjectError};
+pub use track::{MAX_TRACKS, SynthInsert, Track, TrackId, TrackState};
 
 pub use fx::{EqBand, EqKind, EqParam, EqState, ReverbParam, ReverbState};
 pub use scope::{SCOPE_CAPACITY_FRAMES, SCOPE_WINDOW_FRAMES, ScopeReader, ScopeTap, ScopeWindow};

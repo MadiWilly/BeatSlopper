@@ -440,7 +440,7 @@ fn project_round_trips_plugin_state_and_migrates_v5() {
     p.apply_to(&mut engine);
     assert_eq!(engine.eq(), &p.eq);
     assert_eq!(engine.reverb(), &p.reverb);
-    let again = Project::from_engine(&engine, 0, 4, 0.8);
+    let again = Project::from_engine(&engine, 4, 0.8);
     assert_eq!(again.eq, p.eq);
     assert_eq!(again.reverb, p.reverb);
 
@@ -597,7 +597,7 @@ fn project_load_keeps_both_reverb_views_equal() {
     assert_eq!(engine.reverb(), &reverb::PRESETS[6].state);
     assert_reverb_views_agree(&engine);
     assert_eq!(engine.fx().reverb().state(), reverb::PRESETS[6].state);
-    let again = Project::from_engine(&engine, 0, 4, 0.8);
+    let again = Project::from_engine(&engine, 4, 0.8);
     assert_eq!(again.reverb, reverb::PRESETS[6].state);
     assert_eq!(
         again.param(ParamId::ReverbMix),

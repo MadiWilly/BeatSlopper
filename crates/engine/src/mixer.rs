@@ -1,5 +1,6 @@
-//! Mixer (M6): six channel strips (five drum rows plus the synth) with level, pan, mute,
-//! solo and post-fader sends into the shared delay and reverb.
+//! Mixer (M6, 13 channels since M10): channel strips for the five drum rows plus the eight
+//! instrument tracks, with level, pan, mute, solo and post-fader sends into the shared delay
+//! and reverb.
 //!
 //! This module is plain data plus arithmetic: [`MixerState`] is what the project file stores
 //! and what the UI mirrors, [`Channel`] / [`ChannelParam`] address one value for the
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::drums::DrumRow;
 use crate::dsp::db_to_gain;
+use crate::track::{MAX_TRACKS, TrackId, track_index};
 
 /// Lowest channel level, dB (treated as silence by the UI's fader bottom).
 pub const MIN_LEVEL_DB: f32 = -60.0;
@@ -34,7 +36,8 @@ pub const MAX_LEVEL_DB: f32 = 6.0;
 /// Default reverb send of the snare and clap channels.
 pub const DRUM_REVERB_SEND: f32 = 0.3;
 
-/// A mixer channel: the five drum rows in sequencer order, then the synth.
+/// A mixer channel: the five drum rows in sequencer order, then the eight instrument tracks
+/// (M10; before that a single `Synth` channel, which is now [`Channel::Track`]`(0)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
@@ -48,34 +51,73 @@ pub enum Channel {
     ClosedHat,
     /// Open hat row.
     OpenHat,
-    /// The polyphonic synth (keyboard and bass lane), with the drive insert.
-    Synth,
+    /// Instrument track `0..MAX_TRACKS` (its voices through its insert, stereo).
+    Track(u8),
 }
 
+/// Strip labels of the track channels.
+const TRACK_LABELS: [&str; MAX_TRACKS] = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"];
+/// Stable keys of the track channels.
+const TRACK_KEYS: [&str; MAX_TRACKS] = [
+    "track_1", "track_2", "track_3", "track_4", "track_5", "track_6", "track_7", "track_8",
+];
+
 impl Channel {
+    /// Number of channels: the drum rows plus one per track slot.
+    pub const COUNT: usize = DrumRow::COUNT + MAX_TRACKS;
+
     /// All channels in strip order.
-    pub const ALL: [Channel; 6] = [
-        Channel::Kick,
-        Channel::Snare,
-        Channel::Clap,
-        Channel::ClosedHat,
-        Channel::OpenHat,
-        Channel::Synth,
-    ];
+    pub const ALL: [Channel; Self::COUNT] = {
+        let mut all = [Channel::Kick; Self::COUNT];
+        all[1] = Channel::Snare;
+        all[2] = Channel::Clap;
+        all[3] = Channel::ClosedHat;
+        all[4] = Channel::OpenHat;
+        let mut t = 0;
+        while t < MAX_TRACKS {
+            all[DrumRow::COUNT + t] = Channel::Track(t as u8);
+            t += 1;
+        }
+        all
+    };
 
-    /// Number of channels.
-    pub const COUNT: usize = Self::ALL.len();
+    /// The pre-M10 synth channel, now track 0's channel (kept so older call sites read on).
+    #[allow(non_upper_case_globals)]
+    pub const Synth: Channel = Channel::Track(0);
 
-    /// Index of this channel in [`Channel::ALL`] (drum rows share their [`DrumRow::index`]).
+    /// Index of this channel in [`Channel::ALL`]: drum rows share their [`DrumRow::index`],
+    /// track `t` is `DrumRow::COUNT + t` (track indices wrap into `0..MAX_TRACKS`).
     #[must_use]
     pub const fn index(self) -> usize {
-        self as usize
+        match self {
+            Channel::Kick => 0,
+            Channel::Snare => 1,
+            Channel::Clap => 2,
+            Channel::ClosedHat => 3,
+            Channel::OpenHat => 4,
+            Channel::Track(t) => DrumRow::COUNT + track_index(t),
+        }
     }
 
     /// Channel at `index` (wraps into `0..COUNT`).
     #[must_use]
     pub const fn from_index(index: usize) -> Channel {
         Self::ALL[index % Self::COUNT]
+    }
+
+    /// The channel of instrument track `track` (wraps into `0..MAX_TRACKS`).
+    #[must_use]
+    pub const fn from_track(track: TrackId) -> Channel {
+        Channel::Track(track_index(track) as u8)
+    }
+
+    /// The track behind this channel, or `None` for a drum row.
+    #[must_use]
+    pub const fn track(self) -> Option<TrackId> {
+        match self {
+            Channel::Track(t) => Some(track_index(t) as u8),
+            _ => None,
+        }
     }
 
     /// The channel of a drum row.
@@ -90,7 +132,7 @@ impl Channel {
         }
     }
 
-    /// The drum row behind this channel, or `None` for the synth.
+    /// The drum row behind this channel, or `None` for a track.
     #[must_use]
     pub const fn drum_row(self) -> Option<DrumRow> {
         match self {
@@ -99,11 +141,11 @@ impl Channel {
             Channel::Clap => Some(DrumRow::Clap),
             Channel::ClosedHat => Some(DrumRow::ClosedHat),
             Channel::OpenHat => Some(DrumRow::OpenHat),
-            Channel::Synth => None,
+            Channel::Track(_) => None,
         }
     }
 
-    /// Short strip label.
+    /// Short strip label (`"T1"`..`"T8"` for the tracks; the UI substitutes the track name).
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -112,11 +154,11 @@ impl Channel {
             Channel::Clap => "Clap",
             Channel::ClosedHat => "CH",
             Channel::OpenHat => "OH",
-            Channel::Synth => "Synth",
+            Channel::Track(t) => TRACK_LABELS[track_index(t)],
         }
     }
 
-    /// Stable snake_case name (for keys and tests).
+    /// Stable snake_case name (for keys and tests): `"track_1"`..`"track_8"` for the tracks.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -125,7 +167,7 @@ impl Channel {
             Channel::Clap => "clap",
             Channel::ClosedHat => "closed_hat",
             Channel::OpenHat => "open_hat",
-            Channel::Synth => "synth",
+            Channel::Track(t) => TRACK_KEYS[track_index(t)],
         }
     }
 }
@@ -170,13 +212,13 @@ impl ChannelParam {
         }
     }
 
-    /// Default value for `channel`: the synth sends fully into both effects, the snare and
+    /// Default value for `channel`: every track sends fully into both effects, the snare and
     /// clap send [`DRUM_REVERB_SEND`] into the reverb, everything else is `0`.
     #[must_use]
     pub const fn default_value(self, channel: Channel) -> f32 {
         match (self, channel) {
-            (ChannelParam::DelaySend, Channel::Synth) => 1.0,
-            (ChannelParam::ReverbSend, Channel::Synth) => 1.0,
+            (ChannelParam::DelaySend, Channel::Track(_)) => 1.0,
+            (ChannelParam::ReverbSend, Channel::Track(_)) => 1.0,
             (ChannelParam::ReverbSend, Channel::Snare | Channel::Clap) => DRUM_REVERB_SEND,
             _ => 0.0,
         }
@@ -309,16 +351,20 @@ impl Strip {
 }
 
 /// The whole mixer: one [`Strip`] per [`Channel`], in [`Channel::ALL`] order.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+///
+/// Serialises as `{ "strips": [...] }`. On load a shorter array is padded with the missing
+/// channels' default strips, so a pre-M10 file (six strips: five drums plus the synth) loads
+/// with its synth strip on [`Channel::Track`]`(0)` and defaults on tracks 1..8; more than
+/// [`Channel::COUNT`] strips is an error.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct MixerState {
     /// Strips indexed by [`Channel::index`].
     pub strips: [Strip; Channel::COUNT],
 }
 
 impl Default for MixerState {
-    /// Every channel at unity and centre, synth sent fully to delay and reverb, snare and
-    /// clap sent [`DRUM_REVERB_SEND`] to the reverb, nothing muted or soloed.
+    /// Every channel at unity and centre, every track sent fully to delay and reverb, snare
+    /// and clap sent [`DRUM_REVERB_SEND`] to the reverb, nothing muted or soloed.
     fn default() -> Self {
         Self {
             strips: Channel::ALL.map(Strip::for_channel),
@@ -326,7 +372,46 @@ impl Default for MixerState {
     }
 }
 
+/// On-disk shape of [`MixerState`]: any number of strips up to [`Channel::COUNT`].
+#[derive(Deserialize)]
+#[serde(default)]
+struct MixerRepr {
+    strips: Vec<Strip>,
+}
+
+impl Default for MixerRepr {
+    fn default() -> Self {
+        Self {
+            strips: MixerState::default().strips.to_vec(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MixerState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let repr = MixerRepr::deserialize(deserializer)?;
+        if repr.strips.len() > Channel::COUNT {
+            return Err(D::Error::custom(format!(
+                "mixer has {} strips, at most {} are allowed",
+                repr.strips.len(),
+                Channel::COUNT
+            )));
+        }
+        let mut state = MixerState::default();
+        for (slot, strip) in state.strips.iter_mut().zip(repr.strips) {
+            *slot = strip;
+        }
+        Ok(state)
+    }
+}
+
 impl MixerState {
+    /// Swaps the strips of two channels (M10 `SwapTracks`).
+    pub fn swap(&mut self, a: Channel, b: Channel) {
+        self.strips.swap(a.index(), b.index());
+    }
+
     /// The strip of `channel`.
     #[must_use]
     pub fn strip(&self, channel: Channel) -> &Strip {
@@ -432,12 +517,26 @@ mod tests {
             if let Some(row) = ch.drum_row() {
                 assert_eq!(row.index(), i);
                 assert_eq!(Channel::from_row(row), *ch);
+                assert_eq!(ch.track(), None);
             } else {
-                assert_eq!(*ch, Channel::Synth);
+                let t = ch.track().unwrap();
+                assert_eq!(usize::from(t), i - DrumRow::COUNT);
+                assert_eq!(Channel::from_track(t), *ch);
             }
         }
-        assert_eq!(Channel::from_index(7), Channel::Snare);
-        assert_eq!(Channel::COUNT, DrumRow::COUNT + 1);
+        assert_eq!(Channel::from_index(14), Channel::Snare);
+        assert_eq!(Channel::COUNT, DrumRow::COUNT + MAX_TRACKS);
+        assert_eq!(Channel::COUNT, 13);
+        assert_eq!(Channel::Synth, Channel::Track(0));
+        assert_eq!(
+            Channel::Track(9).index(),
+            Channel::Track(1).index(),
+            "wraps"
+        );
+        assert_eq!(Channel::from_track(8), Channel::Track(0));
+        assert_eq!(Channel::Track(0).label(), "T1");
+        assert_eq!(Channel::Track(7).label(), "T8");
+        assert_eq!(Channel::Track(2).key(), "track_3");
         let keys: std::collections::HashSet<&str> = Channel::ALL.iter().map(|c| c.key()).collect();
         assert_eq!(keys.len(), Channel::COUNT);
     }
@@ -451,7 +550,7 @@ mod tests {
             assert_eq!(s.pan, 0.0);
             assert!(!s.mute && !s.solo);
             let (d, r) = match ch {
-                Channel::Synth => (1.0, 1.0),
+                Channel::Track(_) => (1.0, 1.0),
                 Channel::Snare | Channel::Clap => (0.0, DRUM_REVERB_SEND),
                 _ => (0.0, 0.0),
             };
@@ -581,6 +680,28 @@ mod tests {
         assert_eq!(back, m);
         let partial: MixerState = serde_json::from_str("{}").unwrap();
         assert_eq!(partial, MixerState::default());
+        // A pre-M10 file has six strips: the synth's becomes track 0's, the rest default.
+        let six: Vec<Strip> = Channel::ALL[..6]
+            .iter()
+            .map(|&c| Strip::for_channel(c))
+            .collect();
+        let mut v = serde_json::json!({ "strips": six });
+        v["strips"][5]["pan"] = serde_json::json!(0.25);
+        let m: MixerState = serde_json::from_value(v).unwrap();
+        assert_eq!(m.strip(Channel::Track(0)).pan, 0.25);
+        assert_eq!(
+            *m.strip(Channel::Track(1)),
+            Strip::for_channel(Channel::Track(1))
+        );
+        let many: Vec<Strip> = vec![Strip::default(); Channel::COUNT + 1];
+        assert!(
+            serde_json::from_value::<MixerState>(serde_json::json!({ "strips": many })).is_err()
+        );
+        let mut m = MixerState::default();
+        m.set(Channel::Track(0), ChannelParam::Level, -6.0);
+        m.swap(Channel::Track(0), Channel::Track(3));
+        assert_eq!(m.get(Channel::Track(3), ChannelParam::Level), -6.0);
+        assert_eq!(m.get(Channel::Track(0), ChannelParam::Level), 0.0);
         let strip: Strip = serde_json::from_str(r#"{ "level_db": -3.0 }"#).unwrap();
         assert_eq!(strip.level_db, -3.0);
         assert_eq!(strip.pan, 0.0);

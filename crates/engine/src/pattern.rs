@@ -9,16 +9,21 @@
 //!   bars. Step storage is fixed at [`MAX_STEPS`] per row so the audio thread never
 //!   allocates; steps beyond `length` are kept (so shortening and re-lengthening a pattern
 //!   loses nothing) but not played.
-//! - The synth part of a pattern is a list of up to [`MAX_NOTES`] [`Note`]s (`start` step,
-//!   `length` in steps, MIDI `pitch`, `velocity`), kept sorted by start then pitch in a
-//!   fixed array ([`Pattern::notes`] / [`Pattern::note_count`]). Notes may overlap (chords,
+//! - The synth part of a pattern is one note list **per instrument track** (M10):
+//!   [`Pattern::tracks`] holds [`MAX_TRACKS`](crate::track::MAX_TRACKS) [`NoteTrack`]s, each a
+//!   list of up to [`MAX_NOTES`] [`Note`]s (`start` step, `length` in steps, MIDI `pitch`,
+//!   `velocity`) kept sorted by start then pitch in a fixed array. Notes may overlap (chords,
 //!   held notes); a note that starts at or beyond the pattern length is kept but never
-//!   reached by the scheduler, and one that runs past the end is released at the wrap.
-//! - The step grid's bass lane, [`Pattern::synth`], is a **derived view** of the notes: after
-//!   every note edit [`Pattern::rebuild_lane`] sets `synth[s]` to the lowest-pitched note
-//!   starting at step `s` (accent = velocity >= [`ACCENT_THRESHOLD`]). Grid editing keeps
-//!   working through [`Pattern::set_synth_step`], which upserts a length-1 note. Writing to
-//!   `synth` directly is not supported: the next rebuild overwrites it.
+//!   reached by the scheduler, and one that runs past the end is released at the wrap. Every
+//!   note helper takes the `track` it edits.
+//! - The step grid's bass lane, [`Pattern::synth`], is a **derived view** of *one* track's
+//!   notes, [`Pattern::lane_track`] (the engine's and the UI's edit track): after every note
+//!   edit the lane is rebuilt so `synth[s]` is the lowest-pitched note of that track starting
+//!   at step `s` (accent = velocity >= [`ACCENT_THRESHOLD`]). [`Pattern::rebuild_lane`]
+//!   switches the lane to another track. Grid editing keeps working through
+//!   [`Pattern::set_synth_step`], which upserts a length-1 note. Writing to `synth` directly is
+//!   not supported: the next rebuild overwrites it. `synth` and `lane_track` are views, so
+//!   they do not take part in `Pattern` equality.
 //! - A [`Bank`] holds [`PATTERN_COUNT`] patterns (A..H), the song chain (up to [`MAX_CHAIN`]
 //!   [`ChainEntry`]s, each a pattern index plus a repeat count), the [`PlayMode`] and the
 //!   `current` (selected) pattern.
@@ -29,10 +34,12 @@
 //! [`Pattern::used_steps`] entries: its `length`, or more when steps beyond the length hold
 //! data, so the file stays compact *and* lossless. On load a row of 16, 32 or 64 entries is
 //! accepted as is (shorter rows are padded with empty steps); a row longer than
-//! [`MAX_STEPS`] is an error. The notes are written as a `notes` array of `note_count`
-//! objects (`{"start", "length", "pitch", "velocity"}`); the derived `synth` lane is not
-//! written and is rebuilt on load. A pattern without `notes` (format version 4 and older)
-//! converts its `synth` lane instead: every step with a note becomes a length-1 note at
+//! [`MAX_STEPS`] is an error. The notes are written as a `tracks` array holding one
+//! `{"track": n, "notes": [...]}` entry per **non-empty** track (format version 7), each note
+//! an object `{"start", "length", "pitch", "velocity"}`; the derived `synth` lane is not
+//! written and is rebuilt on load (for track 0). A pattern with a `notes` array instead
+//! (format versions 5 and 6) loads it into track 0; a pattern with neither (version 4 and
+//! older) converts its `synth` lane: every step with a note becomes a length-1 note at
 //! [`ACCENT_VELOCITY`] when accented, [`STEP_VELOCITY`] otherwise. A version-2 pattern (no
 //! `length` field, 16 entries) loads with `length = 16`; when `length` is absent the shortest
 //! length covering the longest row (or note) is used. The chain is written as an array of
@@ -45,6 +52,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::drums::DrumRow;
+use crate::track::{MAX_TRACKS, TrackId, track_index};
 
 /// Steps per bar (16th notes in one 4/4 bar). The scheduler's bar is always this long.
 pub const STEPS: usize = 16;
@@ -93,16 +101,19 @@ pub struct Note {
 impl Default for Note {
     /// A one-step note at step 0, pitch 0, normal velocity (the empty-slot value).
     fn default() -> Self {
-        Self {
-            start: 0,
-            length: 1,
-            pitch: 0,
-            velocity: STEP_VELOCITY,
-        }
+        Self::EMPTY_SLOT
     }
 }
 
 impl Note {
+    /// The value of an unused note slot (same as [`Note::default`]).
+    pub const EMPTY_SLOT: Note = Note {
+        start: 0,
+        length: 1,
+        pitch: 0,
+        velocity: STEP_VELOCITY,
+    };
+
     /// A note with every field clamped into range (see [`Note::normalise`]).
     #[must_use]
     pub fn new(start: u8, length: u8, pitch: u8, velocity: f32) -> Self {
@@ -299,9 +310,136 @@ impl PatternLength {
     }
 }
 
-/// One pattern: five drum rows plus the synth notes (and their derived step lane), 16/32/64
-/// steps long.
-#[derive(Debug, Clone, PartialEq)]
+/// The note list of one instrument track within a pattern (M10): up to [`MAX_NOTES`] notes
+/// sorted by start then pitch in a fixed array.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoteTrack {
+    /// The notes, sorted by [`Note`] start then pitch; only the first `note_count` slots are
+    /// valid (the rest are kept at `Note::default()`). Edit through the helpers so the order
+    /// stays consistent, or call [`normalise`](Self::normalise) afterwards.
+    pub notes: [Note; MAX_NOTES],
+    /// Number of valid entries in `notes`, `0..=MAX_NOTES`.
+    pub note_count: u8,
+}
+
+impl Default for NoteTrack {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl NoteTrack {
+    /// No notes.
+    pub const EMPTY: NoteTrack = NoteTrack {
+        notes: [Note::EMPTY_SLOT; MAX_NOTES],
+        note_count: 0,
+    };
+
+    /// The valid notes, sorted by start then pitch.
+    #[must_use]
+    pub fn notes(&self) -> &[Note] {
+        &self.notes[..usize::from(self.note_count).min(MAX_NOTES)]
+    }
+
+    /// `true` when the track holds no notes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.note_count == 0
+    }
+
+    /// Index of the first note starting at `step` with MIDI `pitch`, if any.
+    #[must_use]
+    pub fn note_at(&self, step: u8, pitch: u8) -> Option<usize> {
+        self.notes()
+            .iter()
+            .position(|n| n.start == step && n.pitch == pitch)
+    }
+
+    /// Removes every note.
+    pub fn clear(&mut self) {
+        *self = Self::EMPTY;
+    }
+
+    /// Clamps the count and every note into range, clears the unused slots and sorts.
+    pub fn normalise(&mut self) {
+        let count = usize::from(self.note_count).min(MAX_NOTES);
+        self.note_count = count as u8;
+        for note in &mut self.notes[..count] {
+            note.normalise();
+        }
+        for slot in &mut self.notes[count..] {
+            *slot = Note::default();
+        }
+        self.sort();
+    }
+
+    /// Inserts a clamped note at its sorted position and returns its index. Rejects a full
+    /// list and `length == 0` (returns `None`). No pattern-length check: use
+    /// [`Pattern::add_note`] for that.
+    pub fn insert(&mut self, mut note: Note) -> Option<usize> {
+        let count = self.notes().len();
+        if count >= MAX_NOTES || note.length == 0 {
+            return None;
+        }
+        note.normalise();
+        let key = note.sort_key();
+        let index = self.notes[..count]
+            .iter()
+            .position(|n| n.sort_key() > key)
+            .unwrap_or(count);
+        self.notes[index..=count].rotate_right(1);
+        self.notes[index] = note;
+        self.note_count = count as u8 + 1;
+        Some(index)
+    }
+
+    /// Removes note `index` (`0..note_count`), shifting later notes down. Returns `false`
+    /// when `index` is out of range.
+    pub fn remove(&mut self, index: usize) -> bool {
+        let count = self.notes().len();
+        if index >= count {
+            return false;
+        }
+        self.notes[index..count].rotate_left(1);
+        self.notes[count - 1] = Note::default();
+        self.note_count = count as u8 - 1;
+        true
+    }
+
+    /// Removes every note starting at `step`.
+    pub fn remove_starting_at(&mut self, step: u8) {
+        let count = self.notes().len();
+        let mut kept = 0;
+        for i in 0..count {
+            if self.notes[i].start != step {
+                self.notes[kept] = self.notes[i];
+                kept += 1;
+            }
+        }
+        for slot in &mut self.notes[kept..count] {
+            *slot = Note::default();
+        }
+        self.note_count = kept as u8;
+    }
+
+    /// `start + 1` of the note starting last, or `None` when empty.
+    fn last_used_step(&self) -> Option<usize> {
+        self.notes().iter().map(|n| usize::from(n.start) + 1).max()
+    }
+
+    /// Sorts the valid notes by [`Note::sort_key`] (allocation-free).
+    fn sort(&mut self) {
+        let count = self.notes().len();
+        self.notes[..count].sort_unstable_by_key(|n| n.sort_key());
+    }
+}
+
+/// One pattern: five drum rows plus one note list per instrument track (and the derived step
+/// lane of one of them), 16/32/64 steps long.
+///
+/// Equality compares the content (length, drums, every track's notes, volume, tune); the
+/// derived `synth` lane and `lane_track` are views and are ignored.
+#[derive(Debug, Clone)]
 pub struct Pattern {
     /// Length in steps: 16, 32 or 64 (see [`PatternLength`]). Steps at and beyond this
     /// index are kept but not played. Always valid when set through
@@ -310,21 +448,30 @@ pub struct Pattern {
     pub length: u8,
     /// Drum rows in [`DrumRow::ALL`] order, [`MAX_STEPS`] steps each.
     pub drums: [[DrumStep; MAX_STEPS]; DrumRow::COUNT],
-    /// The bass/melody lane, [`MAX_STEPS`] steps: a derived view of [`notes`](Self::notes)
-    /// (the lowest note starting at each step), rebuilt by [`rebuild_lane`](Self::rebuild_lane)
-    /// after every note edit. Read it; edit through [`set_synth_step`](Self::set_synth_step)
-    /// or the note helpers.
+    /// The bass/melody lane, [`MAX_STEPS`] steps: a derived view of track
+    /// [`lane_track`](Self::lane_track)'s notes (the lowest note starting at each step),
+    /// rebuilt after every note edit and by [`rebuild_lane`](Self::rebuild_lane). Read it;
+    /// edit through [`set_synth_step`](Self::set_synth_step) or the note helpers.
     pub synth: [SynthStep; MAX_STEPS],
-    /// The synth notes, sorted by start then pitch; only the first `note_count` slots are
-    /// valid (the rest are kept at `Note::default()`). Edit through the note helpers so the
-    /// order and the lane stay consistent.
-    pub notes: [Note; MAX_NOTES],
-    /// Number of valid entries in `notes`, `0..=MAX_NOTES`.
-    pub note_count: u8,
+    /// The track whose notes `synth` mirrors (`0..MAX_TRACKS`); the engine keeps it at its
+    /// edit track. Not serialised (a loaded pattern shows track 0).
+    pub lane_track: TrackId,
+    /// One note list per instrument track, indexed by track slot.
+    pub tracks: [NoteTrack; MAX_TRACKS],
     /// Per-row drum volume in dB ([`DRUM_VOLUME_RANGE`]).
     pub drum_volume: [f32; DrumRow::COUNT],
     /// Per-row drum tune in semitones ([`DRUM_TUNE_RANGE`]).
     pub drum_tune: [f32; DrumRow::COUNT],
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.length == other.length
+            && self.drums == other.drums
+            && self.tracks == other.tracks
+            && self.drum_volume == other.drum_volume
+            && self.drum_tune == other.drum_tune
+    }
 }
 
 impl Default for Pattern {
@@ -334,8 +481,8 @@ impl Default for Pattern {
             length: PatternLength::Bar1.steps(),
             drums: [[DrumStep::default(); MAX_STEPS]; DrumRow::COUNT],
             synth: [SynthStep::default(); MAX_STEPS],
-            notes: [Note::default(); MAX_NOTES],
-            note_count: 0,
+            lane_track: 0,
+            tracks: [NoteTrack::EMPTY; MAX_TRACKS],
             drum_volume: [0.0; DrumRow::COUNT],
             drum_tune: [0.0; DrumRow::COUNT],
         }
@@ -388,7 +535,7 @@ impl Pattern {
         ];
         for (i, n) in bass.into_iter().enumerate() {
             if let Some(n) = n {
-                p.set_synth_step(i as u8, Some(n), false);
+                p.set_synth_step(0, i as u8, Some(n), false);
             }
         }
         p
@@ -411,12 +558,12 @@ impl Pattern {
                 p.drums[row.index()][i].on = b == b'1';
             }
         }
-        let count = p.notes().len();
-        for note in &mut p.notes[..count] {
+        let count = p.tracks[0].notes().len();
+        for note in &mut p.tracks[0].notes[..count] {
             note.pitch = (note.pitch + 5).min(127);
         }
-        p.sort_notes();
-        p.rebuild_lane();
+        p.tracks[0].sort();
+        p.refresh_lane();
         p
     }
 
@@ -461,11 +608,15 @@ impl Pattern {
             .iter()
             .flat_map(|row| row.iter().rposition(|s| *s != DrumStep::default()))
             .max();
-        let last_synth = self.synth.iter().rposition(|s| *s != SynthStep::default());
+        let last_note = self
+            .tracks
+            .iter()
+            .filter_map(NoteTrack::last_used_step)
+            .max();
         let used = last_drum
-            .into_iter()
-            .chain(last_synth)
             .map(|i| i + 1)
+            .into_iter()
+            .chain(last_note)
             .max()
             .unwrap_or(0);
         if used > self.len() {
@@ -480,16 +631,11 @@ impl Pattern {
     /// 0).
     pub fn normalise(&mut self) {
         self.set_length_steps(self.length);
-        let count = usize::from(self.note_count).min(MAX_NOTES);
-        self.note_count = count as u8;
-        for note in &mut self.notes[..count] {
-            note.normalise();
+        for track in &mut self.tracks {
+            track.normalise();
         }
-        for slot in &mut self.notes[count..] {
-            *slot = Note::default();
-        }
-        self.sort_notes();
-        self.rebuild_lane();
+        self.lane_track = track_index(self.lane_track) as u8;
+        self.refresh_lane();
         for i in 0..DrumRow::COUNT {
             let v = self.drum_volume[i];
             self.drum_volume[i] = if v.is_finite() {
@@ -511,25 +657,27 @@ impl Pattern {
         self.drums[row.index()] = [DrumStep::default(); MAX_STEPS];
     }
 
-    /// Clears every synth note (and so the lane), hidden steps included. Same as
-    /// [`clear_notes`](Self::clear_notes).
-    pub fn clear_synth(&mut self) {
-        self.clear_notes();
-    }
-
-    /// Clears every step of every row and the synth lane (length, volume and tune are kept).
-    pub fn clear_all(&mut self) {
+    /// Clears every step of every drum row, hidden steps included (notes, length, volume and
+    /// tune are kept).
+    pub fn clear_rows(&mut self) {
         for row in DrumRow::ALL {
             self.clear_row(row);
         }
-        self.clear_synth();
     }
 
-    /// `true` when no drum step (within the length or beyond it) is active and there are no
-    /// notes.
+    /// Clears every step of every row and every track's notes (length, volume and tune are
+    /// kept). The grid's "clear all" button clears the rows plus the *edit* track only; see
+    /// `Engine::clear_all`.
+    pub fn clear_all(&mut self) {
+        self.clear_rows();
+        self.clear_all_notes();
+    }
+
+    /// `true` when no drum step (within the length or beyond it) is active and no track holds
+    /// a note.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.drums.iter().flatten().all(|s| !s.on) && self.note_count == 0
+        self.drums.iter().flatten().all(|s| !s.on) && self.tracks.iter().all(NoteTrack::is_empty)
     }
 
     /// Sets one drum step (step index wraps into `0..length`).
@@ -538,17 +686,19 @@ impl Pattern {
         self.drums[row.index()][i] = DrumStep { on, accent };
     }
 
-    /// Sets one synth step of the grid lane (step index wraps into `0..length`): every note
-    /// starting at that step is removed, then `note` (if any) is added as a length-1 note at
-    /// [`ACCENT_VELOCITY`] / [`STEP_VELOCITY`], and the lane is rebuilt so
-    /// `synth[step] == SynthStep { note, accent }` afterwards.
-    pub fn set_synth_step(&mut self, step: u8, note: Option<u8>, accent: bool) {
+    /// Sets one synth step of track `track`'s grid lane (step index wraps into `0..length`):
+    /// every note of that track starting at that step is removed, then `note` (if any) is
+    /// added as a length-1 note at [`ACCENT_VELOCITY`] / [`STEP_VELOCITY`], and the lane is
+    /// rebuilt so `synth[step] == SynthStep { note, accent }` afterwards when `track` is the
+    /// lane track.
+    pub fn set_synth_step(&mut self, track: TrackId, step: u8, note: Option<u8>, accent: bool) {
         let i = (usize::from(step) % self.len()) as u8;
-        self.remove_notes_starting_at(i);
+        let t = &mut self.tracks[track_index(track)];
+        t.remove_starting_at(i);
         if let Some(pitch) = note {
-            self.insert_note(Note::step(i, pitch, accent));
+            t.insert(Note::step(i, pitch, accent));
         }
-        self.rebuild_lane();
+        self.refresh_lane();
     }
 
     /// Sets a row's volume in dB, clamped to [`DRUM_VOLUME_RANGE`]; non-finite values are ignored.
@@ -567,141 +717,124 @@ impl Pattern {
         }
     }
 
-    // --- notes (M7) -----------------------------------------------------------------------
+    // --- notes (M7, per track since M10) --------------------------------------------------
 
-    /// The valid notes, sorted by start then pitch.
+    /// The note list of track `track` (wraps into `0..MAX_TRACKS`).
     #[must_use]
-    pub fn notes(&self) -> &[Note] {
-        &self.notes[..usize::from(self.note_count).min(MAX_NOTES)]
+    pub fn track(&self, track: TrackId) -> &NoteTrack {
+        &self.tracks[track_index(track)]
     }
 
-    /// Adds a note (clamped with [`Note::normalise`]) and returns its index in the sorted
-    /// list, or `None` when the pattern already holds [`MAX_NOTES`] notes, the note has
-    /// `length == 0`, or it starts at or beyond the pattern [`length`](Self::length). The lane
-    /// is rebuilt.
-    pub fn add_note(&mut self, note: Note) -> Option<usize> {
+    /// The valid notes of track `track`, sorted by start then pitch.
+    #[must_use]
+    pub fn notes(&self, track: TrackId) -> &[Note] {
+        self.track(track).notes()
+    }
+
+    /// Total number of notes over every track.
+    #[must_use]
+    pub fn note_count(&self) -> usize {
+        self.tracks.iter().map(|t| t.notes().len()).sum()
+    }
+
+    /// Adds a note to track `track` (clamped with [`Note::normalise`]) and returns its index
+    /// in that track's sorted list, or `None` when the track already holds [`MAX_NOTES`]
+    /// notes, the note has `length == 0`, or it starts at or beyond the pattern
+    /// [`length`](Self::length). The lane is rebuilt.
+    pub fn add_note(&mut self, track: TrackId, note: Note) -> Option<usize> {
         if usize::from(note.start) >= self.len() {
             return None;
         }
-        let index = self.insert_note(note)?;
-        self.rebuild_lane();
+        let index = self.tracks[track_index(track)].insert(note)?;
+        self.refresh_lane();
         Some(index)
     }
 
-    /// Removes note `index` (`0..note_count`), shifting later notes down. Returns `false`
-    /// when `index` is out of range. The lane is rebuilt.
-    pub fn remove_note(&mut self, index: usize) -> bool {
-        let count = self.notes().len();
-        if index >= count {
-            return false;
+    /// Removes note `index` (`0..note_count`) of track `track`, shifting later notes down.
+    /// Returns `false` when `index` is out of range. The lane is rebuilt.
+    pub fn remove_note(&mut self, track: TrackId, index: usize) -> bool {
+        let removed = self.tracks[track_index(track)].remove(index);
+        if removed {
+            self.refresh_lane();
         }
-        self.notes[index..count].rotate_left(1);
-        self.notes[count - 1] = Note::default();
-        self.note_count = count as u8 - 1;
-        self.rebuild_lane();
-        true
+        removed
     }
 
-    /// Replaces note `index` (`0..note_count`) with `note` (clamped) and returns the note's
-    /// new index after re-sorting, or `None` (nothing changes) when `index` is out of range or
-    /// `note` is invalid (`length == 0` or `start >= length` of the pattern). The lane is
-    /// rebuilt.
-    pub fn set_note(&mut self, index: usize, note: Note) -> Option<usize> {
-        let count = self.notes().len();
-        if index >= count || note.length == 0 || usize::from(note.start) >= self.len() {
+    /// Replaces note `index` (`0..note_count`) of track `track` with `note` (clamped) and
+    /// returns the note's new index after re-sorting, or `None` (nothing changes) when `index`
+    /// is out of range or `note` is invalid (`length == 0` or `start >= length` of the
+    /// pattern). The lane is rebuilt.
+    pub fn set_note(&mut self, track: TrackId, index: usize, note: Note) -> Option<usize> {
+        let len = self.len();
+        let t = &mut self.tracks[track_index(track)];
+        let count = t.notes().len();
+        if index >= count || note.length == 0 || usize::from(note.start) >= len {
             return None;
         }
         // Remove then re-insert; the list cannot be full after the removal.
-        self.notes[index..count].rotate_left(1);
-        self.notes[count - 1] = Note::default();
-        self.note_count = count as u8 - 1;
-        let new_index = self.insert_note(note);
-        self.rebuild_lane();
+        t.remove(index);
+        let new_index = t.insert(note);
+        self.refresh_lane();
         new_index
     }
 
-    /// Index of the first note starting at `step` with MIDI `pitch`, if any.
+    /// Index of the first note of track `track` starting at `step` with MIDI `pitch`, if any.
     #[must_use]
-    pub fn note_at(&self, step: u8, pitch: u8) -> Option<usize> {
-        self.notes()
-            .iter()
-            .position(|n| n.start == step && n.pitch == pitch)
+    pub fn note_at(&self, track: TrackId, step: u8, pitch: u8) -> Option<usize> {
+        self.track(track).note_at(step, pitch)
     }
 
-    /// Removes every note and clears the lane.
-    pub fn clear_notes(&mut self) {
-        self.notes = [Note::default(); MAX_NOTES];
-        self.note_count = 0;
-        self.rebuild_lane();
+    /// Removes every note of track `track` (and clears the lane when it is the lane track).
+    pub fn clear_notes(&mut self, track: TrackId) {
+        self.tracks[track_index(track)].clear();
+        self.refresh_lane();
     }
 
-    /// Recomputes the grid lane from the notes: `synth[s]` is the lowest-pitched note
-    /// starting at step `s` (accent when its velocity is at least [`ACCENT_THRESHOLD`]), a
-    /// rest where no note starts. Called by every note helper; only needed directly after
-    /// writing `notes` / `note_count` by hand (prefer [`normalise`](Self::normalise), which
-    /// also sorts).
-    pub fn rebuild_lane(&mut self) {
+    /// Removes every note of every track and clears the lane.
+    pub fn clear_all_notes(&mut self) {
+        self.tracks = [NoteTrack::EMPTY; MAX_TRACKS];
+        self.refresh_lane();
+    }
+
+    /// Swaps the note lists of two tracks (the lane follows `lane_track`).
+    pub fn swap_tracks(&mut self, a: TrackId, b: TrackId) {
+        self.tracks.swap(track_index(a), track_index(b));
+        self.refresh_lane();
+    }
+
+    /// Makes `track` the lane track and recomputes the grid lane from its notes: `synth[s]`
+    /// is the lowest-pitched note starting at step `s` (accent when its velocity is at least
+    /// [`ACCENT_THRESHOLD`]), a rest where no note starts. Every note helper rebuilds the lane
+    /// for the current lane track; call this to switch tracks or after writing a
+    /// [`NoteTrack`]'s fields by hand (prefer [`normalise`](Self::normalise), which also
+    /// sorts).
+    pub fn rebuild_lane(&mut self, track: TrackId) {
+        self.lane_track = track_index(track) as u8;
+        self.refresh_lane();
+    }
+
+    /// Rebuilds the lane for the current lane track.
+    fn refresh_lane(&mut self) {
         self.synth = [SynthStep::default(); MAX_STEPS];
+        let t = &self.tracks[track_index(self.lane_track)];
         // Independent of the note order (by-hand edits may be unsorted): the lowest pitch
         // starting at a step wins, ties keep the first (lowest sort key) note.
-        let count = usize::from(self.note_count).min(MAX_NOTES);
+        let count = usize::from(t.note_count).min(MAX_NOTES);
         for i in 0..count {
-            let note = self.notes[i];
+            let note = t.notes[i];
             let s = usize::from(note.start);
             if s < MAX_STEPS && self.synth[s].note.is_none_or(|p| note.pitch.min(127) < p) {
                 self.synth[s] = note.lane_step();
             }
         }
     }
-
-    /// Inserts a clamped note at its sorted position without the pattern-length check and
-    /// without rebuilding the lane (serde and the grid-lane upsert, which may target hidden
-    /// steps). Rejects a full list and `length == 0`.
-    fn insert_note(&mut self, mut note: Note) -> Option<usize> {
-        let count = self.notes().len();
-        if count >= MAX_NOTES || note.length == 0 {
-            return None;
-        }
-        note.normalise();
-        let key = note.sort_key();
-        let index = self.notes[..count]
-            .iter()
-            .position(|n| n.sort_key() > key)
-            .unwrap_or(count);
-        self.notes[index..=count].rotate_right(1);
-        self.notes[index] = note;
-        self.note_count = count as u8 + 1;
-        Some(index)
-    }
-
-    /// Removes every note starting at `step` (no lane rebuild).
-    fn remove_notes_starting_at(&mut self, step: u8) {
-        let count = self.notes().len();
-        let mut kept = 0;
-        for i in 0..count {
-            if self.notes[i].start != step {
-                self.notes[kept] = self.notes[i];
-                kept += 1;
-            }
-        }
-        for slot in &mut self.notes[kept..count] {
-            *slot = Note::default();
-        }
-        self.note_count = kept as u8;
-    }
-
-    /// Sorts the valid notes by [`Note::sort_key`] (allocation-free).
-    fn sort_notes(&mut self) {
-        let count = self.notes().len();
-        self.notes[..count].sort_unstable_by_key(|n| n.sort_key());
-    }
 }
 
 // --- Pattern serde ------------------------------------------------------------------------
 
 /// On-disk shape of a [`Pattern`]: drum rows are plain arrays of any length up to
-/// [`MAX_STEPS`]; `notes` holds the valid notes (format version 5). `synth` is only read, from
-/// version-4 and older files that have no `notes`.
+/// [`MAX_STEPS`]; `tracks` holds one entry per non-empty track (format version 7). `notes`
+/// (versions 5 and 6, track 0) and `synth` (version 4 and older) are only read.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct PatternRepr {
@@ -712,8 +845,18 @@ struct PatternRepr {
     synth: Vec<SynthStep>,
     #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<Vec<Note>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tracks: Vec<NoteTrackRepr>,
     drum_volume: [f32; DrumRow::COUNT],
     drum_tune: [f32; DrumRow::COUNT],
+}
+
+/// One `tracks` entry of a serialised pattern: the slot and its notes.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct NoteTrackRepr {
+    track: u8,
+    notes: Vec<Note>,
 }
 
 impl Default for PatternRepr {
@@ -723,10 +866,39 @@ impl Default for PatternRepr {
             drums: vec![Vec::new(); DrumRow::COUNT],
             synth: Vec::new(),
             notes: None,
+            tracks: Vec::new(),
             drum_volume: [0.0; DrumRow::COUNT],
             drum_tune: [0.0; DrumRow::COUNT],
         }
     }
+}
+
+/// Validates and inserts a serialised note list into one track; returns the step after the
+/// last note start (for the inferred length).
+fn load_notes<E: serde::de::Error>(track: &mut NoteTrack, notes: Vec<Note>) -> Result<usize, E> {
+    if notes.len() + track.notes().len() > MAX_NOTES {
+        return Err(E::custom(format!(
+            "pattern track has {} notes, at most {MAX_NOTES} are allowed",
+            notes.len() + track.notes().len()
+        )));
+    }
+    let mut longest = 0;
+    for note in notes {
+        if note.length == 0 {
+            return Err(E::custom("note length must be at least 1"));
+        }
+        if usize::from(note.start) >= MAX_STEPS {
+            return Err(E::custom(format!(
+                "note starts at step {}, the last step is {}",
+                note.start,
+                MAX_STEPS - 1
+            )));
+        }
+        longest = longest.max(usize::from(note.start) + 1);
+        // Cannot fail: the count was checked and the length is non-zero.
+        track.insert(note);
+    }
+    Ok(longest)
 }
 
 /// Copies `src` into the front of a fixed-size row; the rest stays empty.
@@ -753,7 +925,17 @@ impl Serialize for Pattern {
             length: Some(self.len() as u8),
             drums: self.drums.iter().map(|row| row[..n].to_vec()).collect(),
             synth: Vec::new(),
-            notes: Some(self.notes().to_vec()),
+            notes: None,
+            tracks: self
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| !t.is_empty())
+                .map(|(i, t)| NoteTrackRepr {
+                    track: i as u8,
+                    notes: t.notes().to_vec(),
+                })
+                .collect(),
             drum_volume: self.drum_volume,
             drum_tune: self.drum_tune,
         }
@@ -781,40 +963,31 @@ impl<'de> Deserialize<'de> for Pattern {
             fill_row(DrumRow::ALL[i].label(), &mut p.drums[i], row)?;
             longest = longest.max(row.len());
         }
-        match repr.notes {
-            Some(notes) => {
-                if notes.len() > MAX_NOTES {
+        if !repr.tracks.is_empty() {
+            // Version 7: one entry per non-empty track.
+            for entry in repr.tracks {
+                if usize::from(entry.track) >= MAX_TRACKS {
                     return Err(D::Error::custom(format!(
-                        "pattern has {} notes, at most {MAX_NOTES} are allowed",
-                        notes.len()
+                        "pattern track {} is out of range, the last track is {}",
+                        entry.track,
+                        MAX_TRACKS - 1
                     )));
                 }
-                for note in notes {
-                    if note.length == 0 {
-                        return Err(D::Error::custom("note length must be at least 1"));
-                    }
-                    if usize::from(note.start) >= MAX_STEPS {
-                        return Err(D::Error::custom(format!(
-                            "note starts at step {}, the last step is {}",
-                            note.start,
-                            MAX_STEPS - 1
-                        )));
-                    }
-                    longest = longest.max(usize::from(note.start) + 1);
-                    // Cannot fail: the count was checked and the length is non-zero.
-                    p.insert_note(note);
-                }
+                let used = load_notes(&mut p.tracks[usize::from(entry.track)], entry.notes)?;
+                longest = longest.max(used);
             }
-            None => {
-                // Version 4 and older: the lane is the data. Each step with a note becomes a
-                // length-1 note (accent -> ACCENT_VELOCITY, else STEP_VELOCITY).
-                let mut lane = [SynthStep::default(); MAX_STEPS];
-                fill_row("synth lane", &mut lane, &repr.synth)?;
-                longest = longest.max(repr.synth.len());
-                for (step, cell) in lane.iter().enumerate() {
-                    if let Some(pitch) = cell.note {
-                        p.insert_note(Note::step(step as u8, pitch, cell.accent));
-                    }
+        } else if let Some(notes) = repr.notes {
+            // Versions 5 and 6: the single synth's notes become track 0.
+            longest = longest.max(load_notes(&mut p.tracks[0], notes)?);
+        } else {
+            // Version 4 and older: the lane is the data. Each step with a note becomes a
+            // length-1 note (accent -> ACCENT_VELOCITY, else STEP_VELOCITY) on track 0.
+            let mut lane = [SynthStep::default(); MAX_STEPS];
+            fill_row("synth lane", &mut lane, &repr.synth)?;
+            longest = longest.max(repr.synth.len());
+            for (step, cell) in lane.iter().enumerate() {
+                if let Some(pitch) = cell.note {
+                    p.tracks[0].insert(Note::step(step as u8, pitch, cell.accent));
                 }
             }
         }
@@ -1177,6 +1350,9 @@ mod tests {
         assert!(p.drums[DrumRow::Snare.index()][4].on);
         assert_eq!(p.synth[0].note, Some(36));
         assert_eq!(p.synth[1].note, None);
+        assert_eq!(p.notes(0).len(), 9);
+        assert!(p.tracks[1..].iter().all(NoteTrack::is_empty));
+        assert_eq!(p.note_count(), 9);
         let v = Pattern::demo_variation();
         assert_ne!(v, p);
         assert_eq!(v.synth[0].note, Some(41));
@@ -1198,12 +1374,16 @@ mod tests {
         p.set_length(PatternLength::Bar2);
         p.set_drum_step(DrumRow::Kick, 17, true, false); // now a real step
         assert!(p.drums[DrumRow::Kick.index()][17].on);
-        p.set_synth_step(3, Some(200), false);
+        p.set_synth_step(0, 3, Some(200), false);
         assert_eq!(p.synth[3].note, Some(127));
         p.set_drum_volume(DrumRow::Snare, 99.0);
         assert_eq!(p.drum_volume[DrumRow::Snare.index()], 6.0);
         p.set_drum_tune(DrumRow::Snare, f32::NAN);
         assert_eq!(p.drum_tune[DrumRow::Snare.index()], 0.0);
+        p.add_note(2, Note::new(1, 1, 50, 0.8)).unwrap();
+        p.clear_rows();
+        assert!(p.drums.iter().flatten().all(|s| !s.on));
+        assert_eq!(p.note_count(), 11, "clear_rows keeps the notes");
         p.clear_all();
         assert!(p.is_empty());
         assert_eq!(p.len(), 32, "clear keeps the length");
@@ -1238,18 +1418,75 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Pattern = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
-        // A 16-step pattern writes 16 entries per drum row; the synth is a note list and the
-        // derived lane is not written.
+        // A 16-step pattern writes 16 entries per drum row; the notes are written per
+        // non-empty track and the derived lane is not written.
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["length"], 16);
         assert_eq!(value["drums"][0].as_array().unwrap().len(), 16);
         assert!(value.get("synth").is_none(), "{json}");
-        let notes = value["notes"].as_array().unwrap();
+        assert!(value.get("notes").is_none(), "{json}");
+        let tracks = value["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 1, "only the non-empty track is written");
+        assert_eq!(tracks[0]["track"], 0);
+        let notes = tracks[0]["notes"].as_array().unwrap();
         assert_eq!(notes.len(), 9, "the demo bassline has nine notes");
         assert_eq!(
             notes[0],
             serde_json::json!({ "start": 0, "length": 1, "pitch": 36, "velocity": 0.8 })
         );
+        // An empty pattern writes no `tracks` at all.
+        let value = serde_json::to_value(Pattern::default()).unwrap();
+        assert!(value.get("tracks").is_none());
+    }
+
+    #[test]
+    fn tracks_round_trip_and_validate() {
+        let mut p = Pattern::demo();
+        p.add_note(3, Note::new(2, 4, 72, 0.6)).unwrap();
+        p.add_note(3, Note::new(2, 4, 76, 0.6)).unwrap();
+        p.add_note(7, Note::new(15, 1, 40, 1.0)).unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tracks = value["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[1]["track"], 3);
+        assert_eq!(tracks[1]["notes"].as_array().unwrap().len(), 2);
+        assert_eq!(tracks[2]["track"], 7);
+        let back: Pattern = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.notes(3), p.notes(3));
+        assert_eq!(back.lane_track, 0, "a loaded pattern shows track 0");
+        assert_eq!(back.synth[0].note, Some(36));
+
+        // A v6 `notes` list lands on track 0; `tracks` wins over a stray `notes`.
+        let v = serde_json::json!({ "notes": [{ "start": 1, "length": 1, "pitch": 60 }] });
+        let p: Pattern = serde_json::from_value(v).unwrap();
+        assert_eq!(p.notes(0), &[Note::new(1, 1, 60, STEP_VELOCITY)]);
+        let v = serde_json::json!({
+            "notes": [{ "start": 1, "length": 1, "pitch": 60 }],
+            "tracks": [{ "track": 2, "notes": [{ "start": 5, "length": 2, "pitch": 70 }] }]
+        });
+        let p: Pattern = serde_json::from_value(v).unwrap();
+        assert!(p.notes(0).is_empty());
+        assert_eq!(p.notes(2), &[Note::new(5, 2, 70, STEP_VELOCITY)]);
+        assert_eq!(p.synth[5].note, None, "the lane shows track 0");
+
+        // Duplicate entries for one track merge; an out-of-range track or too many notes
+        // in total is an error.
+        let v = serde_json::json!({ "tracks": [
+            { "track": 1, "notes": [{ "start": 0, "length": 1, "pitch": 60 }] },
+            { "track": 1, "notes": [{ "start": 0, "length": 1, "pitch": 64 }] }
+        ] });
+        let p: Pattern = serde_json::from_value(v).unwrap();
+        assert_eq!(p.notes(1).len(), 2);
+        let v = serde_json::json!({ "tracks": [{ "track": 8, "notes": [] }] });
+        assert!(serde_json::from_value::<Pattern>(v).is_err());
+        let many: Vec<Note> = vec![Note::default(); MAX_NOTES];
+        let v = serde_json::json!({ "tracks": [
+            { "track": 1, "notes": many },
+            { "track": 1, "notes": [Note::default()] }
+        ] });
+        assert!(serde_json::from_value::<Pattern>(v).is_err());
     }
 
     #[test]
@@ -1283,7 +1520,7 @@ mod tests {
         assert!(!p.drums[0][1].on);
         assert_eq!(p.synth[0].note, Some(60));
         assert!(p.synth[0].accent);
-        assert_eq!(p.notes(), &[Note::new(0, 1, 60, ACCENT_VELOCITY)]);
+        assert_eq!(p.notes(0), &[Note::new(0, 1, 60, ACCENT_VELOCITY)]);
         assert_eq!(p.drum_volume[1], -3.0);
 
         // A lane of 20 entries with no length (v4 shape) covers two bars; `notes` wins over a
@@ -1297,14 +1534,14 @@ mod tests {
         let v = serde_json::json!({ "drums": [], "synth": lane });
         let p: Pattern = serde_json::from_value(v).unwrap();
         assert_eq!(p.len(), 32);
-        assert_eq!(p.notes(), &[Note::new(19, 1, 40, STEP_VELOCITY)]);
+        assert_eq!(p.notes(0), &[Note::new(19, 1, 40, STEP_VELOCITY)]);
         let v = serde_json::json!({
             "drums": [],
             "synth": [{ "note": 60, "accent": true }],
             "notes": [{ "start": 33, "length": 2, "pitch": 70, "velocity": 0.5 }]
         });
         let p: Pattern = serde_json::from_value(v).unwrap();
-        assert_eq!(p.notes(), &[Note::new(33, 2, 70, 0.5)]);
+        assert_eq!(p.notes(0), &[Note::new(33, 2, 70, 0.5)]);
         assert_eq!(p.synth[0].note, None);
         assert_eq!(p.len(), 64, "a note at step 33 needs four bars");
 
@@ -1320,7 +1557,7 @@ mod tests {
             "notes": [{ "start": 3, "length": 200, "pitch": 200, "velocity": 7.0 }]
         });
         let p: Pattern = serde_json::from_value(v).unwrap();
-        assert_eq!(p.notes(), &[Note::new(3, 64, 127, 1.0)]);
+        assert_eq!(p.notes(0), &[Note::new(3, 64, 127, 1.0)]);
 
         // No length but 40 entries: the covering length is 64.
         let long: Vec<DrumStep> = vec![DrumStep::default(); 40];
@@ -1348,12 +1585,13 @@ mod tests {
     fn used_steps_follows_the_data() {
         let mut p = Pattern::default();
         assert_eq!(p.used_steps(), 16);
-        // A note left on a hidden step (added at four bars, then shortened) still counts.
+        // A note left on a hidden step (added at four bars, then shortened) still counts,
+        // whichever track it is on.
         p.set_length(PatternLength::Bar4);
-        p.set_synth_step(40, Some(1), false);
+        p.set_synth_step(5, 40, Some(1), false);
         p.set_length(PatternLength::Bar1);
         assert_eq!(p.used_steps(), 64);
-        p.clear_synth();
+        p.clear_notes(5);
         p.drums[2][17].accent = true;
         assert_eq!(p.used_steps(), 32);
         p.set_length(PatternLength::Bar4);
@@ -1391,41 +1629,44 @@ mod tests {
     #[test]
     fn notes_are_sorted_bounded_and_validated() {
         let mut p = Pattern::default();
-        assert!(p.notes().is_empty());
-        assert_eq!(p.add_note(Note::new(4, 2, 72, 0.8)), Some(0));
+        assert!(p.notes(0).is_empty());
+        assert_eq!(p.add_note(0, Note::new(4, 2, 72, 0.8)), Some(0));
         assert_eq!(
-            p.add_note(Note::new(0, 1, 60, 1.0)),
+            p.add_note(0, Note::new(0, 1, 60, 1.0)),
             Some(0),
             "sorted by start"
         );
         assert_eq!(
-            p.add_note(Note::new(4, 1, 60, 0.8)),
+            p.add_note(0, Note::new(4, 1, 60, 0.8)),
             Some(1),
             "then by pitch"
         );
-        assert_eq!(p.notes().len(), 3);
-        assert_eq!(p.note_at(4, 72), Some(2));
-        assert_eq!(p.note_at(4, 61), None);
+        assert_eq!(p.notes(0).len(), 3);
+        assert_eq!(p.note_at(0, 4, 72), Some(2));
+        assert_eq!(p.note_at(0, 4, 61), None);
         // Invalid notes are rejected and change nothing.
         assert_eq!(
-            p.add_note(Note::new(16, 1, 60, 0.8)),
+            p.add_note(0, Note::new(16, 1, 60, 0.8)),
             None,
             "start >= length"
         );
         assert_eq!(
-            p.add_note(Note {
-                start: 1,
-                length: 0,
-                pitch: 60,
-                velocity: 0.8
-            }),
+            p.add_note(
+                0,
+                Note {
+                    start: 1,
+                    length: 0,
+                    pitch: 60,
+                    velocity: 0.8
+                }
+            ),
             None,
             "zero length"
         );
-        assert_eq!(p.notes().len(), 3);
+        assert_eq!(p.notes(0).len(), 3);
         // Out-of-range fields clamp.
-        assert_eq!(p.add_note(Note::new(2, 200, 200, 9.0)), Some(1));
-        assert_eq!(p.notes()[1], Note::new(2, 64, 127, 1.0));
+        assert_eq!(p.add_note(0, Note::new(2, 200, 200, 9.0)), Some(1));
+        assert_eq!(p.notes(0)[1], Note::new(2, 64, 127, 1.0));
         assert_eq!(Note::new(1, 1, 1, f32::NAN).velocity, STEP_VELOCITY);
         assert_eq!(Note::new(1, 1, 1, 0.0).velocity, MIN_VELOCITY);
         assert_eq!(Note::new(2, 3, 1, 0.5).end(), 5);
@@ -1433,48 +1674,59 @@ mod tests {
         assert!(!Note::new(0, 1, 1, 0.9).accent());
 
         // set_note re-sorts and reports the new index; remove shifts down.
-        assert_eq!(p.set_note(3, Note::new(1, 1, 40, 0.8)), Some(1));
-        assert_eq!(p.notes()[1], Note::new(1, 1, 40, 0.8));
-        assert_eq!(p.set_note(9, Note::new(1, 1, 40, 0.8)), None);
-        assert_eq!(p.set_note(0, Note::new(20, 1, 40, 0.8)), None, "invalid");
-        assert_eq!(p.notes()[0], Note::new(0, 1, 60, 1.0), "unchanged");
-        assert!(p.remove_note(0));
-        assert_eq!(p.notes()[0], Note::new(1, 1, 40, 0.8));
-        assert!(!p.remove_note(3));
-        assert_eq!(p.notes().len(), 3);
-        assert_eq!(p.notes[3], Note::default(), "unused slots stay empty");
+        assert_eq!(p.set_note(0, 3, Note::new(1, 1, 40, 0.8)), Some(1));
+        assert_eq!(p.notes(0)[1], Note::new(1, 1, 40, 0.8));
+        assert_eq!(p.set_note(0, 9, Note::new(1, 1, 40, 0.8)), None);
+        assert_eq!(p.set_note(0, 0, Note::new(20, 1, 40, 0.8)), None, "invalid");
+        assert_eq!(p.notes(0)[0], Note::new(0, 1, 60, 1.0), "unchanged");
+        assert!(p.remove_note(0, 0));
+        assert_eq!(p.notes(0)[0], Note::new(1, 1, 40, 0.8));
+        assert!(!p.remove_note(0, 3));
+        assert_eq!(p.notes(0).len(), 3);
+        assert_eq!(
+            p.tracks[0].notes[3],
+            Note::default(),
+            "unused slots stay empty"
+        );
 
-        // Capacity.
+        // Capacity is per track.
         let mut full = Pattern::default();
         full.set_length(PatternLength::Bar4);
         for i in 0..MAX_NOTES {
             assert!(
-                full.add_note(Note::new((i % 64) as u8, 1, 60, 0.8))
+                full.add_note(0, Note::new((i % 64) as u8, 1, 60, 0.8))
                     .is_some()
             );
         }
-        assert_eq!(full.notes().len(), MAX_NOTES);
-        assert_eq!(full.add_note(Note::new(0, 1, 61, 0.8)), None, "full");
-        full.set_synth_step(0, Some(62), false);
+        assert_eq!(full.notes(0).len(), MAX_NOTES);
+        assert_eq!(full.add_note(0, Note::new(0, 1, 61, 0.8)), None, "full");
         assert_eq!(
-            full.notes().len(),
+            full.add_note(1, Note::new(0, 1, 61, 0.8)),
+            Some(0),
+            "another track has room"
+        );
+        full.set_synth_step(0, 0, Some(62), false);
+        assert_eq!(
+            full.notes(0).len(),
             MAX_NOTES,
             "the upsert replaced one note"
         );
         assert_eq!(full.synth[0].note, Some(62));
-        full.clear_notes();
-        assert!(full.notes().is_empty());
+        full.clear_notes(0);
+        assert!(full.notes(0).is_empty());
         assert!(full.synth.iter().all(|s| *s == SynthStep::default()));
+        assert!(!full.is_empty(), "track 1 still has its note");
+        full.clear_all_notes();
         assert!(full.is_empty());
     }
 
     #[test]
     fn lane_is_derived_from_the_lowest_note_per_step() {
         let mut p = Pattern::default();
-        p.add_note(Note::new(4, 2, 72, 0.8)).unwrap();
-        p.add_note(Note::new(4, 1, 65, 1.0)).unwrap();
-        p.add_note(Note::new(4, 3, 60, 0.8)).unwrap();
-        p.add_note(Note::new(7, 1, 50, 0.96)).unwrap();
+        p.add_note(0, Note::new(4, 2, 72, 0.8)).unwrap();
+        p.add_note(0, Note::new(4, 1, 65, 1.0)).unwrap();
+        p.add_note(0, Note::new(4, 3, 60, 0.8)).unwrap();
+        p.add_note(0, Note::new(7, 1, 50, 0.96)).unwrap();
         assert_eq!(p.synth[4].note, Some(60), "lowest pitch wins");
         assert!(
             !p.synth[4].accent,
@@ -1492,7 +1744,7 @@ mod tests {
                 accent: true
             }
         );
-        p.remove_note(p.note_at(4, 60).unwrap());
+        p.remove_note(0, p.note_at(0, 4, 60).unwrap());
         assert_eq!(
             p.synth[4],
             SynthStep {
@@ -1502,9 +1754,9 @@ mod tests {
         );
 
         // set_synth_step upserts a length-1 note and removes every other note at that step.
-        p.set_synth_step(4, Some(48), false);
+        p.set_synth_step(0, 4, Some(48), false);
         assert_eq!(
-            p.notes(),
+            p.notes(0),
             &[Note::step(4, 48, false), Note::new(7, 1, 50, 0.96)]
         );
         assert_eq!(
@@ -1514,41 +1766,82 @@ mod tests {
                 accent: false
             }
         );
-        p.set_synth_step(4, Some(48), true);
-        assert_eq!(p.notes()[0], Note::step(4, 48, true));
+        p.set_synth_step(0, 4, Some(48), true);
+        assert_eq!(p.notes(0)[0], Note::step(4, 48, true));
         assert!(p.synth[4].accent);
-        p.set_synth_step(20, None, false); // wraps to step 4 in a one-bar pattern
-        assert_eq!(p.notes(), &[Note::new(7, 1, 50, 0.96)]);
+        p.set_synth_step(0, 20, None, false); // wraps to step 4 in a one-bar pattern
+        assert_eq!(p.notes(0), &[Note::new(7, 1, 50, 0.96)]);
         assert_eq!(p.synth[4], SynthStep::default());
         // set_synth_step on a hidden step (after shortening) keeps working, like drum steps.
         p.set_length(PatternLength::Bar2);
-        p.set_synth_step(30, Some(33), false);
+        p.set_synth_step(0, 30, Some(33), false);
         p.set_length(PatternLength::Bar1);
         assert_eq!(p.synth[30].note, Some(33), "hidden notes stay in the lane");
-        assert_eq!(p.notes().len(), 2);
-        p.clear_synth();
-        assert!(p.notes().is_empty());
+        assert_eq!(p.notes(0).len(), 2);
+        p.clear_notes(0);
+        assert!(p.notes(0).is_empty());
 
         // rebuild_lane after a by-hand edit.
-        p.notes[0] = Note::new(2, 1, 70, 1.0);
-        p.note_count = 1;
+        p.tracks[0].notes[0] = Note::new(2, 1, 70, 1.0);
+        p.tracks[0].note_count = 1;
         assert_eq!(p.synth[2].note, None);
-        p.rebuild_lane();
+        p.rebuild_lane(0);
         assert_eq!(p.synth[2].note, Some(70));
         assert!(p.synth[2].accent);
     }
 
     #[test]
+    fn lane_follows_the_lane_track() {
+        let mut p = Pattern::default();
+        p.add_note(0, Note::new(0, 1, 36, 0.8)).unwrap();
+        p.add_note(2, Note::new(0, 1, 60, 1.0)).unwrap();
+        p.add_note(2, Note::new(3, 1, 64, 0.8)).unwrap();
+        assert_eq!(p.synth[0].note, Some(36), "track 0 by default");
+        assert_eq!(p.synth[3].note, None);
+        p.rebuild_lane(2);
+        assert_eq!(p.lane_track, 2);
+        assert_eq!(p.synth[0].note, Some(60));
+        assert!(p.synth[0].accent);
+        assert_eq!(p.synth[3].note, Some(64));
+        // Edits on another track leave the lane alone; edits on the lane track update it.
+        p.add_note(0, Note::new(3, 1, 40, 0.8)).unwrap();
+        assert_eq!(p.synth[3].note, Some(64));
+        p.set_synth_step(2, 3, None, false);
+        assert_eq!(p.synth[3].note, None);
+        assert_eq!(p.notes(0).len(), 2, "track 0 untouched by the lane edit");
+        // Grid edits through set_synth_step go to the given track, whatever the lane shows.
+        p.set_synth_step(5, 1, Some(70), false);
+        assert_eq!(p.notes(5), &[Note::step(1, 70, false)]);
+        assert_eq!(p.synth[1].note, None);
+        // swap_tracks moves the notes and the lane keeps showing its slot.
+        p.swap_tracks(2, 5);
+        assert_eq!(p.notes(5)[0].pitch, 60);
+        assert_eq!(p.notes(2), &[Note::step(1, 70, false)]);
+        assert_eq!(p.synth[1].note, Some(70));
+        assert_eq!(p.synth[0].note, None);
+        // The lane track wraps and survives normalise; equality ignores the view.
+        p.rebuild_lane(10);
+        assert_eq!(p.lane_track, 2);
+        let mut q = p.clone();
+        q.rebuild_lane(0);
+        assert_eq!(p, q, "same content, different view");
+        assert_ne!(p.synth, q.synth);
+        q.lane_track = 200;
+        q.normalise();
+        assert_eq!(q.lane_track, 0);
+    }
+
+    #[test]
     fn copying_a_pattern_carries_its_notes() {
         let mut b = Bank::empty();
-        b.patterns[0].add_note(Note::new(1, 4, 60, 0.7)).unwrap();
-        b.patterns[0].add_note(Note::new(1, 4, 64, 0.7)).unwrap();
+        b.patterns[0].add_note(0, Note::new(1, 4, 60, 0.7)).unwrap();
+        b.patterns[0].add_note(3, Note::new(1, 4, 64, 0.7)).unwrap();
         b.copy_pattern(0, 2);
-        assert_eq!(b.patterns[2].notes(), b.patterns[0].notes());
+        assert_eq!(b.patterns[2].tracks, b.patterns[0].tracks);
         assert_eq!(b.patterns[2].synth[1].note, Some(60));
         b.clear_pattern(2);
-        assert!(b.patterns[2].notes().is_empty());
-        assert_eq!(b.patterns[0].notes().len(), 2);
+        assert!(b.patterns[2].is_empty());
+        assert_eq!(b.patterns[0].note_count(), 2);
     }
 
     #[test]
@@ -1643,20 +1936,22 @@ mod tests {
         };
         b.patterns[2].length = 48;
         // Hand-written notes: out of range, unsorted, with a stale slot beyond the count.
-        b.patterns[2].notes[0] = Note {
+        let t = &mut b.patterns[2].tracks[4];
+        t.notes[0] = Note {
             start: 5,
             length: 0,
             pitch: 255,
             velocity: f32::NAN,
         };
-        b.patterns[2].notes[1] = Note {
+        t.notes[1] = Note {
             start: 2,
             length: 99,
             pitch: 60,
             velocity: -1.0,
         };
-        b.patterns[2].notes[2] = Note::new(9, 1, 9, 1.0);
-        b.patterns[2].note_count = 2;
+        t.notes[2] = Note::new(9, 1, 9, 1.0);
+        t.note_count = 2;
+        b.patterns[2].lane_track = 4;
         b.patterns[2].drum_volume[0] = f32::INFINITY;
         b.normalise();
         assert_eq!(b.current, 7);
@@ -1664,14 +1959,14 @@ mod tests {
         assert_eq!(b.chain[0], ChainEntry::new(7, 1));
         assert_eq!(b.patterns[2].length, 64);
         assert_eq!(
-            b.patterns[2].notes(),
+            b.patterns[2].notes(4),
             &[
                 Note::new(2, 64, 60, MIN_VELOCITY),
                 Note::new(5, 1, 127, STEP_VELOCITY)
             ]
         );
         assert_eq!(
-            b.patterns[2].notes[2],
+            b.patterns[2].tracks[4].notes[2],
             Note::default(),
             "stale slot cleared"
         );
@@ -1687,8 +1982,11 @@ mod tests {
         b.mode = PlayMode::Song;
         b.current = 1;
         b.set_length(1, PatternLength::Bar4);
-        b.patterns[1].set_synth_step(63, Some(50), false);
-        b.patterns[1].add_note(Note::new(63, 4, 55, 0.6)).unwrap();
+        b.patterns[1].set_synth_step(0, 63, Some(50), false);
+        b.patterns[1]
+            .add_note(0, Note::new(63, 4, 55, 0.6))
+            .unwrap();
+        b.patterns[1].add_note(6, Note::new(0, 4, 72, 0.6)).unwrap();
         let json = serde_json::to_string_pretty(&b).unwrap();
         let back: Bank = serde_json::from_str(&json).unwrap();
         assert_eq!(back, b);
@@ -1704,10 +2002,11 @@ mod tests {
             64
         );
         assert!(value["patterns"][1].get("synth").is_none());
-        assert_eq!(
-            value["patterns"][1]["notes"].as_array().unwrap().len(),
-            9 + 2
-        );
+        assert!(value["patterns"][1].get("notes").is_none());
+        let tracks = value["patterns"][1]["tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0]["notes"].as_array().unwrap().len(), 9 + 2);
+        assert_eq!(tracks[1]["track"], 6);
         assert!(value.get("chain_len").is_none());
 
         // Short or empty banks pad; too many patterns or entries fail.

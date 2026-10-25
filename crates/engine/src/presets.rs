@@ -18,13 +18,29 @@ pub struct Preset {
 }
 
 impl Preset {
-    /// Resets every parameter to its default, then applies this preset's values.
+    /// Resets every parameter to its default (global ones included; the per-track ids land
+    /// on the engine's edit track), then applies this preset's values.
     pub fn apply(&self, engine: &mut Engine) {
         for &id in ParamId::ALL {
             engine.set_param(id, id.default_value());
         }
         for &(id, value) in self.values {
             engine.set_param(id, value);
+        }
+    }
+
+    /// Resets every per-track parameter of track `track` to its default, then applies this
+    /// preset's per-track values there (M10). Global parameters are left alone.
+    pub fn apply_to_track(&self, engine: &mut Engine, track: crate::track::TrackId) {
+        for &id in ParamId::ALL {
+            if id.is_track() {
+                engine.set_track_param(track, id, id.default_value());
+            }
+        }
+        for &(id, value) in self.values {
+            if id.is_track() {
+                engine.set_track_param(track, id, value);
+            }
         }
     }
 

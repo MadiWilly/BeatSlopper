@@ -12,6 +12,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 
 use common::{all_finite, brightness, estimate_pitch_hz, peak, per_window, rms};
 use engine::ParamId;
+use engine::SynthInsert;
 use engine::drums::noise::Noise;
 use engine::fx::{Chorus, Ducker, FxChain, Lofi};
 
@@ -131,23 +132,28 @@ fn run_lofi(l: &mut Lofi, input: &[f32]) -> Vec<f32> {
     input.iter().map(|&x| l.process(x)).collect()
 }
 
-/// A chain with every mix at zero and the ducker off.
-fn dry_chain() -> FxChain {
-    let mut fx = FxChain::new(SR);
+/// A per-track insert (M10: `SynthInsert`, formerly part of `FxChain`) with every mix at
+/// zero and the ducker off.
+fn dry_insert() -> SynthInsert {
+    let mut ins = SynthInsert::new(SR);
     for id in [
         ParamId::DriveMix,
         ParamId::DriveAmount,
-        ParamId::DelayMix,
-        ParamId::DelayFeedback,
-        ParamId::ReverbMix,
         ParamId::LofiMix,
         ParamId::ChorusMix,
+        ParamId::SidechainAmount,
     ] {
-        fx.set_param(id, 0.0);
+        ins.set_param(id, 0.0);
     }
-    fx.set_ducker(0.0, 0.25);
-    fx.reset();
-    fx
+    ins.set_param(ParamId::SidechainRelease, 0.25);
+    ins.reset();
+    ins
+}
+
+/// Sets the ducker through the two sidechain ids.
+fn set_ducker(ins: &mut SynthInsert, amount: f32, release: f32) {
+    ins.set_param(ParamId::SidechainAmount, amount);
+    ins.set_param(ParamId::SidechainRelease, release);
 }
 
 // --- lo-fi ------------------------------------------------------------------------------------
@@ -281,7 +287,7 @@ fn tone_two_khz_darkens() {
 
 #[test]
 fn lofi_mix_zero_is_bit_transparent_in_the_chain() {
-    let mut fx = dry_chain();
+    let mut fx = dry_insert();
     for (id, v) in [
         (ParamId::LofiBits, 4.0),
         (ParamId::LofiRate, 16.0),
@@ -295,7 +301,7 @@ fn lofi_mix_zero_is_bit_transparent_in_the_chain() {
     assert_eq!(fx.lofi().param(ParamId::LofiBits), 4.0);
     assert_eq!(fx.param(ParamId::LofiTone), 1_000.0);
     for (i, &x) in saw(samples(0.5), 220.0, 0.6).iter().enumerate() {
-        assert_eq!(fx.process_synth_insert(x), (x, x), "sample {i}");
+        assert_eq!(fx.process(x), (x, x), "sample {i}");
     }
 }
 
@@ -378,14 +384,14 @@ fn ducker_dips_within_two_ms_and_recovers_by_release() {
 
 #[test]
 fn chain_ducker_pumps_the_synth_insert() {
-    let mut fx = dry_chain();
-    fx.set_ducker(0.6, 0.25);
+    let mut fx = dry_insert();
+    set_ducker(&mut fx, 0.6, 0.25);
     assert_eq!(fx.ducker().amount(), 0.6);
-    assert_eq!(fx.process_synth_insert(0.5), (0.5, 0.5));
-    fx.ducker_trigger();
+    assert_eq!(fx.process(0.5), (0.5, 0.5));
+    fx.trigger_ducker();
     let mut out = Vec::new();
     for _ in 0..samples(0.25) {
-        let (l, r) = fx.process_synth_insert(0.5);
+        let (l, r) = fx.process(0.5);
         assert_eq!(l, r);
         out.push(l);
     }
@@ -395,17 +401,17 @@ fn chain_ducker_pumps_the_synth_insert() {
     let end = *out.last().unwrap();
     assert!(end > 0.95 * 0.5, "at release {end}");
     // Retrigger resets.
-    fx.ducker_trigger();
-    let (l, _) = fx.process_synth_insert(0.5);
+    fx.trigger_ducker();
+    let (l, _) = fx.process(0.5);
     assert!(l < end);
     assert!(fx.ducker().is_active());
 }
 
-// --- chain wiring -----------------------------------------------------------------------------
+// --- insert wiring ----------------------------------------------------------------------------
 
 #[test]
 fn synth_insert_with_all_mixes_zero_is_the_drive_output_on_both_channels() {
-    let mut fx = dry_chain();
+    let mut fx = dry_insert();
     fx.set_param(ParamId::DriveAmount, 1.0);
     fx.set_param(ParamId::DriveMix, 1.0);
     fx.reset();
@@ -413,11 +419,7 @@ fn synth_insert_with_all_mixes_zero_is_the_drive_output_on_both_channels() {
     assert_eq!(drive.amount(), 1.0);
     for (i, &x) in saw(samples(0.25), 220.0, 0.8).iter().enumerate() {
         let expected = drive.process(x);
-        assert_eq!(
-            fx.process_synth_insert(x),
-            (expected, expected),
-            "sample {i}"
-        );
+        assert_eq!(fx.process(x), (expected, expected), "sample {i}");
     }
     // The two insert stages are routed through `set_param` (and nothing else changes).
     fx.set_param(ParamId::ChorusRate, 2.5);
@@ -431,17 +433,22 @@ fn synth_insert_with_all_mixes_zero_is_the_drive_output_on_both_channels() {
 #[test]
 fn everything_is_finite_under_extreme_settings_and_junk_input() {
     let mut fx = FxChain::new(SR);
+    let mut ins = SynthInsert::new(SR);
     for id in ParamId::ALL.iter().filter(|id| id.is_fx()) {
         fx.set_param(*id, *id.range().end());
     }
-    fx.set_param(ParamId::LofiBits, 4.0);
-    fx.set_param(ParamId::LofiTone, 1_000.0);
-    fx.set_ducker(1.0, 0.05);
+    for id in ParamId::ALL.iter().filter(|id| id.is_synth_insert()) {
+        ins.set_param(*id, *id.range().end());
+    }
+    ins.set_param(ParamId::LofiBits, 4.0);
+    ins.set_param(ParamId::LofiTone, 1_000.0);
+    set_ducker(&mut ins, 1.0, 0.05);
     fx.reset();
+    ins.reset();
     let mut rng = Noise::new(7);
     for i in 0..samples(2.0) {
         if i % 4_800 == 0 {
-            fx.ducker_trigger();
+            ins.trigger_ducker();
         }
         let x = match i % 1_000 {
             0 => f32::NAN,
@@ -449,7 +456,7 @@ fn everything_is_finite_under_extreme_settings_and_junk_input() {
             2 => f32::NEG_INFINITY,
             _ => rng.next_f32() * 4.0,
         };
-        let (l, r) = fx.process_synth_insert(x);
+        let (l, r) = ins.process(x);
         assert!(l.is_finite() && r.is_finite(), "sample {i}: {l} {r}");
         let (bl, br) = fx.process_bus((l, r), (l, r), (l, r));
         assert!(bl.is_finite() && br.is_finite(), "sample {i}");
@@ -459,6 +466,7 @@ fn everything_is_finite_under_extreme_settings_and_junk_input() {
 #[test]
 fn processing_never_allocates_after_construction() {
     let mut fx = FxChain::new(SR);
+    let mut ins = SynthInsert::new(SR);
     let mut lofi = Lofi::new(SR);
     let mut chorus = Chorus::new(SR);
     let mut ducker = Ducker::new(SR);
@@ -475,27 +483,29 @@ fn processing_never_allocates_after_construction() {
         (ParamId::ReverbMix, 0.5),
     ] {
         fx.set_param(id, v);
+        ins.set_param(id, v);
         lofi.set_param(id, v);
         chorus.set_param(id, v);
     }
-    fx.set_ducker(0.8, 0.1);
+    set_ducker(&mut ins, 0.8, 0.1);
     ducker.set(0.8, 0.1);
     fx.reset();
+    ins.reset();
     let input = white(samples(1.0), 0.5);
 
     let before = allocations();
     let mut acc = 0.0_f32;
     for (i, &x) in input.iter().enumerate() {
         if i % 12_000 == 0 {
-            fx.ducker_trigger();
+            ins.trigger_ducker();
             ducker.trigger();
-            fx.set_param(ParamId::LofiWobble, 0.5);
-            fx.set_param(ParamId::ChorusRate, 1.5);
-            fx.set_param(ParamId::LofiTone, 5_000.0);
-            fx.set_ducker(0.5, 0.2);
+            ins.set_param(ParamId::LofiWobble, 0.5);
+            ins.set_param(ParamId::ChorusRate, 1.5);
+            ins.set_param(ParamId::LofiTone, 5_000.0);
+            set_ducker(&mut ins, 0.5, 0.2);
             fx.set_bpm(100.0);
         }
-        let (l, r) = fx.process_synth_insert(x);
+        let (l, r) = ins.process(x);
         let (bl, br) = fx.process_bus((l, r), (l, r), (l, r));
         let (cl, cr) = chorus.process(lofi.process(x));
         acc += bl + br + cl + cr + ducker.tick();

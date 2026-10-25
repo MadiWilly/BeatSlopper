@@ -1,7 +1,7 @@
 //! Effects. The M2 chain is drive -> delay -> reverb ([`FxChain`]) followed by the engine's
-//! master gain and [`Limiter`]; M8 adds the synth channel insert drive -> lo-fi -> chorus ->
-//! sidechain ducker ([`FxChain::process_synth_insert`]).
-//! master EQ ([`ParametricEq`], plugins milestone), master gain and [`Limiter`].
+//! master EQ ([`ParametricEq`], plugins milestone), master gain and [`Limiter`]; M8 adds the
+//! synth channel insert drive -> lo-fi -> chorus -> sidechain ducker, which since M10 is the
+//! per-track [`SynthInsert`](crate::track::SynthInsert).
 //!
 //! Every effect exposes a per-sample `process` that is allocation-free and panic-free once
 //! constructed, treats non-finite input as silence, and flushes denormals on its feedback

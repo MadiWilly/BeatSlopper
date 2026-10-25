@@ -41,7 +41,7 @@ fn engine_with(notes: &[Note], length: PatternLength) -> Engine {
     let mut p = Pattern::empty();
     p.set_length(length);
     for &n in notes {
-        p.add_note(n).expect("valid note");
+        p.add_note(0, n).expect("valid note");
     }
     engine.set_pattern(&p);
     engine
@@ -157,7 +157,7 @@ fn a_note_longer_than_the_pattern_is_released_at_the_wrap() {
     let (mut handle, mut engine) = seq_engine();
     let mut a = Pattern::empty();
     a.set_length(PatternLength::Bar2);
-    a.add_note(Note::new(0, 32, A4, 0.8)).unwrap();
+    a.add_note(0, Note::new(0, 32, A4, 0.8)).unwrap();
     engine.set_pattern(&a);
     engine.play();
     let _ = render(&mut engine, 100);
@@ -248,9 +248,9 @@ fn polyphony_is_limited_by_the_voice_pool() {
     let (_h, mut engine) = seq_engine();
     let mut p = Pattern::empty();
     for i in 0..(MAX_VOICES as u8 + 1) {
-        p.add_note(Note::new(0, 2, 48 + i, 0.8)).unwrap();
+        p.add_note(0, Note::new(0, 2, 48 + i, 0.8)).unwrap();
     }
-    assert_eq!(p.notes().len(), MAX_VOICES + 1);
+    assert_eq!(p.notes(0).len(), MAX_VOICES + 1);
     engine.set_pattern(&p);
     engine.play();
     let _ = render(&mut engine, 10);
@@ -273,7 +273,7 @@ fn set_synth_step_upserts_a_length_one_note_and_the_lane_follows() {
     let (_h, mut engine) = seq_engine();
     engine.set_synth_step(3, Some(60), true);
     let p = engine.pattern();
-    assert_eq!(p.notes(), &[Note::new(3, 1, 60, ACCENT_VELOCITY)]);
+    assert_eq!(p.notes(0), &[Note::new(3, 1, 60, ACCENT_VELOCITY)]);
     assert_eq!(
         p.synth[3],
         SynthStep {
@@ -285,24 +285,24 @@ fn set_synth_step_upserts_a_length_one_note_and_the_lane_follows() {
     // Changing the pitch replaces the note rather than stacking a second one.
     engine.set_synth_step(3, Some(62), false);
     let p = engine.pattern();
-    assert_eq!(p.notes(), &[Note::new(3, 1, 62, STEP_VELOCITY)]);
+    assert_eq!(p.notes(0), &[Note::new(3, 1, 62, STEP_VELOCITY)]);
     assert_eq!(p.synth[3].note, Some(62));
     assert!(!p.synth[3].accent);
 
     // A chord added through the note API shows its lowest pitch in the lane; the grid upsert
     // then removes every note at that step.
-    engine.set_note(0, 1, Note::new(3, 2, 50, 0.8));
-    engine.set_note(0, 2, Note::new(3, 2, 70, 0.8));
-    assert_eq!(engine.pattern().notes().len(), 3);
+    engine.set_note(0, 0, 1, Note::new(3, 2, 50, 0.8));
+    engine.set_note(0, 0, 2, Note::new(3, 2, 70, 0.8));
+    assert_eq!(engine.pattern().notes(0).len(), 3);
     assert_eq!(engine.pattern().synth[3].note, Some(50));
     engine.set_synth_step(3, Some(64), false);
     assert_eq!(
-        engine.pattern().notes(),
+        engine.pattern().notes(0),
         &[Note::new(3, 1, 64, STEP_VELOCITY)]
     );
     assert_eq!(engine.pattern().synth[3].note, Some(64));
     engine.set_synth_step(3, None, false);
-    assert!(engine.pattern().notes().is_empty());
+    assert!(engine.pattern().notes(0).is_empty());
     assert_eq!(engine.pattern().synth[3], SynthStep::default());
 
     // Every lane cell agrees with the notes for a busy pattern.
@@ -310,24 +310,24 @@ fn set_synth_step_upserts_a_length_one_note_and_the_lane_follows() {
     let p = engine.pattern();
     for s in 0..p.len() {
         let lowest = p
-            .notes()
+            .notes(0)
             .iter()
             .filter(|n| usize::from(n.start) == s)
             .map(|n| n.pitch)
             .min();
         assert_eq!(p.synth[s].note, lowest, "step {s}");
     }
-    assert_eq!(p.notes().len(), 9);
-    assert!(p.notes().iter().all(|n| n.length == 1));
+    assert_eq!(p.notes(0).len(), 9);
+    assert!(p.notes(0).iter().all(|n| n.length == 1));
 }
 
 // (7) rebuild_lane picks the lowest pitch per step, and its velocity decides the accent.
 #[test]
 fn rebuild_lane_picks_the_lowest_pitch() {
     let mut p = Pattern::empty();
-    p.add_note(Note::new(5, 1, 72, 1.0)).unwrap();
-    p.add_note(Note::new(5, 2, 60, 0.8)).unwrap();
-    p.add_note(Note::new(5, 1, 67, 1.0)).unwrap();
+    p.add_note(0, Note::new(5, 1, 72, 1.0)).unwrap();
+    p.add_note(0, Note::new(5, 2, 60, 0.8)).unwrap();
+    p.add_note(0, Note::new(5, 1, 67, 1.0)).unwrap();
     assert_eq!(
         p.synth[5],
         SynthStep {
@@ -340,7 +340,7 @@ fn rebuild_lane_picks_the_lowest_pitch() {
         SynthStep::default(),
         "a held step is a rest in the lane"
     );
-    p.remove_note(p.note_at(5, 60).unwrap());
+    p.remove_note(0, p.note_at(0, 5, 60).unwrap());
     assert_eq!(
         p.synth[5],
         SynthStep {
@@ -349,10 +349,10 @@ fn rebuild_lane_picks_the_lowest_pitch() {
         }
     );
     // By-hand edits need an explicit rebuild, which does not rely on the order.
-    p.notes[p.notes().len()] = Note::new(5, 1, 40, 0.5);
-    p.note_count += 1;
+    p.tracks[0].notes[p.notes(0).len()] = Note::new(5, 1, 40, 0.5);
+    p.tracks[0].note_count += 1;
     assert_eq!(p.synth[5].note, Some(67), "not yet rebuilt");
-    p.rebuild_lane();
+    p.rebuild_lane(0);
     assert_eq!(
         p.synth[5].note,
         Some(40),
@@ -361,8 +361,8 @@ fn rebuild_lane_picks_the_lowest_pitch() {
     assert!(!p.synth[5].accent);
     // normalise sorts as well, so the order no longer matters.
     p.normalise();
-    assert_eq!(p.notes()[0], Note::new(5, 1, 40, 0.5));
-    assert_eq!(p.notes()[1], Note::new(5, 1, 67, 1.0));
+    assert_eq!(p.notes(0)[0], Note::new(5, 1, 40, 0.5));
+    assert_eq!(p.notes(0)[1], Note::new(5, 1, 67, 1.0));
 }
 
 /// A literal version-4 project (as the M6 build wrote it) with a 16-step lane in pattern A:
@@ -410,7 +410,7 @@ fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     assert_eq!(p.bpm, 110.0);
     let a = &p.bank.patterns[0];
     assert_eq!(
-        a.notes(),
+        a.notes(0),
         &[
             Note::new(0, 1, 48, ACCENT_VELOCITY),
             Note::new(7, 1, 55, STEP_VELOCITY)
@@ -437,11 +437,11 @@ fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     let head = format!("{{\n  \"version\": {FORMAT_VERSION},");
     assert!(v5.starts_with(&head));
     assert!(!v5.contains("\"synth\""));
-    assert!(v5.contains("\"notes\": ["));
+    assert!(v5.contains("\"tracks\": ["));
     assert!(v5.contains("\"pitch\": 48"));
     let value: serde_json::Value = serde_json::from_str(&v5).unwrap();
     assert_eq!(
-        value["bank"]["patterns"][0]["notes"],
+        value["bank"]["patterns"][0]["tracks"][0]["notes"],
         serde_json::json!([
             { "start": 0, "length": 1, "pitch": 48, "velocity": 1.0 },
             { "start": 7, "length": 1, "pitch": 55, "velocity": 0.8 }
@@ -454,7 +454,7 @@ fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     // The migrated pattern plays the same two hits through the scheduler.
     let (_h, mut engine) = seq_engine();
     engine.set_bank(&p.bank);
-    assert_eq!(engine.pattern().notes().len(), 2);
+    assert_eq!(engine.pattern().notes(0).len(), 2);
     let mono = play_and_render(&mut engine, BAR);
     assert_eq!(onsets(&mono).len(), 2);
 
@@ -462,18 +462,18 @@ fn v4_json_with_a_lane_migrates_to_length_one_notes_and_round_trips_as_v5() {
     let mut project = Project::default();
     project.bank.patterns[2].set_length(PatternLength::Bar2);
     project.bank.patterns[2]
-        .add_note(Note::new(0, 8, 60, 0.6))
+        .add_note(0, Note::new(0, 8, 60, 0.6))
         .unwrap();
     project.bank.patterns[2]
-        .add_note(Note::new(0, 8, 64, 0.6))
+        .add_note(0, Note::new(0, 8, 64, 0.6))
         .unwrap();
     project.bank.patterns[2]
-        .add_note(Note::new(30, 4, 72, 1.0))
+        .add_note(0, Note::new(30, 4, 72, 1.0))
         .unwrap();
     let json = project.to_json_pretty();
     let back = Project::from_json(&json).unwrap();
     assert_eq!(back, project);
-    assert_eq!(back.bank.patterns[2].notes().len(), 3);
+    assert_eq!(back.bank.patterns[2].notes(0).len(), 3);
     assert_eq!(back.bank.patterns[2].synth[0].note, Some(60));
     assert_eq!(back.bank.patterns[2].synth[30].note, Some(72));
 }
@@ -488,26 +488,31 @@ fn note_messages_through_the_queue() {
     for m in [
         Message::SetNote {
             pattern: 1,
+            track: 0,
             index: 0,
             note: e,
         }, // append to empty
         Message::SetNote {
             pattern: 1,
+            track: 0,
             index: 1,
             note: c,
         }, // append; sorts before e
         Message::SetNote {
             pattern: 1,
+            track: 0,
             index: 2,
             note: g,
         }, // append
         Message::SetNote {
             pattern: 1,
+            track: 0,
             index: 7,
             note: g,
         }, // out of range: ignored
         Message::SetNote {
             pattern: 1,
+            track: 0,
             index: 3,
             note: Note {
                 start: 20,
@@ -521,7 +526,7 @@ fn note_messages_through_the_queue() {
     }
     let _ = render(&mut engine, 1);
     let b = engine.bank().pattern(1);
-    assert_eq!(b.notes(), &[c, e, g]);
+    assert_eq!(b.notes(0), &[c, e, g]);
     assert_eq!(b.synth[0].note, Some(60));
     assert_eq!(
         b.synth[2],
@@ -530,37 +535,43 @@ fn note_messages_through_the_queue() {
             accent: true
         }
     );
-    assert!(engine.bank().pattern(0).notes().is_empty(), "A untouched");
+    assert!(engine.bank().pattern(0).notes(0).is_empty(), "A untouched");
 
     // Replace: the note moves in the sorted list and the lane follows.
     let moved = Note::new(5, 1, 60, 0.8);
     assert!(handle.send(Message::SetNote {
         pattern: 1,
+        track: 0,
         index: 0,
         note: moved
     }));
     let _ = render(&mut engine, 1);
     let b = engine.bank().pattern(1);
-    assert_eq!(b.notes(), &[e, g, moved]);
+    assert_eq!(b.notes(0), &[e, g, moved]);
     assert_eq!(b.synth[0].note, Some(64));
     assert_eq!(b.synth[5].note, Some(60));
 
     // Remove (and an ignored out-of-range remove), then clear.
     assert!(handle.send(Message::RemoveNote {
         pattern: 1,
+        track: 0,
         index: 1
     }));
     assert!(handle.send(Message::RemoveNote {
         pattern: 1,
+        track: 0,
         index: 9
     }));
     let _ = render(&mut engine, 1);
     let b = engine.bank().pattern(1);
-    assert_eq!(b.notes(), &[e, moved]);
+    assert_eq!(b.notes(0), &[e, moved]);
     assert_eq!(b.synth[2], SynthStep::default());
-    assert!(handle.send(Message::ClearNotes(1)));
+    assert!(handle.send(Message::ClearNotes {
+        pattern: 1,
+        track: 0
+    }));
     let _ = render(&mut engine, 1);
-    assert!(engine.bank().pattern(1).notes().is_empty());
+    assert!(engine.bank().pattern(1).notes(0).is_empty());
     assert!(
         engine
             .bank()
@@ -571,16 +582,16 @@ fn note_messages_through_the_queue() {
     );
 
     // The direct API reports indices; the grid message still writes length-1 notes.
-    assert_eq!(engine.set_note(1, 0, g), Some(0));
-    assert_eq!(engine.set_note(1, 1, c), Some(0));
-    assert_eq!(engine.set_note(1, 5, c), None);
-    assert_eq!(engine.set_note(1, 0, Note::new(3, 1, 61, 0.8)), Some(1));
+    assert_eq!(engine.set_note(1, 0, 0, g), Some(0));
+    assert_eq!(engine.set_note(1, 0, 1, c), Some(0));
+    assert_eq!(engine.set_note(1, 0, 5, c), None);
+    assert_eq!(engine.set_note(1, 0, 0, Note::new(3, 1, 61, 0.8)), Some(1));
     assert_eq!(
-        engine.bank().pattern(1).notes(),
+        engine.bank().pattern(1).notes(0),
         &[g, Note::new(3, 1, 61, 0.8)]
     );
-    assert!(engine.remove_note(1, 0));
-    assert!(!engine.remove_note(1, 4));
+    assert!(engine.remove_note(1, 0, 0));
+    assert!(!engine.remove_note(1, 0, 4));
     engine.set_edit_pattern(1);
     assert!(handle.send(Message::SetSynthStep {
         step: 3,
@@ -589,18 +600,19 @@ fn note_messages_through_the_queue() {
     }));
     let _ = render(&mut engine, 1);
     assert_eq!(
-        engine.pattern().notes(),
+        engine.pattern().notes(0),
         &[Note::new(3, 1, 40, ACCENT_VELOCITY)]
     );
     assert!(handle.send(Message::ClearSynth));
     let _ = render(&mut engine, 1);
-    assert!(engine.pattern().notes().is_empty());
-    engine.clear_notes(1);
+    assert!(engine.pattern().notes(0).is_empty());
+    engine.clear_notes(1, 0);
     assert!(engine.pattern().is_empty());
 
     // Messages stay Copy.
     let m = Message::SetNote {
         pattern: 0,
+        track: 0,
         index: 0,
         note: c,
     };
@@ -616,7 +628,7 @@ fn sounding_notes_survive_edits_and_keyboard_holds_survive_note_offs() {
     engine.play();
     let _ = render(&mut engine, SPP);
     assert_eq!(held_pitches(&engine), vec![A4]);
-    engine.clear_notes(0);
+    engine.clear_notes(0, 0);
     let _ = render(&mut engine, 2 * SPP);
     assert_eq!(
         held_pitches(&engine),

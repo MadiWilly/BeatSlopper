@@ -472,9 +472,17 @@ fn set_mixer_state_snaps_and_everything_stays_finite() {
     );
     assert!(first_l > 0.1, "kick missing: {first_l}");
     assert!(first_r < first_l * LEAK, "kick leaked right: {first_r}");
-    // Every channel metered something.
+    // Every drum channel and the (only active) track metered something; the inactive track
+    // slots meter exactly nothing.
     let m = engine.meters();
-    assert!(m.channel.iter().all(|&v| v > 0.0 && v.is_finite()), "{m:?}");
+    for ch in Channel::ALL {
+        let v = m.of(ch);
+        if ch.drum_row().is_some() || ch == Channel::Track(0) {
+            assert!(v > 0.0 && v.is_finite(), "{ch:?}: {m:?}");
+        } else {
+            assert_eq!(v, 0.0, "{ch:?} is inactive");
+        }
+    }
     assert!(m.master.iter().all(|&v| v > 0.0 && v <= 1.0));
 
     // Everything hot into both effects at full return: still finite and limited.

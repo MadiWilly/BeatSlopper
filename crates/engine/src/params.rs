@@ -224,7 +224,10 @@ impl ParamId {
         self as usize
     }
 
-    /// `true` for the effect-chain parameters (drive, delay, reverb, lo-fi, chorus).
+    /// `true` for the parameters of the [`FxChain`](crate::fx::FxChain): drive (its M2 serial
+    /// path), delay and reverb. Since M10 the lo-fi, chorus and sidechain ids belong to the
+    /// per-track insert instead ([`is_synth_insert`](Self::is_synth_insert)); the drive ids
+    /// are in both sets (the chain's drive is only used by `FxChain::process`).
     #[must_use]
     pub const fn is_fx(self) -> bool {
         matches!(
@@ -237,15 +240,6 @@ impl ParamId {
                 | ParamId::ReverbSize
                 | ParamId::ReverbDamping
                 | ParamId::ReverbMix
-                | ParamId::LofiBits
-                | ParamId::LofiRate
-                | ParamId::LofiWobble
-                | ParamId::LofiNoise
-                | ParamId::LofiTone
-                | ParamId::LofiMix
-                | ParamId::ChorusRate
-                | ParamId::ChorusDepth
-                | ParamId::ChorusMix
         )
     }
 
@@ -296,6 +290,44 @@ impl ParamId {
                 | ParamId::VelToCutoff
                 | ParamId::VelToAmp
         )
+    }
+
+    /// `true` for the per-track synth-insert parameters (M10): drive, lo-fi, chorus and the
+    /// kick-triggered sidechain. Each instrument track owns its own copy of these in its
+    /// [`SynthInsert`](crate::track::SynthInsert).
+    #[must_use]
+    pub const fn is_synth_insert(self) -> bool {
+        matches!(
+            self,
+            ParamId::DriveAmount
+                | ParamId::DriveMix
+                | ParamId::LofiBits
+                | ParamId::LofiRate
+                | ParamId::LofiWobble
+                | ParamId::LofiNoise
+                | ParamId::LofiTone
+                | ParamId::LofiMix
+                | ParamId::ChorusRate
+                | ParamId::ChorusDepth
+                | ParamId::ChorusMix
+                | ParamId::SidechainAmount
+                | ParamId::SidechainRelease
+        )
+    }
+
+    /// `true` for every per-track parameter (M10): [`is_synth`](Self::is_synth) or
+    /// [`is_synth_insert`](Self::is_synth_insert). Everything else (delay, reverb, master
+    /// gain, limiter) is global to the engine.
+    #[must_use]
+    pub const fn is_track(self) -> bool {
+        self.is_synth() || self.is_synth_insert()
+    }
+
+    /// `true` for the global (engine-wide) parameters: the complement of
+    /// [`is_track`](Self::is_track).
+    #[must_use]
+    pub const fn is_global(self) -> bool {
+        !self.is_track()
     }
 
     /// `true` for parameters that are an index into a fixed list (waveform, unison count,
@@ -942,7 +974,9 @@ mod tests {
         }
         assert_eq!(ParamId::COUNT, 60);
         assert!(ParamId::DelayMix.is_fx() && !ParamId::FilterCutoff.is_fx());
-        assert!(ParamId::LofiMix.is_fx() && ParamId::ChorusMix.is_fx());
+        assert!(!ParamId::LofiMix.is_fx() && !ParamId::ChorusMix.is_fx());
+        assert!(ParamId::LofiMix.is_synth_insert() && ParamId::ChorusMix.is_track());
+        assert!(ParamId::DriveMix.is_fx() && ParamId::DriveMix.is_synth_insert());
         assert!(ParamId::FilterCutoff.is_synth() && !ParamId::DelayMix.is_synth());
         assert!(ParamId::Osc1Pulse.is_synth() && ParamId::VelToAmp.is_synth());
         assert!(!ParamId::MasterGain.is_synth() && !ParamId::LimiterOn.is_synth());

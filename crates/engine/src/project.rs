@@ -1,21 +1,22 @@
-//! Project file (M3/M5/M6/M7): `*.beatslopper.json` holding BPM, swing, the pattern bank
-//! (eight patterns with their notes, chain, play mode), synth/FX params, the mixer, preset and
-//! keyboard settings.
+//! Project file (M3/M5/M6/M7/M10): `*.beatslopper.json` holding BPM, swing, the pattern bank
+//! (eight patterns with their per-track notes, chain, play mode), the global FX / master
+//! params, the mixer, the master EQ and reverb, the instrument tracks and the keyboard
+//! settings.
 //!
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 5), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 7), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 6,
+//!   "version": 7,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
 //!     "patterns": [
 //!       { "length": 16, "drums": [[...], [...], [...], [...], [...]],
-//!         "notes": [ { "start": 0, "length": 1, "pitch": 36, "velocity": 0.8 } ],
+//!         "tracks": [ { "track": 0, "notes": [ { "start": 0, "length": 1, "pitch": 36, "velocity": 0.8 } ] } ],
 //!         "drum_volume": [...], "drum_tune": [...] },
 //!       "... 8 patterns in all (A..H)"
 //!     ],
@@ -23,33 +24,46 @@
 //!     "mode": "pattern",
 //!     "current": 0
 //!   },
-//!   "params": { "amp_attack": 0.01, "osc1_wave": 1.0, "...": 0.0 },
+//!   "params": { "delay_feedback": 0.35, "master_gain": 0.8, "...": 0.0 },
 //!   "mixer": {
 //!     "strips": [
 //!       { "level_db": 0.0, "pan": 0.0, "mute": false, "solo": false,
 //!         "delay_send": 0.0, "reverb_send": 0.0 },
-//!       "... 6 strips in all: kick, snare, clap, closed hat, open hat, synth"
+//!       "... 13 strips in all: kick, snare, clap, closed hat, open hat, tracks 1..8"
 //!     ]
 //!   },
-//!   "preset_index": 0,
+//!   "eq": { "...": "the master EQ" },
+//!   "reverb": { "...": "every reverb value" },
+//!   "tracks": [
+//!     { "slot": 0, "name": "Synth", "colour": 0, "active": true, "preset": "Bass",
+//!       "params": { "amp_attack": 0.01, "osc1_wave": 1.0, "drive_mix": 0.5, "...": 0.0 } }
+//!   ],
 //!   "octave": 4,
 //!   "velocity": 0.8
 //! }
 //! ```
 //!
-//! Each drum row is a plain array of 16, 32 or 64 step objects and `notes` lists the
-//! pattern's synth notes (see [`crate::pattern`] for the exact rules; the derived `synth`
-//! lane is not written). Parameters are keyed by [`ParamId::key`] so renaming a UI label
-//! never breaks a file. On load, unknown parameter keys are ignored and missing ones take
-//! [`ParamId::default_value`]; missing top-level fields take their [`Project::default`]
-//! value.
+//! Each drum row is a plain array of 16, 32 or 64 step objects and a pattern's `tracks` list
+//! the notes of every non-empty track (see [`crate::pattern`] for the exact rules; the derived
+//! `synth` lane is not written). `params` holds only the **global** parameters
+//! ([`ParamId::is_global`]: delay, reverb, master gain, limiter); every per-track parameter
+//! ([`ParamId::is_track`]) lives inside its [`TrackState`]. Only active tracks need to be
+//! written; each entry names its `slot`. Parameters are keyed by [`ParamId::key`] so renaming
+//! a UI label never breaks a file. On load, unknown parameter keys are ignored and missing
+//! ones take [`ParamId::default_value`]; missing top-level fields take their
+//! [`Project::default`] value (a missing `tracks` field means one default `"Synth"` track; an
+//! explicit empty array means no track).
 //!
-//! Migration: a version-4 file has a `synth` lane per pattern instead of `notes`; each lane
-//! step with a note becomes a length-1 [`crate::pattern::Note`] (velocity 1.0 when accented,
-//! 0.8 otherwise), handled by the pattern deserializer. A version-3 file has no `mixer`; it
-//! loads with [`MixerState::default`] (unity, centre, synth sent to delay and reverb,
-//! snare/clap lightly to the reverb), which plays the way M5 did. A version-2 file has a
-//! single `pattern`; it becomes pattern A with the chain `[A x1]`, pattern mode, A selected
+//! Migration: a version-6 (and older) file has one synth: its `params` hold the track ids
+//! too, each pattern has a single `notes` list and the mixer has six strips. It loads as one
+//! track in slot 0 named `"Synth"`, colour 0, holding the file's synth and insert params, with
+//! the notes on track 0 (done by the pattern deserializer), the synth strip on
+//! [`Channel::Track`]`(0)` (the mixer deserializer pads the rest) and the preset name looked
+//! up from the file's `preset_index`. A version-5 file has no `eq` / `reverb` (the reverb is
+//! built from its `reverb_*` params). A version-4 file has a `synth` lane per pattern instead
+//! of `notes`; each lane step with a note becomes a length-1 [`crate::pattern::Note`]. A
+//! version-3 file has no `mixer`; it loads with [`MixerState::default`]. A version-2 file has
+//! a single `pattern`; it becomes pattern A with the chain `[A x1]`, pattern mode, A selected
 //! ([`Bank::from_pattern`]). Version 1 (just `version`, `bpm`, `swing`, `master_gain`) still
 //! opens with the default bank. Files written by a *newer* format version are refused
 //! ([`ProjectError::Version`]).
@@ -65,6 +79,7 @@ use crate::fx::{EqState, ReverbState};
 use crate::mixer::MixerState;
 use crate::params::ParamId;
 use crate::pattern::{Bank, Pattern};
+use crate::track::{MAX_TRACKS, TrackId, TrackState, track_index};
 use crate::transport::DEFAULT_BPM;
 
 /// File extension for saved projects (`song.beatslopper.json`).
@@ -82,7 +97,11 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 /// - 6: adds `eq` (the master parametric EQ, [`EqState`]) and `reverb` (every reverb value,
 ///   [`ReverbState`]); both `#[serde(default)]`, so a version-5 file loads flat with the
 ///   reverb built from its `reverb_size` / `reverb_damping` / `reverb_mix` params.
-pub const FORMAT_VERSION: u32 = 6;
+/// - 7: instrument tracks (M10). Adds `tracks` (a [`TrackState`] per active slot holding the
+///   per-track params), each pattern's `notes` becomes `tracks` (one note list per track),
+///   the mixer grows to 13 strips, `params` keeps only the global ids and `preset_index` is
+///   gone (the preset name lives in each track).
+pub const FORMAT_VERSION: u32 = 7;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -91,9 +110,9 @@ pub const DEFAULT_VELOCITY: f32 = 0.8;
 
 /// Everything needed to restore a session.
 ///
-/// `params` holds one entry per [`ParamId`] (see [`Project::param`] for the default-filling
-/// accessor). A `BTreeMap` keeps the JSON sorted, so saving the same project twice yields the
-/// same text.
+/// `params` holds one entry per global [`ParamId`] (see [`Project::param`] for the
+/// default-filling accessor); the per-track parameters live in `tracks`. A `BTreeMap` keeps
+/// the JSON sorted, so saving the same project twice yields the same text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -105,9 +124,11 @@ pub struct Project {
     pub swing: f32,
     /// The eight patterns, the song chain, the play mode and the selected pattern.
     pub bank: Bank,
-    /// Synth, FX and master parameters keyed by [`ParamId::key`].
+    /// Global FX and master parameters keyed by [`ParamId::key`] (delay, reverb, master gain,
+    /// limiter). Per-track ids are not stored here since version 7.
     pub params: BTreeMap<String, f32>,
-    /// Mixer strips (M6). Absent in version-3 files, which load with the defaults.
+    /// Mixer strips (M6; 13 since M10). Absent in version-3 files, which load with the
+    /// defaults; shorter in version 4..6 files, which are padded.
     #[serde(default)]
     pub mixer: MixerState,
     /// Master parametric EQ (plugins milestone, version 6). Absent in older files: flat.
@@ -118,8 +139,11 @@ pub struct Project {
     /// copied into `params` on load so both views agree.
     #[serde(default)]
     pub reverb: ReverbState,
-    /// Index of the selected built-in preset.
-    pub preset_index: usize,
+    /// The instrument tracks (M10): one entry per written slot, each naming its `slot`.
+    /// Sorted by slot, at most one entry per slot after a load. A file without the field
+    /// gets one default `"Synth"` track in slot 0.
+    #[serde(default = "default_tracks")]
+    pub tracks: Vec<TrackState>,
     /// Keyboard octave (the `Z`/`X` shift).
     pub octave: i32,
     /// Keyboard velocity `0.0..=1.0`.
@@ -127,8 +151,8 @@ pub struct Project {
 }
 
 impl Default for Project {
-    /// The demo beat (pattern A) at 120 BPM with every parameter at its default, preset 0,
-    /// octave 4, velocity 0.8.
+    /// The demo beat (pattern A, bassline on track 0) at 120 BPM with every parameter at its
+    /// default, one active track `"Synth"`, octave 4, velocity 0.8.
     fn default() -> Self {
         Self {
             version: FORMAT_VERSION,
@@ -139,29 +163,46 @@ impl Default for Project {
             mixer: MixerState::default(),
             eq: EqState::default(),
             reverb: ReverbState::default(),
-            preset_index: 0,
+            tracks: default_tracks(),
             octave: DEFAULT_OCTAVE,
             velocity: DEFAULT_VELOCITY,
         }
     }
 }
 
-/// Every parameter at its default value, keyed by [`ParamId::key`].
+/// Every global parameter at its default value, keyed by [`ParamId::key`].
 fn default_params() -> BTreeMap<String, f32> {
     ParamId::ALL
         .iter()
+        .filter(|id| id.is_global())
         .map(|id| (id.key().to_owned(), id.default_value()))
         .collect()
 }
 
+/// The tracks of a fresh project: one active `"Synth"` in slot 0.
+fn default_tracks() -> Vec<TrackState> {
+    vec![TrackState::new(0)]
+}
+
 impl Project {
-    /// Snapshot of the engine's tempo, swing, bank, parameters and mixer plus the UI-side
-    /// preset and keyboard settings.
+    /// Snapshot of the engine's tempo, swing, bank, global parameters, mixer, EQ, reverb and
+    /// active tracks plus the UI-side keyboard settings. Track names, colours and preset
+    /// names are UI data the engine does not hold: every track gets the defaults of
+    /// [`TrackState::new`] (`"Synth"` / `"Track N"`, colour = slot, no preset); decorate them
+    /// through [`track_mut`](Self::track_mut) afterwards.
     #[must_use]
-    pub fn from_engine(engine: &Engine, preset_index: usize, octave: i32, velocity: f32) -> Self {
+    pub fn from_engine(engine: &Engine, octave: i32, velocity: f32) -> Self {
         let params = ParamId::ALL
             .iter()
+            .filter(|id| id.is_global())
             .map(|&id| (id.key().to_owned(), engine.param(id)))
+            .collect();
+        let tracks = engine
+            .tracks()
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.active)
+            .map(|(slot, t)| TrackState::from_track(slot as TrackId, t))
             .collect();
         Self {
             version: FORMAT_VERSION,
@@ -172,7 +213,7 @@ impl Project {
             mixer: *engine.mixer(),
             eq: *engine.eq(),
             reverb: *engine.reverb(),
-            preset_index,
+            tracks,
             octave,
             velocity,
         }
@@ -188,22 +229,50 @@ impl Project {
         }
     }
 
-    /// Pushes tempo, swing, every known parameter, the mixer and the bank into `engine`.
+    /// Pushes tempo, swing, every global parameter, the mixer, the reverb, the EQ, every
+    /// track slot and the bank into `engine`.
     ///
     /// Unknown parameter keys are ignored; parameters missing from the file are set to their
-    /// defaults, so a loaded project never inherits state from the previous one. Call before
-    /// the audio stream starts (or accept a one-off bank copy on the audio thread).
+    /// defaults, so a loaded project never inherits state from the previous one. Track slots
+    /// the project does not list are switched off (voices released, parameters reset). If the
+    /// engine's edit track ends up inactive it moves to the first active slot (slot 0 when
+    /// there is none). Call before the audio stream starts (or accept a one-off bank copy on
+    /// the audio thread).
     pub fn apply_to(&self, engine: &mut Engine) {
         engine.set_bpm(self.bpm);
         engine.set_swing(self.swing);
         for &id in ParamId::ALL {
-            engine.set_param(id, self.param(id));
+            if id.is_global() {
+                engine.set_param(id, self.param(id));
+            }
         }
         engine.set_mixer_state(&self.mixer);
         // After the params: the reverb state's size / damping / mix are authoritative.
         engine.set_reverb_state(&self.reverb);
         engine.set_eq_state(&self.eq);
+        for slot in 0..MAX_TRACKS as TrackId {
+            if let Some(state) = self.track(slot).filter(|s| s.active) {
+                engine.set_track_active(slot, true);
+                for &id in ParamId::ALL {
+                    if id.is_track() {
+                        engine.set_track_param(slot, id, state.param(id));
+                    }
+                }
+            }
+        }
         engine.set_bank(&self.bank);
+        // After the bank, so notes the file holds on an inactive slot are dropped too.
+        for slot in 0..MAX_TRACKS as TrackId {
+            if !self.track(slot).is_some_and(|s| s.active) {
+                engine.set_track_active(slot, false);
+            }
+        }
+        if !engine.track_active(engine.edit_track()) {
+            let first = (0..MAX_TRACKS as TrackId)
+                .find(|&t| engine.track_active(t))
+                .unwrap_or(0);
+            engine.set_edit_track(first);
+        }
     }
 
     /// Copies the reverb state's size / damping / mix into the matching `params` entries (the
@@ -227,18 +296,71 @@ impl Project {
         self.bank.current_pattern_mut()
     }
 
-    /// Value of parameter `id`, or its default when the project does not list it.
+    // --- tracks (M10) ---------------------------------------------------------------------
+
+    /// The state written for track `slot`, if any.
+    #[must_use]
+    pub fn track(&self, slot: TrackId) -> Option<&TrackState> {
+        let slot = track_index(slot) as u8;
+        self.tracks.iter().find(|t| t.slot == slot)
+    }
+
+    /// The state written for track `slot`, mutably, if any.
+    pub fn track_mut(&mut self, slot: TrackId) -> Option<&mut TrackState> {
+        let slot = track_index(slot) as u8;
+        self.tracks.iter_mut().find(|t| t.slot == slot)
+    }
+
+    /// The state of track `slot`, creating a default active entry when none is written.
+    pub fn track_or_insert(&mut self, slot: TrackId) -> &mut TrackState {
+        let slot = track_index(slot) as u8;
+        if let Some(i) = self.tracks.iter().position(|t| t.slot == slot) {
+            return &mut self.tracks[i];
+        }
+        self.tracks.push(TrackState::new(slot));
+        self.tracks.sort_by_key(|t| t.slot);
+        let i = self.tracks.iter().position(|t| t.slot == slot).unwrap_or(0);
+        &mut self.tracks[i]
+    }
+
+    /// Per-track parameter `id` of track `slot`, or its default when the slot or the key is
+    /// not written.
+    #[must_use]
+    pub fn track_param(&self, slot: TrackId, id: ParamId) -> f32 {
+        self.track(slot)
+            .map_or_else(|| id.default_value(), |t| t.param(id))
+    }
+
+    /// Sets per-track parameter `id` of track `slot` (creating the entry if needed; global
+    /// ids are ignored).
+    pub fn set_track_param(&mut self, slot: TrackId, id: ParamId, value: f32) {
+        if id.is_track() {
+            self.track_or_insert(slot).set_param(id, value);
+        }
+    }
+
+    /// Value of parameter `id`, or its default when the project does not list it. A
+    /// per-track id reads slot 0 (the pre-M10 synth); see
+    /// [`track_param`](Self::track_param) for other slots.
     #[must_use]
     pub fn param(&self, id: ParamId) -> f32 {
+        if id.is_track() {
+            return self.track_param(0, id);
+        }
         self.params
             .get(id.key())
             .copied()
             .unwrap_or_else(|| id.default_value())
     }
 
-    /// Sets parameter `id`.
+    /// Sets parameter `id`. A per-track id writes slot 0 (the pre-M10 synth); see
+    /// [`set_track_param`](Self::set_track_param) for other slots.
     pub fn set_param(&mut self, id: ParamId, value: f32) {
-        self.params.insert(id.key().to_owned(), value);
+        if id.is_track() {
+            self.set_track_param(0, id, value);
+        } else {
+            self.params.insert(id.key().to_owned(), value);
+        }
     }
 
     /// Pretty-printed JSON (two-space indent, trailing newline).
@@ -253,9 +375,10 @@ impl Project {
         text
     }
 
-    /// Parses a project. Older format versions are migrated (version 2's single `pattern`
-    /// becomes pattern A; missing fields default); a newer version than [`FORMAT_VERSION`] is
-    /// an error. The bank is normalised (indices, repeats and lengths clamped).
+    /// Parses a project. Older format versions are migrated (see the module docs; a
+    /// version-6 file becomes one `"Synth"` track in slot 0); a newer version than
+    /// [`FORMAT_VERSION`] is an error. The bank, mixer, EQ, reverb and tracks are normalised
+    /// (indices, repeats, lengths and values clamped; duplicate track slots dropped).
     pub fn from_json(text: &str) -> Result<Project, ProjectError> {
         let mut value: serde_json::Value = serde_json::from_str(text)?;
         let version = value
@@ -280,13 +403,52 @@ impl Project {
                 .transpose()?,
             _ => None,
         };
-
         // Versions before 6 had no `reverb`: build it from the reverb params.
         let has_reverb = value.get("reverb").is_some();
+        // Versions before 7 had one synth: its track params sit in `params` and its preset
+        // is an index into the built-in list.
+        let legacy_preset = (version < 7)
+            .then(|| {
+                value
+                    .get("preset_index")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|i| usize::try_from(i).ok())
+                    .and_then(|i| crate::presets::ALL.get(i))
+                    .map(|p| p.name.to_owned())
+            })
+            .flatten();
+        let legacy_track_params: Option<BTreeMap<String, f32>> = (version < 7)
+            .then(|| {
+                value
+                    .get("params")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(k, v)| {
+                                let id = ParamId::from_key(k).filter(|id| id.is_track())?;
+                                v.as_f64().map(|v| (id.key().to_owned(), v as f32))
+                            })
+                            .collect()
+                    })
+            })
+            .flatten();
 
         let mut project: Project = serde_json::from_value(value)?;
         project.version = FORMAT_VERSION;
+        if version < 7 {
+            let mut synth = TrackState::new(0);
+            if let Some(params) = legacy_track_params {
+                for (key, v) in params {
+                    synth.params.insert(key, v);
+                }
+            }
+            if let Some(name) = legacy_preset {
+                synth.preset = name;
+            }
+            project.tracks = vec![synth];
+        }
         project.normalize_params();
+        project.normalize_tracks();
         if let Some(gain) = legacy_master_gain {
             project.set_param(ParamId::MasterGain, gain as f32);
         }
@@ -307,16 +469,31 @@ impl Project {
         Ok(project)
     }
 
-    /// Drops unknown parameter keys and fills missing ones with their defaults, so `params`
-    /// holds exactly one entry per [`ParamId`].
+    /// Drops unknown and per-track parameter keys and fills missing global ones with their
+    /// defaults, so `params` holds exactly one entry per global [`ParamId`].
     fn normalize_params(&mut self) {
         self.params
-            .retain(|key, _| ParamId::from_key(key).is_some());
+            .retain(|key, _| ParamId::from_key(key).is_some_and(ParamId::is_global));
         for &id in ParamId::ALL {
-            self.params
-                .entry(id.key().to_owned())
-                .or_insert_with(|| id.default_value());
+            if id.is_global() {
+                self.params
+                    .entry(id.key().to_owned())
+                    .or_insert_with(|| id.default_value());
+            }
         }
+    }
+
+    /// Normalises every track state, drops later duplicates of a slot and sorts by slot.
+    fn normalize_tracks(&mut self) {
+        for t in &mut self.tracks {
+            t.normalise();
+        }
+        let mut seen = [false; MAX_TRACKS];
+        self.tracks.retain(|t| {
+            let slot = track_index(t.slot);
+            !std::mem::replace(&mut seen[slot], true)
+        });
+        self.tracks.sort_by_key(|t| t.slot);
     }
 
     /// Writes the project as pretty JSON to `path` (overwriting).
@@ -402,16 +579,28 @@ mod tests {
     use super::*;
     use crate::pattern::{ChainEntry, PlayMode};
 
+    /// Number of global parameter ids.
+    fn global_count() -> usize {
+        ParamId::ALL.iter().filter(|id| id.is_global()).count()
+    }
+
     #[test]
-    fn default_project_lists_every_param_once() {
+    fn default_project_lists_every_global_param_once_and_one_track() {
         let p = Project::default();
         assert_eq!(p.version, FORMAT_VERSION);
-        assert_eq!(p.params.len(), ParamId::COUNT);
+        assert_eq!(p.params.len(), global_count());
         for &id in ParamId::ALL {
             assert_eq!(p.param(id), id.default_value(), "{id:?}");
+            if id.is_track() {
+                assert!(!p.params.contains_key(id.key()), "{id:?} is per track");
+            }
         }
+        assert_eq!(p.tracks, vec![TrackState::new(0)]);
+        assert_eq!(p.track(0).unwrap().name, "Synth");
+        assert!(p.track(1).is_none());
         assert_eq!(p.bank, Bank::default());
         assert_eq!(p.pattern(), &Pattern::demo());
+        assert_eq!(p.pattern().notes(0).len(), 9);
     }
 
     #[test]
@@ -420,12 +609,14 @@ mod tests {
         let head = format!("{{\n  \"version\": {FORMAT_VERSION},");
         assert!(text.starts_with(&head));
         assert!(text.ends_with("}\n"));
-        let amp = text.find("\"amp_attack\"").unwrap();
-        let osc = text.find("\"osc1_wave\"").unwrap();
-        assert!(amp < osc, "params must be alphabetically sorted");
+        let delay = text.find("\"delay_feedback\"").unwrap();
+        let master = text.find("\"master_gain\"").unwrap();
+        assert!(delay < master, "params must be alphabetically sorted");
         assert!(text.contains("\"mode\": \"pattern\""));
         assert!(text.contains("\"mixer\": {\n    \"strips\": ["));
         assert!(text.contains("\"reverb_send\": 0.3"));
+        assert!(text.contains("\"tracks\": [\n    {\n      \"slot\": 0,"));
+        assert!(!text.contains("preset_index"));
     }
 
     #[test]
@@ -437,10 +628,10 @@ mod tests {
         assert_eq!(p.version, FORMAT_VERSION);
         assert_eq!(p.mixer, MixerState::default());
         // Out-of-range mixer values are normalised on load.
-        let mut v5 = serde_json::to_value(Project::default()).unwrap();
-        v5["mixer"]["strips"][0]["level_db"] = serde_json::json!(99.0);
-        v5["mixer"]["strips"][5]["pan"] = serde_json::json!(-4.0);
-        let p = Project::from_json(&v5.to_string()).unwrap();
+        let mut v = serde_json::to_value(Project::default()).unwrap();
+        v["mixer"]["strips"][0]["level_db"] = serde_json::json!(99.0);
+        v["mixer"]["strips"][5]["pan"] = serde_json::json!(-4.0);
+        let p = Project::from_json(&v.to_string()).unwrap();
         assert_eq!(p.mixer.strips[0].level_db, crate::mixer::MAX_LEVEL_DB);
         assert_eq!(p.mixer.strips[5].pan, -1.0);
     }
@@ -455,6 +646,7 @@ mod tests {
         assert_eq!(p.param(ParamId::MasterGain), 0.5);
         assert_eq!(p.bank, Bank::default());
         assert_eq!(p.octave, DEFAULT_OCTAVE);
+        assert_eq!(p.tracks, vec![TrackState::new(0)]);
     }
 
     #[test]
@@ -484,13 +676,102 @@ mod tests {
     }
 
     #[test]
+    fn version_6_synth_becomes_track_zero() {
+        // A v6 file: every param (track ids included) in `params`, `preset_index`, six strips.
+        let mut v6 = serde_json::to_value(Project::default()).unwrap();
+        v6["version"] = serde_json::json!(6);
+        v6.as_object_mut().unwrap().remove("tracks");
+        v6["preset_index"] = serde_json::json!(4);
+        v6["params"][ParamId::FilterCutoff.key()] = serde_json::json!(812.5);
+        v6["params"][ParamId::LofiMix.key()] = serde_json::json!(0.7);
+        v6["params"][ParamId::DelayFeedback.key()] = serde_json::json!(0.6);
+        let strips: Vec<serde_json::Value> = v6["mixer"]["strips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(6)
+            .cloned()
+            .collect();
+        v6["mixer"]["strips"] = serde_json::Value::Array(strips);
+        v6["mixer"]["strips"][5]["level_db"] = serde_json::json!(-4.5);
+        let p = Project::from_json(&v6.to_string()).unwrap();
+        assert_eq!(p.version, FORMAT_VERSION);
+        assert_eq!(p.tracks.len(), 1);
+        let synth = p.track(0).unwrap();
+        assert_eq!(synth.name, "Synth");
+        assert_eq!(synth.colour, 0);
+        assert!(synth.active);
+        assert_eq!(synth.preset, crate::presets::ALL[4].name);
+        assert_eq!(synth.param(ParamId::FilterCutoff), 812.5);
+        assert_eq!(synth.param(ParamId::LofiMix), 0.7);
+        assert_eq!(p.param(ParamId::DelayFeedback), 0.6);
+        assert_eq!(p.params.len(), global_count());
+        assert!(!p.params.contains_key(ParamId::FilterCutoff.key()));
+        assert_eq!(
+            p.mixer.strips[5].level_db, -4.5,
+            "the synth strip is track 0's"
+        );
+        assert_eq!(
+            p.mixer.strips[6],
+            crate::mixer::Strip::for_channel(crate::mixer::Channel::Track(1))
+        );
+        assert_eq!(p.pattern().notes(0).len(), 9);
+        // An unknown preset index gives no preset name.
+        v6["preset_index"] = serde_json::json!(99);
+        let p = Project::from_json(&v6.to_string()).unwrap();
+        assert_eq!(p.track(0).unwrap().preset, "");
+    }
+
+    #[test]
+    fn version_7_tracks_normalise_and_round_trip() {
+        let mut p = Project::default();
+        p.set_track_param(3, ParamId::Osc1Mix, 0.25);
+        p.track_mut(3).unwrap().name = "Keys".to_owned();
+        p.track_or_insert(1).active = false;
+        assert_eq!(
+            p.tracks.iter().map(|t| t.slot).collect::<Vec<_>>(),
+            [0, 1, 3]
+        );
+        assert_eq!(p.track_param(3, ParamId::Osc1Mix), 0.25);
+        assert_eq!(
+            p.track_param(5, ParamId::Osc1Mix),
+            ParamId::Osc1Mix.default_value()
+        );
+        let json = p.to_json_pretty();
+        let back = Project::from_json(&json).unwrap();
+        assert_eq!(back, p);
+        // Duplicate slots: the first wins; a missing `tracks` field means one Synth; an
+        // explicit empty list means none.
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["tracks"] = serde_json::json!([
+            { "slot": 2, "name": "A" },
+            { "slot": 2, "name": "B" },
+            { "slot": 9, "name": "wraps to 1" }
+        ]);
+        let dup = Project::from_json(&v.to_string()).unwrap();
+        assert_eq!(dup.tracks.len(), 2);
+        assert_eq!(dup.tracks[0].slot, 1);
+        assert_eq!(dup.tracks[1].name, "A");
+        v.as_object_mut().unwrap().remove("tracks");
+        let none = Project::from_json(&v.to_string()).unwrap();
+        assert_eq!(none.tracks, vec![TrackState::new(0)]);
+        v["tracks"] = serde_json::json!([]);
+        let empty = Project::from_json(&v.to_string()).unwrap();
+        assert!(empty.tracks.is_empty());
+        // Track ids in a v7 `params` map are dropped.
+        v["params"][ParamId::FilterCutoff.key()] = serde_json::json!(1.0);
+        let p = Project::from_json(&v.to_string()).unwrap();
+        assert!(!p.params.contains_key(ParamId::FilterCutoff.key()));
+    }
+
+    #[test]
     fn newer_version_is_refused_and_garbage_is_a_json_error() {
         let err =
             Project::from_json(&format!(r#"{{ "version": {} }}"#, FORMAT_VERSION + 1)).unwrap_err();
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 7,
+                found: 8,
                 supported: FORMAT_VERSION
             }
         ));
@@ -504,7 +785,7 @@ mod tests {
     fn pattern_accessors_follow_current() {
         let mut p = Project::default();
         p.bank.current = 2;
-        p.pattern_mut().set_synth_step(0, Some(50), false);
+        p.pattern_mut().set_synth_step(0, 0, Some(50), false);
         assert_eq!(p.bank.patterns[2].synth[0].note, Some(50));
         assert_eq!(p.pattern(), &p.bank.patterns[2]);
         let single = Project::from_pattern(Pattern::empty());
