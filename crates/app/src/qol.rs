@@ -7,7 +7,7 @@
 //!   [`AppState::escape`] (one Escape stops the test tone and deselects, a second within
 //!   [`ESCAPE_DOUBLE_TAP`] is the panic: every note off) and [`AppState::panic`].
 //! - Sequencer: drag-painting strokes ([`AppState::begin_paint`], [`AppState::paint_step`];
-//!   one undo step per stroke), the accent toggles for Ctrl-click, right-click clearing,
+//!   one undo step per stroke), the accent toggles for Ctrl-click,
 //!   row mute / solo on a double-clicked row label (through the mixer strip of the row's
 //!   channel, [`row_channel`]), the `x2` / `/2` pattern-length pills
 //!   ([`AppState::double_pattern_length`] copies the content into the new half when that
@@ -200,17 +200,6 @@ impl AppState {
     /// keyboard's C, like shift-click).
     pub fn toggle_synth_accent(&mut self, step: usize) {
         self.click_synth_step(step, true);
-    }
-
-    /// Right-click on a bass cell: clears its note (one undo step when there was one).
-    pub fn clear_synth_step(&mut self, step: usize) {
-        let step = step % self.pattern().len();
-        if self.pattern().synth[step].note.is_some() {
-            self.set_synth_step(step, None, false);
-        }
-        if self.selected_step == Some(step) {
-            self.selected_step = None;
-        }
     }
 
     /// Double-click on a row label: flips the mute of the row's mixer channel.
@@ -488,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn bass_strokes_only_erase_and_right_click_clears() {
+    fn bass_strokes_only_erase() {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
         assert!(
             state.pattern().synth[0].note.is_some(),
@@ -499,10 +488,7 @@ mod tests {
         assert_eq!(state.pattern().synth[0].note, None);
         assert_eq!(state.pattern().synth[2].note, None);
         state.end_paint();
-        state.selected_step = Some(4);
-        state.clear_synth_step(4);
-        assert_eq!(state.pattern().synth[4].note, None);
-        assert_eq!(state.selected_step, None);
+        assert!(state.paint.is_none());
     }
 
     #[test]

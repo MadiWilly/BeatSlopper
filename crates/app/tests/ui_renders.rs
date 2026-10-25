@@ -1525,7 +1525,7 @@ fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
 }
 
 // -------------------------------------------------------------------------------------------
-// QOL pass: typed values, tap tempo, drag-paint, right-click, Ctrl-click, row mute, x2 / /2,
+// QOL pass: typed values, tap tempo, drag-paint, Ctrl-click, row mute, x2 / /2,
 // note nudges, Escape panic, the RECENT tab.
 
 use app::ui::sequencer::{DOUBLE_LABEL, HALVE_LABEL};
@@ -1704,20 +1704,14 @@ fn dragging_across_three_cells_paints_them_as_one_undo_step() {
 }
 
 #[test]
-fn right_click_clears_a_cell_and_ctrl_click_toggles_its_accent() {
+fn ctrl_click_toggles_the_accent() {
     let mut harness = app_harness();
     harness.run_steps(2);
     let kick = DrumRow::Kick.index();
-    assert!(
-        harness.state().state().pattern().drums[kick][0].on,
-        "demo: kick on step 1"
-    );
-    harness.get_by_label("Kick step 1").click_secondary();
+    // Demo: kick step 1 is on; a plain click turns it off first.
+    harness.get_by_label("Kick step 1").click();
     harness.run_steps(2);
-    assert!(
-        !harness.state().state().pattern().drums[kick][0].on,
-        "right-click cleared"
-    );
+    assert!(!harness.state().state().pattern().drums[kick][0].on);
 
     harness
         .get_by_label("Kick step 1")
@@ -1738,12 +1732,7 @@ fn right_click_clears_a_cell_and_ctrl_click_toggles_its_accent() {
         "Ctrl-click again: accent off {cell:?}"
     );
 
-    // The bass lane: right-click clears the note, Ctrl-click flips the accent.
-    assert!(harness.state().state().pattern().synth[0].note.is_some());
-    harness.get_by_label("Bass step 1").click_secondary();
-    harness.run_steps(2);
-    assert_eq!(harness.state().state().pattern().synth[0].note, None);
-    assert_eq!(harness.state().state().selected_step, None);
+    // The bass lane: Ctrl-click flips the accent (an empty cell gets a note).
     harness
         .get_by_label("Bass step 3")
         .click_modifiers(Modifiers::COMMAND);

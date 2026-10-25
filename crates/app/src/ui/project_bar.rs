@@ -40,7 +40,8 @@ const NAME_CHARS: usize = 24;
 pub const UNSAVED_LABEL: &str = "Unsaved changes";
 /// The inline confirm's question.
 pub const DISCARD_QUESTION: &str = "Discard unsaved changes?";
-/// Label of the pill that shows the RECENT projects panel (QOL).
+/// Accessible name of the clock button that shows the RECENT projects panel (QOL): the
+/// name of `neu::Icon::Clock`.
 pub const RECENT_LABEL: &str = "Recent";
 
 /// Renders the PROJECT panel into `ui`, filling the space it is given.
@@ -113,9 +114,10 @@ fn file_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         {
             request_open(state);
         }
-        if neu::button(ui, theme, RECENT_LABEL)
+        // A 28 pt clock button (a RECENT pill would not fit the row at the design width).
+        if neu::stepper_button(ui, theme, neu::Icon::Clock)
             .on_hover_text(format!(
-                "The last eight projects · {} opens the next one",
+                "Recent projects (the last eight) · {} opens the next one",
                 Shortcut::OpenRecent.label()
             ))
             .clicked()

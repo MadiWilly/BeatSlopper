@@ -105,3 +105,11 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
 - Piano roll: the hovered cell shows a faint highlight (shadow-highlight at 50 %) and black-key rows a 6 % shadow-dark tint; accented notes carry an on-accent dot; meters mark -6 dBFS with an on-accent line.
 - Black-key note names use text-primary (text-secondary on key-black is 3.0:1 in light).
 - The velocity control is a soft knob (the mock has no velocity control).
+- QOL pass (2026-10-25): the BPM number is the mock's 22/300 display type inside a
+  `(-) 120 (+) TAP` row. Inline value editors are an inset-s pill in the surface colour with
+  an accent caret and the glow colour as the selection (no outline). The sequencer's LENGTH
+  control is `/2 · 1 bar · x2` (pills around a read-out; the segmented did not fit beside
+  them). VOL / TUNE caps legends sit over the row knobs; hat rows read `C.Hat` / `O.Hat` like
+  the mixer. A muted row label is text-secondary at 45 % alpha, a soloed one carries a 6 pt
+  accent dot. The PROJECT panel's RECENT button is a 28 pt stepper-style circle with a clock
+  glyph; the RECENT view lists rows in the value type with an accent dot on the open project.

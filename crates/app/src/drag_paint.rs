@@ -4,8 +4,9 @@
 //! A [`PaintStroke`] starts on the press: it remembers the row, the state the first cell was
 //! set to (`on`) and which steps it has painted. While the button stays down, every cell of
 //! that row the pointer passes over is painted to `on` once ([`PaintStroke::wants`]). A
-//! stroke is one undo step (the caller pushes it when the stroke starts). A right-button
-//! stroke paints "off" (erase). The bass lane erases only; its notes are entered by key.
+//! stroke is one undo step (the caller pushes it when the stroke starts). A press on an "on"
+//! cell starts an erase stroke. The UI paints drum rows only; a bass erase stroke is a state
+//! API (the lane is entered by key and keeps click-to-select).
 
 use engine::DrumRow;
 

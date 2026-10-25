@@ -100,3 +100,26 @@ pluck mode, 7-voice unison, sub and noise sources, a filter ADSR with LP/BP/HP t
 envelope, velocity response, a lo-fi insert (bits, rate, wobble, vinyl noise, tone), chorus and
 a kick-triggered sidechain ducker. M9 builds about 80 presets on top with a browser. Sound
 design is done by DSP reasoning and measurable tests since the build machine cannot listen.
+
+## 2026-10-25: QOL pass (branch `madi/qol-polish-6ccb28`)
+- Typed values are mapped back through each control's *formatter* rather than a new
+  per-control parser field: `KnobSpec` / `SliderSpec` are built in many shared files, so a
+  new field would touch all of them. An affine fit through three probes inverts every
+  formatter in the app exactly (`70 %` -> `0.7`); the non-affine dB-of-gain formatter falls
+  back to a bisection, which lands within display precision.
+- Step cells act on the *press* (not the click) so drag-painting works like FL Studio; a
+  press-and-release is still one toggle. Pressing an "on" cell starts an erase stroke;
+  Ctrl-click is an alias of shift-click for the accent. Right-click clearing was dropped
+  from this branch (the `test-feedback` session implements it, per the main session).
+- `x2` copies the loop into the new half when that half is empty (what a producer expects
+  from "double"), `/2` keeps the hidden steps so `x2` restores them. The M5 three-item LENGTH
+  segmented did not fit the sequencer head beside the pills at the 1280 design width, so the
+  pills flank a length read-out instead (4 bars = two clicks of `x2`).
+- RECENT is a sub-view of the PROJECT panel (a 28 pt clock button, BACK returns) rather than
+  a third right-column tab: `Project | Recent | Chain` beside the panel title overflowed the
+  260 pt column, and a RECENT pill overflowed the NEW / OPEN row by 3 pt.
+- Tap tempo uses egui's clock (`InputState::time`), not `Instant`, so kittests can drive it.
+- Ctrl+Up / Ctrl+Down nudge the tempo as asked; the M9 brief reserves the same keys for
+  preset stepping, so M9 should pick other keys (or drop these) when it lands.
+- The window title carries the BPM and the edit pattern; the existing title tests were
+  updated to the new format (no assertion weakened).

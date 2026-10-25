@@ -30,7 +30,8 @@
 //!
 //! QOL pass (`crate::qol`, `crate::drag_paint`): cells act on the *press*, so pressing a drum
 //! cell and dragging across its row paints every cell to the first cell's new state (one
-//! undo step per stroke); a right-button press (and drag) clears cells, on the bass lane too;
+//! undo step per stroke; pressing an "on" cell starts an erase stroke); the bass lane keeps
+//! its click-to-select entry;
 //! Ctrl-click flips the accent like shift-click. A double-click on a row label mutes the
 //! row's mixer channel (shift + double-click: solo); muted labels dim, soloed ones carry an
 //! accent dot. The head gains `x2` / `/2` pills beside LENGTH ([`DOUBLE_LABEL`],
@@ -638,12 +639,9 @@ fn press_modifiers(ui: &Ui) -> Modifiers {
     })
 }
 
-/// Whether a primary / secondary button press began on `response` this frame.
-fn press_on(ui: &Ui, response: &Response) -> (bool, bool) {
-    if !response.contains_pointer() {
-        return (false, false);
-    }
-    ui.input(|i| (i.pointer.primary_pressed(), i.pointer.secondary_pressed()))
+/// Whether a primary button press began on `response` this frame.
+fn press_on(ui: &Ui, response: &Response) -> bool {
+    response.contains_pointer() && ui.input(|i| i.pointer.primary_pressed())
 }
 
 /// Whether the running paint stroke should reach `response` this frame: a button is down and
@@ -725,11 +723,7 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
                 WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.on, &name)
             });
             let paint_row = PaintRow::Drum(row);
-            let (primary, secondary) = press_on(ui, &response);
-            if secondary {
-                // Right-button press: an erase stroke.
-                state.begin_paint(paint_row, false, step);
-            } else if primary {
+            if press_on(ui, &response) {
                 let mods = press_modifiers(ui);
                 if mods.command || mods.ctrl {
                     state.toggle_drum_accent(row, step);
@@ -772,19 +766,13 @@ fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             response.widget_info(|| {
                 WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.note.is_some(), &name)
             });
-            let (primary, secondary) = press_on(ui, &response);
-            if secondary {
-                // Right-button press: clears the note (and erases along a drag).
-                state.begin_paint(PaintRow::Bass, false, step);
-            } else if primary {
+            if press_on(ui, &response) {
                 let mods = press_modifiers(ui);
                 if mods.command || mods.ctrl {
                     state.toggle_synth_accent(step);
                 } else {
                     state.click_synth_step(step, mods.shift);
                 }
-            } else if stroke_reaches(ui, state, &response) {
-                state.paint_step(PaintRow::Bass, step);
             }
         }
         ui.add_space(COLUMN_GAP);
