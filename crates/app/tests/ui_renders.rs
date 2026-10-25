@@ -1176,3 +1176,341 @@ fn whole_sequencer_is_visible_with_the_mixer_shown() {
     assert!(kick_level.max.x < synth_level.min.x);
     assert!(synth_level.max.x < stereo.min.x);
 }
+
+// -------------------------------------------------------------------------------------------
+// M7: the piano roll.
+
+use egui::{PointerButton, Pos2};
+use engine::Note;
+use neu::{PianoRollModel, RollNote};
+
+/// The roll's model and grid rect as rendered, rebuilt from the "Piano roll" node's rect the
+/// way `ui::sequencer::roll_model` documents.
+fn roll_geometry<S>(harness: &Harness<'_, S>, state: &AppState) -> (PianoRollModel, egui::Rect) {
+    let outer = harness.get_by_label("Piano roll").rect();
+    let model = ui::sequencer::roll_model(state, outer.size());
+    assert_eq!(
+        model.size(),
+        outer.size(),
+        "the model reproduces its own rect"
+    );
+    (model, neu::grid_rect(outer))
+}
+
+/// Centre of the roll cell `(step, pitch)`.
+fn roll_cell(model: &PianoRollModel, grid: egui::Rect, step: u8, pitch: u8) -> Pos2 {
+    let probe = RollNote {
+        start: step,
+        length: 1,
+        pitch,
+        velocity: 0.8,
+        selected: false,
+    };
+    neu::note_rect(model, grid, &probe).center()
+}
+
+fn pointer_press<S>(harness: &mut Harness<'_, S>, pos: Pos2) {
+    harness.event(Event::PointerMoved(pos));
+    harness.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+}
+
+fn pointer_release<S>(harness: &mut Harness<'_, S>, pos: Pos2) {
+    harness.event(Event::PointerMoved(pos));
+    harness.event(Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    harness.step();
+}
+
+fn pointer_drag<S>(harness: &mut Harness<'_, S>, from: Pos2, to: Pos2) {
+    pointer_press(harness, from);
+    harness.event(Event::PointerMoved(to));
+    harness.step();
+    pointer_release(harness, to);
+}
+
+fn pointer_click<S>(harness: &mut Harness<'_, S>, pos: Pos2) {
+    pointer_press(harness, pos);
+    pointer_release(harness, pos);
+}
+
+/// The SEQUENCER panel alone, in ROLL view over an empty bass part, with a 60 Hz step so two
+/// clicks in a row are a double-click.
+fn roll_harness(mode: ThemeMode) -> Harness<'static, AppState> {
+    let (mut state, _engine) = AppState::headless(mode);
+    state.clear_synth();
+    state.undo.clear();
+    state.dirty = false;
+    state.set_lane_view(app::app::LaneView::Roll);
+    let theme = Theme::for_mode(mode);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1000.0, 440.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::sequencer::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(3);
+    harness
+}
+
+/// The ROLL tab replaces the grid with the piano roll in both themes without editing anything;
+/// the GRID tab brings the rows back.
+#[test]
+fn roll_tab_shows_the_piano_roll_in_both_themes() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (state, _engine) = AppState::headless(mode);
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(1000.0, 440.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::sequencer::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("Bass step 16");
+        assert!(harness.query_by_label("Piano roll").is_none());
+
+        radio(&harness, "Roll").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().lane_view, app::app::LaneView::Roll);
+        let roll = harness.get_by_label("Piano roll").rect();
+        assert!(
+            harness.query_by_label("Bass step 16").is_none(),
+            "the grid rows are gone"
+        );
+        assert!(harness.query_by_label("Kick step 1").is_none());
+        // Sixteen columns fitted to the panel, rows fitted to the six-row area.
+        let (model, _grid) = roll_geometry(&harness, harness.state());
+        assert_eq!(model.steps, 16);
+        assert_eq!(model.step_width, ui::sequencer::MAX_ROLL_STEP_WIDTH);
+        assert_eq!(model.row_height, ui::sequencer::ROLL_ROW_HEIGHT);
+        assert!(
+            model.pitches >= ui::sequencer::MIN_ROLL_PITCHES,
+            "{}",
+            model.pitches
+        );
+        assert!(roll.height() <= ui::sequencer::ROLL_AREA_HEIGHT);
+        assert_eq!(model.low_pitch, app::app::DEFAULT_ROLL_LOW_PITCH);
+        // The demo's bass line is on the roll: nothing was edited by rendering.
+        assert_eq!(harness.state().pattern().clone(), Pattern::demo());
+        assert!(!harness.state().dirty);
+        assert_eq!(harness.state().undo.len(), 0);
+
+        radio(&harness, "Grid").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().lane_view, app::app::LaneView::Grid);
+        harness.get_by_label("Bass step 16");
+        assert!(harness.query_by_label("Piano roll").is_none());
+        assert_eq!(harness.state().pattern().clone(), Pattern::demo());
+    }
+}
+
+/// A drag on the roll draws a note into the edit pattern (undoable, dirty), a click adds a
+/// one-step note, a double-click removes a note, and back in GRID view the lane shows the
+/// remaining note in its bass cell.
+#[test]
+fn drawing_on_the_roll_adds_notes_and_double_click_removes_one() {
+    let mut harness = roll_harness(ThemeMode::Dark);
+    assert!(harness.state().pattern().notes().is_empty());
+
+    // Draw C3 from step 3 to step 6 (four steps).
+    let (model, grid) = roll_geometry(&harness, harness.state());
+    let from = roll_cell(&model, grid, 2, 48);
+    let to = roll_cell(&model, grid, 5, 48);
+    pointer_drag(&mut harness, from, to);
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[Note::new(2, 4, 48, 0.8)],
+        "the drag drew a four-step C3"
+    );
+    assert!(harness.state().dirty);
+    assert_eq!(harness.state().undo.len(), 1);
+    // The lane follows: step 3 shows C3.
+    assert_eq!(harness.state().pattern().synth[2].note, Some(48));
+
+    // A click on an empty cell above it adds a one-step E3: a chord at step 3.
+    let e3 = roll_cell(&model, grid, 2, 52);
+    pointer_click(&mut harness, e3);
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[Note::new(2, 4, 48, 0.8), Note::new(2, 1, 52, 0.8)]
+    );
+    assert_eq!(harness.state().undo.len(), 2);
+    assert_eq!(
+        harness.state().pattern().synth[2].note,
+        Some(48),
+        "the lane shows the lowest note of the chord"
+    );
+
+    // Half a second later (so the next click is not a double-click with the one that added
+    // the E3) double-click the E3: removed; the C3 stays.
+    harness.run_steps(30);
+    let e3_rect = neu::note_rect(
+        &model,
+        grid,
+        &RollNote {
+            start: 2,
+            length: 1,
+            pitch: 52,
+            velocity: 0.8,
+            selected: false,
+        },
+    );
+    pointer_click(&mut harness, e3_rect.center());
+    assert_eq!(
+        harness.state().roll_selected,
+        Some(1),
+        "the first click selects"
+    );
+    pointer_click(&mut harness, e3_rect.center());
+    harness.step();
+    assert_eq!(
+        harness.state().pattern().notes(),
+        &[Note::new(2, 4, 48, 0.8)],
+        "the double-click removed the E3"
+    );
+    assert_eq!(harness.state().roll_selected, None);
+    assert_eq!(harness.state().undo.len(), 3);
+
+    // Back on the grid the bass cell of step 3 carries the note.
+    radio(&harness, "Grid").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Piano roll").is_none());
+    // `WidgetInfo::selected` reaches accesskit as the node's toggled state.
+    let bass = harness.get_by_label("Bass step 3");
+    assert_eq!(
+        bass.accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "the cell is on"
+    );
+    assert_eq!(
+        harness
+            .get_by_label("Bass step 4")
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::False)
+    );
+    assert_eq!(harness.state().pattern().synth[2].note, Some(48));
+    // Ctrl+Z is the app's job (tested in the whole-app flow below); here the stack is intact.
+    assert_eq!(harness.state().undo.len(), 3);
+}
+
+/// The whole app, end to end: ROLL, draw a chord and a long note, play (the playhead on the
+/// roll moves with the offline engine), undo and redo, save, reopen from the file and find
+/// the notes back on the roll.
+#[test]
+fn roll_draw_play_undo_save_and_reopen_through_the_whole_app() {
+    let (mut app, mut engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    app.state_mut().clear_synth();
+    app.state_mut().undo.clear();
+    app.state_mut().dirty = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    harness.run_steps(3);
+    radio(&harness, "Roll").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().state().lane_view, app::app::LaneView::Roll);
+
+    // A C2 E2 G2 chord at step 1 (clicks) and a six-step C3 from step 9 (drag).
+    let (model, grid) = roll_geometry(&harness, harness.state().state());
+    for pitch in [36u8, 40, 43] {
+        let pos = roll_cell(&model, grid, 0, pitch);
+        pointer_click(&mut harness, pos);
+    }
+    let from = roll_cell(&model, grid, 8, 48);
+    let to = roll_cell(&model, grid, 13, 48);
+    pointer_drag(&mut harness, from, to);
+    harness.run_steps(2);
+    let expected = [
+        Note::new(0, 1, 36, 0.8),
+        Note::new(0, 1, 40, 0.8),
+        Note::new(0, 1, 43, 0.8),
+        Note::new(8, 6, 48, 0.8),
+    ];
+    assert_eq!(harness.state().state().pattern().notes(), &expected);
+    assert_eq!(harness.state().state().undo.len(), 4);
+    assert!(harness.state().state().dirty);
+    engine.process_messages();
+    assert_eq!(
+        engine.pattern().notes(),
+        &expected,
+        "every edit reached the engine"
+    );
+
+    // Space plays; the offline engine renders a few blocks and the roll's playhead follows.
+    assert_eq!(harness.state().state().roll_playhead(), None);
+    harness.key_press(Key::Space);
+    harness.run_steps(2);
+    assert!(harness.state().state().playing);
+    let mut out = vec![0.0f32; 4096 * 2];
+    engine.process_messages();
+    for _ in 0..4 {
+        engine.render(&mut out, 4096);
+    }
+    harness.run_steps(2);
+    let playhead = harness.state().state().roll_playhead();
+    // 4 x 4096 samples at 48 kHz and 120 BPM is 2.7 steps in.
+    assert!(
+        playhead.is_some_and(|p| p > 1.0 && p < 16.0),
+        "playhead {playhead:?}"
+    );
+    harness.key_press(Key::Space);
+    harness.run_steps(2);
+    assert!(!harness.state().state().playing);
+
+    // Ctrl+Z takes the long note away, Ctrl+Y brings it back.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().pattern().notes(), &expected[..3]);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().pattern().notes(), &expected);
+
+    // Save, start a new project (roll empty), reopen: the notes are back on the roll.
+    let path = temp_project_path("roll.beatslopper.json");
+    assert!(
+        harness
+            .state_mut()
+            .state_mut()
+            .save_project_to(path.clone())
+    );
+    assert!(!harness.state().state().dirty);
+    harness.state_mut().state_mut().new_project();
+    harness.run_steps(2);
+    assert!(harness.state().state().pattern().notes().is_empty());
+    assert!(
+        harness
+            .state_mut()
+            .state_mut()
+            .load_project_from(path.clone())
+    );
+    harness.run_steps(3);
+    assert_eq!(harness.state().state().pattern().notes(), &expected);
+    assert_eq!(
+        harness.state().state().lane_view,
+        app::app::LaneView::Roll,
+        "the view is a setting, not project data"
+    );
+    harness.get_by_label("Piano roll");
+    let _ = std::fs::remove_file(path);
+}

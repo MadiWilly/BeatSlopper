@@ -5,6 +5,15 @@
 //! The bottom row is `low_pitch`; pitch rises upwards. The whole widget is one inset-m surface;
 //! black-key rows get a faint shadow-dark tint, beat lines fall every [`BEAT`] steps (1 pt) and
 //! bar lines every [`BAR`] steps (2 pt), the playhead is a 2 pt accent line at a fractional step.
+//! Accented notes (velocity >= [`ACCENT_THRESHOLD`]) carry a [`ACCENT_DOT`] (6 pt) on-accent
+//! dot near their left end on top of the `accent_hover` fill, like the step cell's accent
+//! marker, so the state does not rest on the 1.2:1 accent / accent-hover difference alone.
+//! While the roll has keyboard focus a 1.5 pt accent ring (the shared
+//! [`crate::shadow::paint_focus_rect`]) is drawn 1 pt outside the whole roll.
+//!
+//! As-built fill (not in `design/WINNER.md`): while idle, the grid cell under the pointer is
+//! highlighted with a half-strength `shadow_highlight` wash so the draw target reads before
+//! the press. It is a hover-only cue and conveys no state.
 //!
 //! Interaction is one `Sense::click_and_drag` response with a small gesture state machine kept
 //! in egui's temporary memory under `response.id` (see [`piano_roll`] for the rules). The
@@ -22,7 +31,7 @@ use egui::{
 
 use crate::Theme;
 use crate::piano_keys::note_name;
-use crate::shadow::{Depth, paint_soft_rect, paint_soft_rect_with_fill};
+use crate::shadow::{Depth, paint_focus_rect, paint_soft_rect, paint_soft_rect_with_fill};
 use crate::text::{self, TextKind};
 
 /// Width of the key column on the left of the grid.
@@ -47,6 +56,10 @@ pub const DEFAULT_VELOCITY: f32 = 0.8;
 pub const ACCENT_VELOCITY: f32 = 1.0;
 /// Notes at or above this velocity paint in `accent_hover` (the grid lane's accent rule).
 pub const ACCENT_THRESHOLD: f32 = 0.95;
+/// Diameter of the on-accent dot on an accented note (the step cell's accent marker).
+pub const ACCENT_DOT: f32 = 6.0;
+/// Distance from a note's left edge to the centre of its accent dot.
+pub const ACCENT_DOT_INSET: f32 = 8.0;
 /// Corner radius of the roll's inset background.
 pub const ROLL_RADIUS: f32 = 10.0;
 /// How far the surface is lerped towards shadow-dark on black-key rows (6 %).
@@ -327,9 +340,10 @@ fn hit_note(
 /// Size: [`PianoRollModel::size`]. Painting: inset-m background, black-key rows tinted
 /// ([`black_row_tint`]), faint row separators, beat lines (shadow-dark 1 pt every [`BEAT`]
 /// steps) and bar lines (2 pt every [`BAR`]), the key column with a raised-s "C3" tile per
-/// octave, notes as radius-6 bars (accent, `accent_hover` at velocity >= 0.95, on-glow when
-/// selected) with a 1 pt on-accent handle line near the right edge, a hovered-cell highlight
-/// and the 2 pt accent playhead.
+/// octave, notes as radius-6 bars (accent, `accent_hover` plus a 6 pt on-accent dot near the
+/// left end at velocity >= 0.95, on-glow when selected) with a 1 pt on-accent handle line near
+/// the right edge, a hovered-cell highlight, the 2 pt accent playhead and, while the roll has
+/// keyboard focus, a 1.5 pt accent ring 1 pt outside the whole roll.
 ///
 /// Gestures (state in temp memory under `response.id`):
 /// * press on an empty cell, drag right, release: `add` with `start` = press step, `length` =
@@ -489,7 +503,8 @@ fn finish(
     }
 }
 
-/// Paints the roll: background, rows, lines, key column, notes, drag ghost, playhead.
+/// Paints the roll: background, rows, lines, key column, notes, drag ghost, playhead and the
+/// focus ring.
 #[allow(clippy::too_many_arguments)]
 fn paint(
     ui: &Ui,
@@ -501,6 +516,10 @@ fn paint(
     response: &Response,
     drag: Option<&Drag>,
 ) {
+    // The ring sits outside `outer`, so it uses the unclipped painter.
+    if response.has_focus() {
+        paint_focus_rect(ui.painter(), outer, ROLL_RADIUS, theme);
+    }
     let painter = ui.painter().with_clip_rect(outer.intersect(ui.clip_rect()));
     paint_soft_rect(&painter, outer, ROLL_RADIUS, Depth::InsetM, theme);
     if model.steps == 0 || model.pitches == 0 {
@@ -565,7 +584,8 @@ fn paint(
         if r.width() <= 0.0 {
             continue;
         }
-        let fill = if n.velocity >= ACCENT_THRESHOLD {
+        let accented = n.velocity >= ACCENT_THRESHOLD;
+        let fill = if accented {
             theme.accent_hover
         } else {
             theme.accent
@@ -574,6 +594,16 @@ fn paint(
             paint_soft_rect_with_fill(&painter, r, NOTE_RADIUS, Depth::OnGlow, fill, theme);
         } else {
             painter.rect_filled(r, NOTE_RADIUS, fill);
+        }
+        // Accent marker: a 6 pt on-accent dot near the left end, kept inside the bar (a
+        // length-1 note at the default 24 pt step is wide enough; clipped stubs skip it).
+        if accented && r.width() >= ACCENT_DOT_INSET * 2.0 {
+            let radius = (ACCENT_DOT * 0.5).min(r.height() * 0.5);
+            painter.circle_filled(
+                pos2(r.min.x + ACCENT_DOT_INSET, r.center().y),
+                radius,
+                theme.on_accent,
+            );
         }
         if r.width() > HANDLE_INSET * 2.0 {
             let x = r.max.x - HANDLE_INSET;

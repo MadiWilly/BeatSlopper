@@ -14,9 +14,13 @@
 //! * **OnGlow**: accent fill plus a centred accent glow shadow and a dark drop shadow.
 //!
 //! Circles use the same treatments with circle geometry (a fully rounded square).
+//!
+//! The keyboard-focus ring ([`paint_focus_rect`], [`paint_focus_circle`]) lives here too: a
+//! [`FOCUS_RING`] (1.5 pt) accent stroke [`FOCUS_RING_GAP`] (1 pt) outside the control, the
+//! same shape as the step cell's selection ring.
 
 use egui::epaint::{self, Mesh, RectShape, Shape};
-use egui::{Color32, CornerRadius, Painter, Pos2, Rect, Vec2, pos2, vec2};
+use egui::{Color32, CornerRadius, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use crate::{ShadowPair, Theme};
 
@@ -217,6 +221,33 @@ pub fn paint_soft_circle_with_fill(
     };
     shapes[idx] = Shape::circle_filled(center, radius, fill);
     painter.extend(shapes);
+}
+
+/// Stroke width of the keyboard-focus ring.
+pub const FOCUS_RING: f32 = 1.5;
+/// Gap between a control's edge and the inside of its focus ring.
+pub const FOCUS_RING_GAP: f32 = 1.0;
+
+/// Paints the keyboard-focus ring around a rounded rect of `radius`: a [`FOCUS_RING`] accent
+/// stroke [`FOCUS_RING_GAP`] outside `rect`, with the corner radius grown to match.
+pub fn paint_focus_rect(painter: &Painter, rect: Rect, radius: f32, theme: &Theme) {
+    let outer = rect.expand(FOCUS_RING_GAP);
+    painter.rect_stroke(
+        outer,
+        clamp_radius(rect, radius) + FOCUS_RING_GAP,
+        Stroke::new(FOCUS_RING, theme.accent),
+        StrokeKind::Outside,
+    );
+}
+
+/// Paints the keyboard-focus ring around a circle: a [`FOCUS_RING`] accent stroke
+/// [`FOCUS_RING_GAP`] outside the circle of `radius`.
+pub fn paint_focus_circle(painter: &Painter, center: Pos2, radius: f32, theme: &Theme) {
+    painter.circle_stroke(
+        center,
+        radius + FOCUS_RING_GAP + FOCUS_RING * 0.5,
+        Stroke::new(FOCUS_RING, theme.accent),
+    );
 }
 
 fn clamp_radius(rect: Rect, radius: f32) -> f32 {

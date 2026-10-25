@@ -7,8 +7,9 @@
 //! [`SLIDER_TRAVEL`] points (the track minus the thumb), so pressing or dragging anywhere on
 //! the track sets the value from the pointer's y ([`vslider_fraction_at`]), clamped to the
 //! range. A double-click resets to `spec.default`; arrows step 1/50 of the range while
-//! focused. The response covers the track column only (not the texts) so clicks on the value
-//! or label do nothing.
+//! focused, and the focused thumb wears the 1.5 pt accent focus ring
+//! ([`crate::shadow::paint_focus_circle`]) 1 pt outside it. The response covers the track
+//! column only (not the texts) so clicks on the value or label do nothing.
 //!
 //! The fader ([`fader`]) is the same control on the taller [`FADER_TRACK`] (6x140) for the
 //! mixer strips; both are drawn by one private `vertical_slider`.
@@ -21,7 +22,7 @@ use egui::{
 };
 
 use crate::Theme;
-use crate::shadow::{Depth, paint_soft_circle, paint_soft_rect};
+use crate::shadow::{Depth, paint_focus_circle, paint_soft_circle, paint_soft_rect};
 use crate::text::{self, TextKind};
 
 /// How a slider maps and displays its value.
@@ -245,6 +246,9 @@ fn vertical_slider(
             fill,
             theme,
         );
+        if response.has_focus() {
+            paint_focus_circle(&painter, thumb, SLIDER_THUMB * 0.5, theme);
+        }
         text::paint_galley(
             &painter,
             pos2(rect.center().x, rect.max.y),

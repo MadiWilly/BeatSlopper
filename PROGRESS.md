@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M7 (Piano roll) app integration. M0-M6 tagged. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** DONE through M7. M0-M7 tagged. See "Final summary" and "Phase 2 summary". M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -57,12 +57,11 @@
 - [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-25 M6 + M7 engine/widget: all green (fmt, clippy -D warnings, 480 tests, deny licenses ok,
+2026-10-25 M7 (final, after review fixes): all green (fmt, clippy -D warnings, 492 tests, deny licenses ok,
 release build, smoke exit 0).
 
 ## Next action
-M7 app: GRID | ROLL toggle, piano roll panel bound to the edit pattern notes (SetNote/RemoveNote),
-polyphonic send_bank, then gate, tag m7, final summary, stop.
+None. Phase 2 (M4-M7) is complete. Ideas live under "Later".
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
@@ -86,8 +85,8 @@ polyphonic send_bank, then gate, tag m7, final summary, stop.
 
 ## M7: Piano roll
 - [x] engine: polyphonic note list per pattern, exact on/off scheduling, v5 migration
-- [ ] app: piano roll panel (draw, move, resize, delete, accent, zoom), synced with the grid
-- [ ] Tests per PLAN.md M7; gate green, tag m7, final summary updated
+- [x] app: piano roll panel (draw, move, resize, delete, accent, zoom), synced with the grid
+- [x] Tests per PLAN.md M7; gate green, tag m7, final summary updated
 
 ## Later (ideas beyond M7, do not start)
 - MIDI hardware input (optional stretch only after M3 is green)
@@ -142,3 +141,40 @@ opens, renders 60 frames and exits 0. Full gate: `cargo fmt --all -- --check`,
   there is no device picker (default output only).
 - MIDI hardware, piano roll, arrangement, recording audio, mixer and VST hosting are out of
   scope by design.
+
+## Phase 2 summary (M4-M7 done, 2026-10-25)
+
+### What was added
+- **M4 Polish + MIDI:** MIDI keyboard input (midir) through its own lock-free queue with a port
+  selector and lamp; undo/redo (Ctrl+Z / Ctrl+Y) for every edit with drag coalescing; shortcuts
+  (Space play/stop, R record, Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+E / Ctrl+N); unsaved marker
+  in the title and project panel with an inline discard confirm; value tooltips on every knob,
+  dial and slider; the brand wordmark tracking; the window re-requests its size on the first
+  frame (a stale persisted size was the cause of small windows).
+- **M5 Patterns + song mode:** eight patterns A..H of 1, 2 or 4 bars; pattern switch queued at
+  the bar boundary while playing (blinking letter); bar selector and follow; copy/paste/clear;
+  Pattern | Song mode; a chain editor (entries with repeats, add/remove/move) in the right
+  column's Chain tab; song export; project format v3.
+- **M6 Mixer:** six channel strips (level fader with meter, pan, delay and reverb sends, mute,
+  solo) plus master gain, limiter and stereo meter, as an FX | Mixer tab; parallel send buses
+  with return levels; block-peak meters over atomics with UI decay; project format v4.
+- **M7 Piano roll:** a Grid | Roll view of the pattern; polyphonic notes with length, pitch and
+  velocity (draw, move, resize, select, delete, shift-click accent, wheel scroll); the grid's
+  bass lane is a view of the same notes; exact note-off scheduling; project format v5 with
+  migration from every earlier version.
+
+### Numbers
+- Tests at the end of phase 2: see "Last gate result". Tags: m0..m7.
+
+### Known issues / notes (phase 2)
+- Double-clicking an empty piano-roll cell adds a note on the first click and removes it on the
+  second (documented quirk of the one-edit-per-frame rule).
+- Hard-panning a channel is +3 dB in that speaker (unity-at-centre pan law; the limiter covers
+  the headroom).
+- The MIDI port list refreshes every 2 s while the selector is visible; a port that failed to
+  open is not retried until re-selected or next launch.
+- At large audio buffers the meters update about 12 times a second.
+- Keyboard note entry into a selected grid step only works in GRID view; in ROLL view the
+  keyboard plays (record-arm overdub still writes length-1 notes).
+- No MIDI device was connected on the build machine, so live MIDI input was verified only by
+  parser tests and the engine queue test.

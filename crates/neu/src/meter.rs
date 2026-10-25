@@ -4,13 +4,15 @@
 //! fill height follows a dB curve ([`meter_fraction`]): 0 dBFS (`level = 1`) reaches the top,
 //! [`METER_FLOOR_DB`] (-60 dB) sits at the bottom, and anything quieter (or `NaN`) is empty.
 //! Above [`METER_HOT_LEVEL`] (-6 dBFS, `level = 0.5`) the top [`METER_HOT_TOP`] (10 %) of the
-//! fill turns `accent_hover` as a "hot" band. Meters redraw every frame, so they carry no glow
-//! shadow: just the inset track and a flat fill.
+//! fill turns `accent_hover` as a "hot" band, underlined by a [`METER_HOT_SEPARATOR`] (1 pt)
+//! `on_accent` line along the band's bottom edge (the -6 dBFS mark) so the hot state has a cue
+//! of at least 3:1 beyond the accent / accent-hover tint. Meters redraw every frame, so they
+//! carry no glow shadow: just the inset track and a flat fill.
 //!
 //! [`stereo_meter`] draws two [`STEREO_METER_TRACK_WIDTH`]-wide tracks at either edge of its
 //! size for a left/right pair.
 
-use egui::{CornerRadius, Rect, Response, Role, Sense, Ui, Vec2, WidgetInfo, pos2, vec2};
+use egui::{CornerRadius, Rect, Response, Role, Sense, Stroke, Ui, Vec2, WidgetInfo, pos2, vec2};
 
 use crate::Theme;
 use crate::shadow::{Depth, paint_soft_rect};
@@ -27,6 +29,8 @@ pub const METER_FLOOR_DB: f32 = -60.0;
 pub const METER_HOT_LEVEL: f32 = 0.5;
 /// Fraction of the fill height painted in `accent_hover` when the level is hot.
 pub const METER_HOT_TOP: f32 = 0.1;
+/// Width of the `on_accent` line along the bottom edge of the hot band.
+pub const METER_HOT_SEPARATOR: f32 = 1.0;
 
 /// The filled fraction `0..=1` of a meter for a linear peak `level`: a dB curve with 0 dBFS
 /// (`level = 1`) at the top and [`METER_FLOOR_DB`] at the bottom, so
@@ -42,7 +46,8 @@ pub fn meter_fraction(level: f32) -> f32 {
 
 /// Peak meter: a `size` inset-s track (e.g. [`METER_TRACK`], 6x140) filled from the bottom
 /// with the accent in proportion to [`meter_fraction`]`(level)`; the top 10 % of the fill is
-/// `accent_hover` once `level` exceeds [`METER_HOT_LEVEL`] (-6 dBFS). `NaN` reads as silence.
+/// `accent_hover` with a 1 pt `on_accent` line along its bottom edge once `level` exceeds
+/// [`METER_HOT_LEVEL`] (-6 dBFS). `NaN` reads as silence.
 /// No glow (the meter changes every frame). The response only senses hover.
 pub fn meter(ui: &mut Ui, theme: &Theme, level: f32, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
@@ -81,7 +86,8 @@ pub fn stereo_meter(ui: &mut Ui, theme: &Theme, levels: (f32, f32), size: Vec2) 
 }
 
 /// Paints one meter track into `track`: the inset-s background, then the fill from the
-/// bottom, then the hot band over its top when the level is above [`METER_HOT_LEVEL`].
+/// bottom, then the hot band over its top (with the on-accent separator along the band's
+/// bottom edge) when the level is above [`METER_HOT_LEVEL`].
 fn paint_meter_track(ui: &Ui, theme: &Theme, track: Rect, level: f32) {
     let painter = ui.painter();
     let radius = track.width().min(track.height()) * 0.5;
@@ -107,6 +113,12 @@ fn paint_meter_track(ui: &Ui, theme: &Theme, track: Rect, level: f32) {
             se: 0,
         };
         painter.rect_filled(hot, corners, theme.accent_hover);
+        // The -6 dBFS mark: a 1 pt on-accent line inside the bottom edge of the hot band.
+        painter.hline(
+            track.x_range(),
+            hot.max.y - METER_HOT_SEPARATOR * 0.5,
+            Stroke::new(METER_HOT_SEPARATOR, theme.on_accent),
+        );
     }
 }
 

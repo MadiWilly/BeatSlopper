@@ -26,13 +26,25 @@
 //! a bass cell click selects the step for note entry (click again to deselect), shift-click
 //! flips its accent (or gives an empty step a note). The state methods on `AppState` do the
 //! work and send the engine messages.
+//!
+//! Piano roll (M7): the head's `GRID | ROLL` tab ([`LANE_VIEW_TABS`], [`AppState::lane_view`])
+//! swaps the grid area for `neu::piano_roll` over the edit pattern's whole note list (every
+//! bar, every bar line). The roll takes exactly the space of the six rows and the bottom row
+//! ([`ROLL_AREA_HEIGHT`]) under a beat-number row aligned to its columns; the panel height is
+//! the same in both views. Its geometry comes from [`roll_model`] (columns fitted to the
+//! width, rows to the height, [`AppState::roll_low_pitch`] at the bottom) and every edit the
+//! widget reports is applied by [`apply_roll_output`] through the undoable note methods on
+//! `AppState`.
 
-use egui::{Align, Align2, Layout, Response, Role, Sense, Ui, WidgetInfo, vec2};
+use egui::{Align, Align2, Layout, Response, Role, Sense, Ui, Vec2, WidgetInfo, vec2};
 use engine::pattern::pattern_letter;
-use engine::{DrumRow, PATTERN_COUNT, PatternLength, STEPS};
-use neu::{KnobSize, KnobSpec, STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme};
+use engine::{DrumRow, Note, PATTERN_COUNT, PatternLength, STEPS};
+use neu::{
+    KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput, RollNote, STEP_CELL,
+    STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
+};
 
-use crate::app::{AppState, EditKey, queued_blink_visible};
+use crate::app::{AppState, EditKey, LaneView, queued_blink_visible};
 use crate::ui::controls;
 
 /// Width of the row-name column (`.seq-row .name`).
@@ -68,6 +80,96 @@ pub const CLEAR_PATTERN_LABEL: &str = "Clear pattern";
 pub const BAR_LABEL: &str = "Bar";
 /// Pattern tab names, A..H.
 pub const PATTERN_TABS: [&str; PATTERN_COUNT] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+/// Items of the `GRID | ROLL` view tab, in [`LaneView`] order.
+pub const LANE_VIEW_TABS: [&str; 2] = ["Grid", "Roll"];
+/// Height of the area the piano roll replaces: the six grid rows (each with its gap) and the
+/// bottom row. The row gap after the beat numbers stays in both views.
+pub const ROLL_AREA_HEIGHT: f32 = (DrumRow::COUNT + 1) as f32 * (ROW_HEIGHT + ROW_GAP) + BOTTOM_ROW;
+/// Row height of the piano roll (one pitch).
+pub const ROLL_ROW_HEIGHT: f32 = 14.0;
+/// Fewest pitch rows the roll shows, whatever the height (an octave).
+pub const MIN_ROLL_PITCHES: usize = 12;
+/// Narrowest and widest step column of the roll (64 steps in a narrow panel / 16 in a wide one).
+pub const MIN_ROLL_STEP_WIDTH: f32 = 12.0;
+pub const MAX_ROLL_STEP_WIDTH: f32 = 48.0;
+
+/// The roll's view model for a roll of `size` (the space it may take: `ROLL_AREA_HEIGHT` tall
+/// and the panel's width): one column per step of the edit pattern, the column width fitted
+/// to the width (whole points, `MIN_ROLL_STEP_WIDTH..=MAX_ROLL_STEP_WIDTH`), as many
+/// [`ROLL_ROW_HEIGHT`] rows as fit the height (at least [`MIN_ROLL_PITCHES`]),
+/// [`AppState::roll_low_pitch`] at the bottom (clamped so the rows stay within MIDI), the
+/// playhead while the edit pattern plays and the roll selection. Feeding the model's own
+/// `size()` back in reproduces it, so tests can rebuild it from the rendered rect.
+#[must_use]
+pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
+    let steps = state.pattern().len().max(1);
+    let step_width = ((size.x - KEY_COLUMN_WIDTH) / steps as f32)
+        .floor()
+        .clamp(MIN_ROLL_STEP_WIDTH, MAX_ROLL_STEP_WIDTH);
+    let pitches = ((size.y / ROLL_ROW_HEIGHT).floor().max(0.0) as usize).max(MIN_ROLL_PITCHES);
+    let mut model = PianoRollModel {
+        steps,
+        low_pitch: state.roll_low_pitch,
+        pitches,
+        step_width,
+        row_height: ROLL_ROW_HEIGHT,
+        playhead_step: state.roll_playhead(),
+        selected: state.roll_selected,
+    };
+    model.low_pitch = model.low_pitch.min(model.max_low_pitch());
+    model
+}
+
+/// The roll's view of a pattern note (`selected` when it is `state.roll_selected`).
+#[must_use]
+pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
+    state
+        .pattern()
+        .notes()
+        .iter()
+        .enumerate()
+        .map(|(i, n)| RollNote {
+            start: n.start,
+            length: n.length,
+            pitch: n.pitch,
+            velocity: n.velocity,
+            selected: state.roll_selected == Some(i),
+        })
+        .collect()
+}
+
+/// A roll note as a pattern note.
+#[must_use]
+pub fn to_note(n: RollNote) -> Note {
+    Note::new(n.start, n.length, n.pitch, n.velocity)
+}
+
+/// Applies what the roll reported this frame: the scrolled bottom pitch and the click
+/// selection (view state the widget edits in `model`), then the one edit, if any, through
+/// [`AppState::add_note`] / [`AppState::set_note`] / [`AppState::remove_note`]. The selection
+/// follows its note across the re-sort an add or move causes.
+pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: PianoRollOutput) {
+    state.set_roll_low_pitch(model.low_pitch);
+    state.roll_selected = model.selected;
+    let selected_note = model
+        .selected
+        .and_then(|i| state.pattern().notes().get(i).copied());
+    if let Some(n) = out.add {
+        state.add_note(to_note(n));
+        state.roll_selected =
+            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s));
+    } else if let Some((i, n)) = out.moved {
+        let new_index = state.set_note(i, to_note(n));
+        state.roll_selected = if model.selected == Some(i) {
+            new_index
+        } else {
+            selected_note.and_then(|s| state.pattern().notes().iter().position(|n| *n == s))
+        };
+    } else if let Some(i) = out.removed {
+        // `remove_note` shifts the selection past the removed index itself.
+        state.remove_note(i);
+    }
+}
 
 /// Left edge of cell `i` relative to the grid's left edge.
 #[must_use]
@@ -151,16 +253,69 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         ui.spacing_mut().item_spacing.y = 0.0;
         head(ui, state, theme);
         ui.add_space(HEAD_GAP);
-        beat_numbers(ui, state, theme);
-        ui.add_space(ROW_GAP);
-        for row in DrumRow::ALL {
-            drum_row(ui, state, theme, row);
-            ui.add_space(ROW_GAP);
+        match state.lane_view {
+            LaneView::Grid => {
+                beat_numbers(ui, state, theme);
+                ui.add_space(ROW_GAP);
+                for row in DrumRow::ALL {
+                    drum_row(ui, state, theme, row);
+                    ui.add_space(ROW_GAP);
+                }
+                bass_row(ui, state, theme);
+                ui.add_space(ROW_GAP);
+                bottom_row(ui, state, theme);
+            }
+            LaneView::Roll => {
+                let model = roll_model(state, vec2(ui.available_width(), ROLL_AREA_HEIGHT));
+                roll_beat_numbers(ui, theme, &model);
+                ui.add_space(ROW_GAP);
+                roll_area(ui, state, theme, model);
+            }
         }
-        bass_row(ui, state, theme);
-        ui.add_space(ROW_GAP);
-        bottom_row(ui, state, theme);
     });
+}
+
+/// The beat numbers over the roll: one per beat of the whole pattern (1..=4 x bars), centred
+/// on the first column of each group of four.
+fn roll_beat_numbers(ui: &mut Ui, theme: &Theme, model: &PianoRollModel) {
+    let height = label_row_height(ui);
+    let beats = model.steps / 4;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(KEY_COLUMN_WIDTH);
+        for beat in 0..beats {
+            if beat > 0 {
+                ui.add_space(3.0 * model.step_width);
+            }
+            let (rect, response) =
+                ui.allocate_exact_size(vec2(model.step_width, height), Sense::hover());
+            let text = (beat + 1).to_string();
+            if ui.is_rect_visible(rect) {
+                neu::text::paint_text(
+                    ui.painter(),
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    &text,
+                    TextKind::Label,
+                    theme.text_secondary,
+                );
+            }
+            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+        }
+    });
+}
+
+/// The piano roll over the edit pattern's notes, in the space of the grid rows and the bottom
+/// row; whatever it reports is applied by [`apply_roll_output`].
+fn roll_area(ui: &mut Ui, state: &mut AppState, theme: &Theme, mut model: PianoRollModel) {
+    let notes = roll_notes(state);
+    let out = neu::piano_roll(ui, theme, &mut model, &notes);
+    apply_roll_output(state, &model, out);
+    // Whole rows only: pad the rest so the panel is as tall as in GRID view.
+    let rest = ROLL_AREA_HEIGHT - model.size().y;
+    if rest > 0.0 {
+        ui.add_space(rest);
+    }
 }
 
 /// Title, pattern tabs and the queued letter on the left; LENGTH, FOLLOW, COPY, PASTE and the
@@ -172,6 +327,7 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         neu::title(ui, theme, "Sequencer");
         pattern_tabs(ui, state, theme);
         queued_indicator(ui, state, theme);
+        lane_view_tabs(ui, state, theme);
         controls::right_aligned(ui, "sequencer_head", |ui| {
             ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
             length_selector(ui, state, theme);
@@ -211,6 +367,24 @@ fn pattern_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         .on_hover_text("Pattern (switches at the next bar while playing)");
     if selected != before {
         state.select_pattern(selected as u8);
+    }
+}
+
+/// `GRID | ROLL` (M7): what the panel shows under the head. Not an edit.
+fn lane_view_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let before = match state.lane_view {
+        LaneView::Grid => 0,
+        LaneView::Roll => 1,
+    };
+    let mut selected = before;
+    neu::segmented(ui, theme, &mut selected, &LANE_VIEW_TABS)
+        .on_hover_text("Grid: one note per step. Roll: chords and held notes");
+    if selected != before {
+        state.set_lane_view(if selected == 0 {
+            LaneView::Grid
+        } else {
+            LaneView::Roll
+        });
     }
 }
 

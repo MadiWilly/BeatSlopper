@@ -646,3 +646,44 @@ fn sounding_notes_survive_edits_and_keyboard_holds_survive_note_offs() {
     engine.note_off(A4);
     assert!(held_pitches(&engine).is_empty());
 }
+
+// Overlapping notes of different pitches and different starts play polyphonically: the long
+// low note keeps sounding while the short high note starts and ends inside it.
+#[test]
+fn offset_overlapping_notes_of_different_pitches_both_sound() {
+    let notes = [Note::new(0, 4, 48, 0.8), Note::new(2, 1, 60, 0.8)];
+    let mut engine = engine_with(&notes, PatternLength::Bar1);
+    engine.play();
+    let _ = render(&mut engine, 2 * SPP + 10);
+    assert_eq!(
+        held_pitches(&engine),
+        vec![48, 60],
+        "both held during the overlap"
+    );
+    let _ = render(&mut engine, SPP);
+    assert_eq!(
+        held_pitches(&engine),
+        vec![48],
+        "the short note released, the long one stays"
+    );
+    let _ = render(&mut engine, SPP);
+    assert!(
+        held_pitches(&engine).is_empty(),
+        "the long note ends at 4 x spp - 1"
+    );
+}
+
+// A nonsense sample rate must not make the scheduler spin or publish garbage.
+#[test]
+fn nonsense_sample_rate_falls_back_and_renders_finite() {
+    for sr in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        let (handle, mut engine) = engine::new_engine(sr);
+        assert_eq!(engine.sample_rate(), 48_000.0);
+        engine.set_pattern(&Pattern::demo());
+        engine.play();
+        let out = render(&mut engine, 2 * SPP);
+        assert!(all_finite(&out));
+        let pos = handle.position();
+        assert!(pos.frac.is_finite() && pos.step < 16);
+    }
+}

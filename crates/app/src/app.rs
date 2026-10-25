@@ -65,6 +65,20 @@
 //! ([`AppState::update_meters`]) and shown with a [`METER_DECAY_DB_PER_S`] fall
 //! ([`decay_meter`]); the UI keeps repainting while a meter is still falling. The top row's
 //! right slot shows the FX rack or the MIXER ([`AppState::right_panel`], persisted).
+//!
+//! Piano roll (M7): the synth part of a pattern is its note list (`Pattern::notes`, chords and
+//! held notes); the grid's bass lane is the derived one-note-per-step view of it. The
+//! SEQUENCER panel shows the step GRID or the piano ROLL ([`AppState::lane_view`], persisted
+//! with the roll's bottom pitch [`AppState::roll_low_pitch`]). Roll edits go through
+//! [`AppState::add_note`] / [`AppState::set_note`] / [`AppState::remove_note`] /
+//! [`AppState::clear_notes`]: each is one undo step, marks the project dirty, mutates the
+//! mirror through the `Pattern` note API (which re-sorts and rebuilds the lane) and replays
+//! the edit pattern's whole note list to the engine ([`note_messages`]: `ClearNotes` then one
+//! `SetNote` per note; a re-sort moves indices, so replaying is the simplest way to keep both
+//! sides identical, and the outbox absorbs the burst). Grid edits keep using `SetSynthStep`
+//! (a length-1 note upsert on both sides), as do click-then-key note entry and record-arm
+//! overdub. [`pattern_messages`] replays notes the same way, so a resend (startup, load,
+//! undo) carries chords and long notes.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -74,9 +88,9 @@ use std::time::{Duration, Instant};
 use eframe::{App, CreationContext, Frame, Storage};
 use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE, MAX_REPEATS, pattern_letter};
 use engine::{
-    Bank, ChainEntry, Channel, ChannelParam, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, Message,
-    Meters, MidiHandle, MixerState, PATTERN_COUNT, ParamId, Pattern, PatternLength, PlayMode,
-    Position, SynthStep,
+    Bank, ChainEntry, Channel, ChannelParam, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, MAX_NOTES,
+    Message, Meters, MidiHandle, MixerState, Note, PATTERN_COUNT, ParamId, Pattern, PatternLength,
+    PlayMode, Position, STEPS,
 };
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -107,6 +121,15 @@ pub const MIDI_PORT_KEY: &str = "midi_port";
 
 /// eframe storage key for the right-hand top panel choice (FX rack or MIXER).
 pub const RIGHT_PANEL_KEY: &str = "right_panel";
+
+/// eframe storage key for the sequencer's lane view (step GRID or piano ROLL, M7).
+pub const LANE_VIEW_KEY: &str = "lane_view";
+
+/// eframe storage key for the piano roll's bottom visible pitch (M7).
+pub const ROLL_LOW_PITCH_KEY: &str = "roll_low_pitch";
+
+/// Bottom pitch of a fresh piano roll (C2).
+pub const DEFAULT_ROLL_LOW_PITCH: u8 = 36;
 
 /// How fast a shown meter falls after its peak, in dB per second (M6).
 pub const METER_DECAY_DB_PER_S: f32 = 20.0;
@@ -164,6 +187,15 @@ pub enum RightPanel {
     #[default]
     Fx,
     Mixer,
+}
+
+/// What the SEQUENCER panel shows under its head (M7): the step GRID (drum rows and the bass
+/// lane) or the piano ROLL of the edit pattern's notes. Persisted under [`LANE_VIEW_KEY`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LaneView {
+    #[default]
+    Grid,
+    Roll,
 }
 
 /// The decayed level a meter shows one frame on: a new peak replaces the shown level at once,
@@ -338,6 +370,12 @@ pub struct AppState {
     pub right_tab: RightTab,
     /// Which panel the top row's right slot shows: the FX rack or the MIXER (persisted).
     pub right_panel: RightPanel,
+    /// What the SEQUENCER panel shows: the step GRID or the piano ROLL (M7, persisted).
+    pub lane_view: LaneView,
+    /// MIDI pitch of the piano roll's bottom row (M7, persisted; the wheel scrolls it).
+    pub roll_low_pitch: u8,
+    /// Index into [`Pattern::notes`] of the note selected on the piano roll, if any.
+    pub roll_selected: Option<usize>,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
     /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
@@ -464,6 +502,9 @@ impl AppState {
             follow: true,
             right_tab: RightTab::Project,
             right_panel: RightPanel::Fx,
+            lane_view: LaneView::Grid,
+            roll_low_pitch: DEFAULT_ROLL_LOW_PITCH,
+            roll_selected: None,
             song_selected: Some(0),
             mixer: MixerState::default(),
             meters: Meters::SILENT,
@@ -884,6 +925,7 @@ impl AppState {
         let index = index % PATTERN_COUNT as u8;
         self.bank.current = index;
         self.selected_step = None;
+        self.roll_selected = None;
         self.clamp_shown_bar();
         self.send(Message::SelectPattern(index));
     }
@@ -921,6 +963,11 @@ impl AppState {
             && step >= self.pattern().len()
         {
             self.selected_step = None;
+        }
+        if let Some(index) = self.roll_selected
+            && index >= self.pattern().notes().len()
+        {
+            self.roll_selected = None;
         }
     }
 
@@ -1050,6 +1097,112 @@ impl AppState {
         }
         self.pattern_mut().clear_synth();
         self.send(Message::ClearSynth);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Piano-roll note edits (M7). Every edit mutates the mirror through the `Pattern` note API
+    // (which clamps, re-sorts and rebuilds the grid lane), is one undo step, marks the project
+    // dirty and replays the edit pattern's whole note list to the engine ([`send_notes`]):
+    // a re-sort moves indices, so `ClearNotes` + one `SetNote` per note (at most
+    // `MAX_NOTES + 1` messages) is the simplest way to keep both sides identical.
+
+    /// Adds `note` to the edit pattern and returns its index in the sorted list, or `None`
+    /// (no edit, no undo step) when the pattern is full, `note.length == 0` or it starts at or
+    /// beyond the pattern length.
+    pub fn add_note(&mut self, note: Note) -> Option<usize> {
+        if note.length == 0
+            || usize::from(note.start) >= self.pattern().len()
+            || self.pattern().notes().len() >= MAX_NOTES
+        {
+            return None;
+        }
+        self.begin_edit();
+        let index = self.pattern_mut().add_note(note)?;
+        self.send_notes();
+        Some(index)
+    }
+
+    /// Replaces note `index` of the edit pattern with `note` and returns its new index after
+    /// re-sorting; `None` (no edit) when `index` is out of range or `note` is invalid. An
+    /// unchanged note is not an edit either (returns `Some(index)`).
+    pub fn set_note(&mut self, index: usize, note: Note) -> Option<usize> {
+        let current = *self.pattern().notes().get(index)?;
+        let mut target = note;
+        target.normalise();
+        if target == current {
+            return Some(index);
+        }
+        if note.length == 0 || usize::from(note.start) >= self.pattern().len() {
+            return None;
+        }
+        self.begin_edit();
+        let new_index = self.pattern_mut().set_note(index, note)?;
+        self.send_notes();
+        Some(new_index)
+    }
+
+    /// Removes note `index` of the edit pattern; `false` (no edit) when out of range. A
+    /// selection on the roll follows the shift of the later notes.
+    pub fn remove_note(&mut self, index: usize) -> bool {
+        if index >= self.pattern().notes().len() {
+            return false;
+        }
+        self.begin_edit();
+        self.pattern_mut().remove_note(index);
+        self.roll_selected = match self.roll_selected {
+            Some(s) if s == index => None,
+            Some(s) if s > index => Some(s - 1),
+            other => other,
+        };
+        self.send_notes();
+        true
+    }
+
+    /// Removes every note of the edit pattern (the bass lane becomes rests). An undo step only
+    /// if there was a note.
+    pub fn clear_notes(&mut self) {
+        if self.pattern().notes().is_empty() {
+            return;
+        }
+        self.begin_edit();
+        self.pattern_mut().clear_notes();
+        self.roll_selected = None;
+        self.send_notes();
+    }
+
+    /// Replays the edit pattern's note list to the engine ([`note_messages`]).
+    pub fn send_notes(&mut self) {
+        let index = self.bank.current;
+        for msg in note_messages(self.pattern(), index) {
+            self.send(msg);
+        }
+    }
+
+    /// Switches the SEQUENCER panel between the step GRID and the piano ROLL. Not an edit.
+    /// The grid's bass selection is dropped on the way to the roll (in ROLL mode the computer
+    /// keyboard only plays, unless record armed).
+    pub fn set_lane_view(&mut self, view: LaneView) {
+        self.lane_view = view;
+        if view == LaneView::Roll {
+            self.selected_step = None;
+        } else {
+            self.roll_selected = None;
+        }
+    }
+
+    /// Sets the piano roll's bottom pitch (clamped so `pitches` rows stay within MIDI).
+    pub fn set_roll_low_pitch(&mut self, low_pitch: u8) {
+        self.roll_low_pitch = low_pitch.min(127);
+    }
+
+    /// The piano roll's playhead in fractional steps of the edit pattern (`bar * 16 + step +
+    /// frac`) while the transport plays that pattern; `None` otherwise.
+    #[must_use]
+    pub fn roll_playhead(&self) -> Option<f32> {
+        let pos = self.playhead;
+        (pos.playing && pos.pattern == self.current()).then(|| {
+            f32::from(pos.bar) * STEPS as f32 + f32::from(pos.step) + pos.frac.clamp(0.0, 1.0)
+        })
     }
 
     /// Per-row drum volume in dB (clamped by the pattern); undo coalesces per knob drag.
@@ -1398,7 +1551,12 @@ impl AppState {
     pub fn note_on_from(&mut self, note: u8, velocity: f32, source: NoteSource) {
         let note = note.min(127);
         let velocity = velocity.clamp(0.0, 1.0);
-        if let Some(step) = self.selected_step {
+        // The grid's bass selection takes the note only while the grid is showing; on the
+        // roll the keyboard just plays (overdub below still records length-1 notes).
+        if let Some(step) = self
+            .selected_step
+            .filter(|_| self.lane_view == LaneView::Grid)
+        {
             let accent = self.pattern().synth[step % self.pattern().len()].accent;
             self.set_synth_step(step, Some(note), accent);
         } else if self.is_recording() {
@@ -1472,6 +1630,9 @@ impl AppState {
                 if escape {
                     self.selected_step = None;
                 }
+            }
+            if escape && self.roll_selected.is_some() {
+                self.roll_selected = None;
             }
             ctx.input(|i| self.input.handle_events(&i.events))
         };
@@ -1646,10 +1807,11 @@ pub fn truncate_name(name: &str, max: usize) -> String {
 /// The messages that put `pattern` into the engine's slot `index`, in order: `SetEditPattern`,
 /// `ClearPattern` (so steps the engine had and the mirror has not are gone), the length
 /// (widened to [`Pattern::used_steps`] when data lives beyond the length, because step
-/// messages wrap into the engine pattern's length), every non-empty drum / synth step, the
-/// real length when it was widened, and each row's volume and tune. Only non-empty steps are
+/// messages wrap into the engine pattern's length), every non-empty drum step, the note list
+/// ([`note_messages`]: `ClearNotes` then one `SetNote` per note, M7), the real length when it
+/// was widened, and each row's volume and tune. Only non-empty steps and the actual notes are
 /// sent, so a sparse pattern costs a few dozen messages and a dense 64-step one at most
-/// `64 * 6 + 14`.
+/// `64 * 5 + 65 + 14`.
 #[must_use]
 pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
     let mut out = Vec::new();
@@ -1675,15 +1837,9 @@ pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
             }
         }
     }
-    for (step, cell) in pattern.synth.iter().take(used).enumerate() {
-        if *cell != SynthStep::default() {
-            out.push(Message::SetSynthStep {
-                step: step as u8,
-                note: cell.note,
-                accent: cell.accent,
-            });
-        }
-    }
+    // M7: the synth part is the note list (chords, held notes), not the derived lane. Notes
+    // starting on hidden steps are accepted while the length is widened.
+    out.extend(note_messages(pattern, index));
     if used != usize::from(len) {
         out.push(Message::SetPatternLength {
             pattern: index,
@@ -1698,6 +1854,27 @@ pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
         out.push(Message::SetDrumTune {
             row,
             semitones: pattern.drum_tune[row.index()],
+        });
+    }
+    out
+}
+
+/// The messages that replace pattern `index`'s note list in the engine with `pattern`'s (M7):
+/// `ClearNotes(index)` then one `SetNote` per note in sorted order, each with
+/// `index == note_count` (an append), so the engine's list ends up identical to the mirror's
+/// whatever it held before. At most `MAX_NOTES + 1` messages. A note that starts at or beyond
+/// the engine pattern's *current* length is ignored by the engine, so callers that replay a
+/// pattern with hidden notes widen the length first ([`pattern_messages`] does).
+#[must_use]
+pub fn note_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
+    let notes = pattern.notes();
+    let mut out = Vec::with_capacity(notes.len() + 1);
+    out.push(Message::ClearNotes(index));
+    for (i, note) in notes.iter().enumerate() {
+        out.push(Message::SetNote {
+            pattern: index,
+            index: i as u8,
+            note: *note,
         });
     }
     out
@@ -1798,10 +1975,18 @@ impl BeatSlopperApp {
         let right_panel: Option<RightPanel> = cc
             .storage
             .and_then(|s| eframe::get_value::<RightPanel>(s, RIGHT_PANEL_KEY));
+        let lane_view: Option<LaneView> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<LaneView>(s, LANE_VIEW_KEY));
+        let roll_low_pitch: Option<u8> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<u8>(s, ROLL_LOW_PITCH_KEY));
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
         state.right_panel = right_panel.unwrap_or_default();
+        state.set_lane_view(lane_view.unwrap_or_default());
+        state.set_roll_low_pitch(roll_low_pitch.unwrap_or(DEFAULT_ROLL_LOW_PITCH));
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -2040,6 +2225,8 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
         eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
+        eframe::set_value(storage, LANE_VIEW_KEY, &self.state.lane_view);
+        eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -2394,15 +2581,22 @@ mod tests {
             .iter()
             .flatten()
             .filter(|s| **s != DrumStep::default())
-            .count()
-            + state
-                .pattern()
-                .synth
+            .count();
+        let notes = state.pattern().notes().len();
+        assert!(notes > 0, "the demo has a bass line");
+        // SetEditPattern, ClearPattern, the length, the non-empty drum steps, ClearNotes plus
+        // one SetNote per note (M7), 5 volumes, 5 tunes.
+        assert_eq!(
+            messages.len(),
+            3 + used_steps + 1 + notes + 2 * DrumRow::COUNT
+        );
+        assert!(messages.contains(&Message::ClearNotes(0)));
+        assert!(
+            !messages
                 .iter()
-                .filter(|s| **s != SynthStep::default())
-                .count();
-        // SetEditPattern, ClearPattern, the length, the non-empty steps, 5 volumes, 5 tunes.
-        assert_eq!(messages.len(), 3 + used_steps + 2 * DrumRow::COUNT);
+                .any(|m| matches!(m, Message::SetSynthStep { .. })),
+            "the lane is derived: notes are sent, not lane cells"
+        );
         assert_eq!(messages[0], Message::SetEditPattern(0));
         assert_eq!(messages[1], Message::ClearPattern(0));
         assert_eq!(
@@ -3317,6 +3511,257 @@ mod tests {
         assert_eq!(engine.pattern(), state.pattern());
         assert_eq!(engine.pattern().drum_volume[DrumRow::Kick.index()], -3.0);
         assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 12.0);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Piano roll (M7): notes in the mirror and the engine.
+
+    /// A chord (C E G at step 0, four steps long), a six-step note at step 8 and a hidden
+    /// note at step 20 of a one-bar pattern.
+    fn chord_pattern() -> Pattern {
+        let mut p = Pattern::empty();
+        p.add_note(Note::new(0, 4, 48, 0.8));
+        p.add_note(Note::new(0, 4, 52, 0.8));
+        p.add_note(Note::new(0, 4, 55, 1.0));
+        p.add_note(Note::new(8, 6, 43, 0.8));
+        // Hidden: widen, add, shrink (the note stays in the list beyond the length).
+        p.set_length(PatternLength::Bar2);
+        p.add_note(Note::new(20, 2, 60, 0.8));
+        p.set_length(PatternLength::Bar1);
+        assert_eq!(p.notes().len(), 5);
+        p
+    }
+
+    #[test]
+    fn pattern_messages_replay_chords_long_and_hidden_notes_into_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.bank.patterns[2] = chord_pattern();
+        let messages = pattern_messages(&state.bank.patterns[2], 2);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| matches!(m, Message::SetNote { pattern: 2, .. }))
+                .count(),
+            5
+        );
+        assert!(messages.contains(&Message::ClearNotes(2)));
+        // The hidden note is sent while the length is widened to two bars.
+        let widened = messages
+            .iter()
+            .position(|m| {
+                *m == Message::SetPatternLength {
+                    pattern: 2,
+                    steps: 32,
+                }
+            })
+            .unwrap();
+        let restored = messages
+            .iter()
+            .position(|m| {
+                *m == Message::SetPatternLength {
+                    pattern: 2,
+                    steps: 16,
+                }
+            })
+            .unwrap();
+        let last_note = messages
+            .iter()
+            .rposition(|m| matches!(m, Message::SetNote { .. }))
+            .unwrap();
+        assert!(widened < last_note && last_note < restored);
+
+        state.send_bank();
+        sync(&mut state, &mut engine);
+        assert_eq!(
+            engine.bank().patterns[2].notes(),
+            state.bank.patterns[2].notes()
+        );
+        assert_eq!(engine.bank().patterns[2], state.bank.patterns[2]);
+        assert_eq!(engine.bank(), &state.bank);
+        // The derived lane agrees on both sides: the lowest chord note at step 0.
+        assert_eq!(engine.bank().patterns[2].synth[0].note, Some(48));
+        assert_eq!(engine.bank().patterns[2].synth[8].note, Some(43));
+    }
+
+    #[test]
+    fn note_edits_reach_the_engine_and_are_undoable_and_dirty() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_synth();
+        state.send_pattern();
+        sync(&mut state, &mut engine);
+        state.undo.clear();
+        state.dirty = false;
+
+        // Add a chord: each add is one undo step, the list stays sorted by start then pitch.
+        assert_eq!(state.add_note(Note::new(4, 2, 55, 0.8)), Some(0));
+        assert_eq!(
+            state.add_note(Note::new(4, 2, 48, 0.8)),
+            Some(0),
+            "sorted below"
+        );
+        assert_eq!(state.add_note(Note::new(0, 8, 36, 1.0)), Some(0));
+        assert_eq!(state.undo.len(), 3);
+        assert!(state.dirty);
+        assert_eq!(
+            state.pattern().notes(),
+            &[
+                Note::new(0, 8, 36, 1.0),
+                Note::new(4, 2, 48, 0.8),
+                Note::new(4, 2, 55, 0.8)
+            ]
+        );
+        // The lane is the derived view: lowest note per start step, accent at 1.0.
+        assert_eq!(state.pattern().synth[0].note, Some(36));
+        assert!(state.pattern().synth[0].accent);
+        assert_eq!(state.pattern().synth[4].note, Some(48));
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+
+        // Move the long note up a fifth and shorten it: it re-sorts behind the chord.
+        assert_eq!(state.set_note(0, Note::new(6, 3, 43, 1.0)), Some(2));
+        assert_eq!(state.undo.len(), 4);
+        assert_eq!(state.pattern().notes()[2], Note::new(6, 3, 43, 1.0));
+        // Setting a note to itself is not an edit; out-of-range indices are refused.
+        assert_eq!(state.set_note(2, Note::new(6, 3, 43, 1.0)), Some(2));
+        assert_eq!(state.set_note(9, Note::new(1, 1, 60, 0.8)), None);
+        assert_eq!(
+            state.set_note(2, Note::new(40, 1, 60, 0.8)),
+            None,
+            "beyond the bar"
+        );
+        assert_eq!(state.undo.len(), 4);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+
+        // Remove the middle chord note; a selection past it shifts down.
+        state.roll_selected = Some(2);
+        assert!(state.remove_note(1));
+        assert_eq!(state.roll_selected, Some(1));
+        assert!(!state.remove_note(5));
+        assert_eq!(state.undo.len(), 5);
+        assert_eq!(state.pattern().notes().len(), 2);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+
+        // Undo walks back through every step, the engine following.
+        assert!(state.undo());
+        assert_eq!(state.pattern().notes().len(), 3);
+        assert!(state.undo());
+        assert_eq!(state.pattern().notes()[0], Note::new(0, 8, 36, 1.0));
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.pattern().notes(), state.pattern().notes());
+        assert!(state.redo());
+        assert_eq!(state.pattern().notes()[2], Note::new(6, 3, 43, 1.0));
+
+        // Clear: one step while there is something to clear, none afterwards.
+        let before = state.undo.len();
+        state.clear_notes();
+        assert!(state.pattern().notes().is_empty());
+        assert_eq!(state.undo.len(), before + 1);
+        state.clear_notes();
+        assert_eq!(state.undo.len(), before + 1);
+        sync(&mut state, &mut engine);
+        assert!(engine.pattern().notes().is_empty());
+
+        // A full pattern refuses a 65th note without an undo step.
+        for i in 0..MAX_NOTES {
+            assert!(
+                state
+                    .add_note(Note::new((i % 16) as u8, 1, 30 + i as u8, 0.8))
+                    .is_some()
+            );
+        }
+        let full = state.undo.len();
+        assert_eq!(state.add_note(Note::new(0, 1, 100, 0.8)), None);
+        assert_eq!(state.undo.len(), full);
+    }
+
+    #[test]
+    fn set_synth_step_still_upserts_a_length_one_note_under_the_lane() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_pattern();
+        state.clear_synth();
+        state.add_note(Note::new(3, 4, 48, 0.8));
+        state.add_note(Note::new(3, 4, 52, 0.8));
+        // The grid writes one note per step: both chord notes at step 3 give way to a
+        // length-1 accented note, the lane shows it, and the engine agrees.
+        state.set_synth_step(3, Some(60), true);
+        assert_eq!(state.pattern().notes(), &[Note::step(3, 60, true)]);
+        assert_eq!(
+            state.pattern().synth[3],
+            SynthStep {
+                note: Some(60),
+                accent: true
+            }
+        );
+        state.set_synth_step(5, Some(43), false);
+        assert_eq!(state.pattern().notes().len(), 2);
+        assert_eq!(state.pattern().synth[5].note, Some(43));
+        state.set_synth_step(3, None, false);
+        assert_eq!(state.pattern().notes(), &[Note::step(5, 43, false)]);
+        assert_eq!(state.pattern().synth[3], SynthStep::default());
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.pattern(), state.pattern());
+        // Every lane cell is what its notes say.
+        let mut rebuilt = state.pattern().clone();
+        rebuilt.rebuild_lane();
+        assert_eq!(rebuilt.synth, state.pattern().synth);
+    }
+
+    #[test]
+    fn lane_view_and_roll_playhead() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.lane_view, LaneView::Grid);
+        assert_eq!(state.roll_low_pitch, DEFAULT_ROLL_LOW_PITCH);
+        assert_eq!(state.roll_playhead(), None, "stopped");
+
+        // Switching to the roll drops the grid selection and is not an edit; the keyboard
+        // then only plays (no note lands in the pattern).
+        state.click_synth_step(2, false);
+        state.set_lane_view(LaneView::Roll);
+        assert_eq!(state.selected_step, None);
+        assert!(!state.dirty);
+        let demo = Pattern::demo();
+        state.note_on(67, 0.8);
+        state.note_off(67);
+        assert_eq!(state.pattern().clone(), demo);
+        assert_eq!(state.note_on_count, 1, "it still sounds");
+        // ... unless record armed and playing: overdub writes a length-1 note as before.
+        state.play();
+        state.toggle_arm();
+        state.playhead = at(5, 0.1);
+        state.note_on(60, 1.0);
+        assert_eq!(
+            state.pattern().synth[5],
+            Note::step(5, 60, true).lane_step()
+        );
+        assert!(state.pattern().note_at(5, 60).is_some());
+
+        // The playhead in roll steps: bar * 16 + step + frac while the edit pattern plays.
+        state.playhead = Position {
+            bar: 1,
+            ..at(3, 0.5)
+        };
+        assert_eq!(state.roll_playhead(), Some(19.5));
+        state.playhead.pattern = 4;
+        assert_eq!(state.roll_playhead(), None, "another pattern is playing");
+        state.playhead = Position::stopped(0);
+        assert_eq!(state.roll_playhead(), None);
+
+        // Back to the grid drops the roll selection; the bottom pitch is clamped to MIDI.
+        state.roll_selected = Some(0);
+        state.set_lane_view(LaneView::Grid);
+        assert_eq!(state.roll_selected, None);
+        state.set_roll_low_pitch(200);
+        assert_eq!(state.roll_low_pitch, 127);
+        // Selecting another pattern or undoing past the notes clears a stale selection.
+        state.roll_selected = Some(0);
+        state.select_pattern(3);
+        assert_eq!(state.roll_selected, None);
+        state.select_pattern(0);
+        state.roll_selected = Some(state.pattern().notes().len() - 1);
+        state.clear_notes();
+        assert_eq!(state.roll_selected, None);
     }
 
     // -----------------------------------------------------------------------------------------

@@ -688,6 +688,66 @@ mod tests {
         assert_eq!(loaded.mixer, state.mixer);
     }
 
+    /// M7: a chord and a held note survive save / open (format version 5), and a v4 file's
+    /// one-note-per-step lane loads as length-1 notes.
+    #[test]
+    fn notes_round_trip_through_a_v5_file_and_v4_lanes_become_notes() {
+        use engine::Note;
+
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_synth();
+        state.add_note(Note::new(0, 4, 48, 0.8));
+        state.add_note(Note::new(0, 4, 52, 0.8));
+        state.add_note(Note::new(0, 4, 55, 1.0));
+        state.add_note(Note::new(8, 6, 43, 0.8));
+        let notes = state.pattern().notes().to_vec();
+        assert_eq!(notes.len(), 4);
+
+        let project = state.build_project();
+        assert_eq!(project.version, 5);
+        assert_eq!(engine::project::FORMAT_VERSION, 5);
+        let json = project.to_json_pretty();
+        assert!(json.contains("\"notes\""));
+        assert_eq!(Project::from_json(&json).unwrap(), project);
+
+        let path = temp_path("notes.beatslopper.json");
+        assert!(state.save_project_to(path.clone()));
+        let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
+        assert!(loaded.load_project_from(path.clone()));
+        assert_eq!(loaded.pattern().notes(), notes.as_slice());
+        assert_eq!(loaded.bank, state.bank);
+        assert_eq!(loaded.roll_selected, None);
+        while !loaded.outbox.is_empty() {
+            engine.process_messages();
+            loaded.flush_outbox();
+        }
+        engine.process_messages();
+        assert_eq!(
+            engine.pattern().notes(),
+            notes.as_slice(),
+            "the load resent the notes"
+        );
+        let _ = std::fs::remove_file(path);
+
+        // A v4 file: the lane's steps become length-1 notes.
+        let v4_text = r#"{
+            "version": 4, "bpm": 110.0,
+            "bank": { "patterns": [ { "length": 16, "synth": [
+                { "note": 36, "accent": false }, { "note": null, "accent": false },
+                { "note": 43, "accent": true } ] } ] }
+        }"#;
+        let old = Project::from_json(v4_text).unwrap();
+        assert_eq!(old.version, 5);
+        loaded.apply_project(&old);
+        assert_eq!(loaded.bpm, 110.0);
+        assert_eq!(
+            loaded.pattern().notes(),
+            &[Note::step(0, 36, false), Note::step(2, 43, true)]
+        );
+        assert_eq!(loaded.pattern().synth[2].note, Some(43));
+        assert!(loaded.pattern().synth[2].accent);
+    }
+
     #[test]
     fn file_labels_use_the_file_name() {
         assert_eq!(

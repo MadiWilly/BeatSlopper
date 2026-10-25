@@ -101,6 +101,7 @@ Pressed swaps raised for inset. The concentric dial is three raised-m rings (no 
   export bar count and Export WAV; it is built from the kit's pills, segmented control and lamp.
 - Default window is 1280x1140 so the whole sequencer is visible without scrolling; minimum
   stays 1240x760 with vertical scroll.
-- Brand wordmark is 15 px without the +0.16em tracking.
+- Brand wordmark is 15 px with the mock's +0.16em tracking (added in M4).
+- Piano roll: the hovered cell shows a faint highlight (shadow-highlight at 50 %) and black-key rows a 6 % shadow-dark tint; accented notes carry an on-accent dot; meters mark -6 dBFS with an on-accent line.
 - Black-key note names use text-primary (text-secondary on key-black is 3.0:1 in light).
 - The velocity control is a soft knob (the mock has no velocity control).

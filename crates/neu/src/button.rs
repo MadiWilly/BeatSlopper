@@ -38,6 +38,9 @@ pub const PILL_HEIGHT: f32 = 30.0;
 pub const TOGGLE_SQUARE: egui::Vec2 = egui::Vec2::new(28.0, 28.0);
 /// Corner radius of [`toggle_button_sized`] (clamped to a pill for small sizes).
 pub const TOGGLE_SIZED_RADIUS: f32 = 8.0;
+/// Largest shorter side of a [`toggle_button_sized`] that takes the small (raised-s /
+/// inset-s) depth; anything bigger is raised-m / inset-m.
+pub const SMALL_DEPTH_MAX: f32 = 32.0;
 /// Line width of icon glyphs.
 pub const ICON_STROKE: f32 = 1.5;
 /// Size of the theme-toggle track.
@@ -60,8 +63,10 @@ pub fn toggle_button(ui: &mut Ui, theme: &Theme, label: &str, on: bool) -> Respo
 }
 
 /// Toggle button of an explicit `size` (e.g. [`TOGGLE_SQUARE`], 28x28, for the mixer's "M" /
-/// "S"): a [`TOGGLE_SIZED_RADIUS`] rounded rect with the same raised-m / inset-m (pressed) /
-/// OnGlow (`on`) treatment as [`toggle_button`] and the 12 pt medium caps label centred.
+/// "S"): a [`TOGGLE_SIZED_RADIUS`] rounded rect with the raised / inset (pressed) / OnGlow
+/// (`on`) treatment of [`toggle_button`] and the 12 pt medium caps label centred. Per the
+/// WINNER size-to-depth mapping, sizes whose shorter side is at most [`SMALL_DEPTH_MAX`]
+/// (32 pt) use raised-s / inset-s; larger ones raised-m / inset-m.
 pub fn toggle_button_sized(
     ui: &mut Ui,
     theme: &Theme,
@@ -69,17 +74,39 @@ pub fn toggle_button_sized(
     on: bool,
     size: egui::Vec2,
 ) -> Response {
-    toggle_rect(ui, theme, label, Some(on), size, TOGGLE_SIZED_RADIUS)
+    let raised = if size.min_elem() <= SMALL_DEPTH_MAX {
+        Depth::RaisedS
+    } else {
+        Depth::RaisedM
+    };
+    toggle_rect(
+        ui,
+        theme,
+        label,
+        Some(on),
+        size,
+        TOGGLE_SIZED_RADIUS,
+        raised,
+    )
 }
 
 fn pill(ui: &mut Ui, theme: &Theme, label: &str, on: Option<bool>) -> Response {
     let galley = text::layout(ui.painter(), label, TextKind::Button, Color32::PLACEHOLDER);
     let size = vec2(galley.size().x + 2.0 * theme.space_4, PILL_HEIGHT);
-    toggle_rect(ui, theme, label, on, size, theme.radius_pill)
+    toggle_rect(
+        ui,
+        theme,
+        label,
+        on,
+        size,
+        theme.radius_pill,
+        Depth::RaisedM,
+    )
 }
 
 /// The shared body of [`button`], [`toggle_button`] and [`toggle_button_sized`]: a `size`
-/// rounded rect of `radius` with the raised / inset / on-glow treatment and a centred label.
+/// rounded rect of `radius` with the `raised` / `raised.pressed()` / on-glow treatment and a
+/// centred label.
 fn toggle_rect(
     ui: &mut Ui,
     theme: &Theme,
@@ -87,6 +114,7 @@ fn toggle_rect(
     on: Option<bool>,
     size: egui::Vec2,
     radius: f32,
+    raised: Depth,
 ) -> Response {
     let galley = text::layout(ui.painter(), label, TextKind::Button, Color32::PLACEHOLDER);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -104,11 +132,7 @@ fn toggle_rect(
             paint_soft_rect_with_fill(painter, rect, radius, Depth::OnGlow, fill, theme);
             theme.on_accent
         } else {
-            let depth = if pressed {
-                Depth::InsetM
-            } else {
-                Depth::RaisedM
-            };
+            let depth = if pressed { raised.pressed() } else { raised };
             paint_soft_rect(painter, rect, radius, depth, theme);
             if hovered {
                 theme.text_primary

@@ -3,7 +3,7 @@
 //! `NaN` without panicking, the square toggle reports clicks and renders ON / OFF in both
 //! themes, and the dB mapping helper matches the design's curve.
 
-use egui::{Rect, pos2, vec2};
+use egui::{Key, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use neu::{SliderSpec, Theme, ThemeMode};
@@ -88,6 +88,70 @@ fn fader_double_click_resets_to_default() {
     harness.get_by_label("Level").click();
     harness.run();
     assert_eq!(*harness.state(), 0.0);
+}
+
+#[test]
+fn fader_arrow_keys_step_only_while_focused() {
+    const PAN: SliderSpec<'static> = SliderSpec {
+        label: "Pan",
+        min: -60.0,
+        max: 6.0,
+        default: 0.0,
+        fmt: db,
+    };
+    let mut harness = Harness::builder()
+        .with_size(vec2(240.0, 320.0))
+        .with_step_dt(0.01)
+        .with_max_steps(32)
+        .build_ui_state(
+            |ui, values: &mut (f32, f32)| {
+                let theme = Theme::for_mode(ThemeMode::Dark);
+                theme.apply(ui.ctx());
+                ui.add_space(40.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(40.0);
+                    neu::fader(ui, &theme, &mut values.0, &LEVEL);
+                    ui.add_space(20.0);
+                    neu::fader(ui, &theme, &mut values.1, &PAN);
+                });
+            },
+            (-12.0, -12.0),
+        );
+    harness.run();
+    assert!(!harness.get_by_label("Level").is_focused());
+
+    // Unfocused: ArrowUp changes nothing.
+    harness.key_press(Key::ArrowUp);
+    harness.run();
+    assert_eq!(*harness.state(), (-12.0, -12.0));
+
+    // Click the Level fader: it takes focus (and wears the ring); ArrowUp steps 1/50 of the
+    // 66 dB range (1.32 dB) on it alone.
+    harness.get_by_label("Level").click();
+    harness.run();
+    assert!(harness.get_by_label("Level").is_focused());
+    assert!(!harness.get_by_label("Pan").is_focused());
+    let (level, pan) = *harness.state();
+    harness.key_press(Key::ArrowUp);
+    harness.run();
+    let (after_level, after_pan) = *harness.state();
+    assert!(
+        (after_level - (level + 1.32)).abs() < 1e-3,
+        "expected {level} + 1.32, got {after_level}"
+    );
+    assert_eq!(after_pan, pan, "the unfocused fader is untouched");
+
+    // Focus surrendered: ArrowUp is ignored again.
+    harness.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    harness.run();
+    assert!(!harness.get_by_label("Level").is_focused());
+    harness.key_press(Key::ArrowUp);
+    harness.run();
+    assert_eq!(*harness.state(), (after_level, after_pan));
 }
 
 #[test]

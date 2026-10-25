@@ -35,13 +35,13 @@ pub mod text;
 pub mod theme;
 
 pub use button::{
-    Icon, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon, stepper_button,
-    theme_toggle, toggle_button, toggle_button_sized,
+    Icon, SMALL_DEPTH_MAX, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon,
+    stepper_button, theme_toggle, toggle_button, toggle_button_sized,
 };
 pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc, tooltip_text};
 pub use meter::{
-    METER_FLOOR_DB, METER_HOT_LEVEL, METER_HOT_TOP, METER_TRACK, STEREO_METER_SIZE,
-    STEREO_METER_TRACK_WIDTH, meter, meter_fraction, stereo_meter,
+    METER_FLOOR_DB, METER_HOT_LEVEL, METER_HOT_SEPARATOR, METER_HOT_TOP, METER_TRACK,
+    STEREO_METER_SIZE, STEREO_METER_TRACK_WIDTH, meter, meter_fraction, stereo_meter,
 };
 pub use panel::panel;
 pub use piano_keys::{
@@ -49,14 +49,15 @@ pub use piano_keys::{
     note_name, piano_keys,
 };
 pub use piano_roll::{
-    ACCENT_THRESHOLD, ACCENT_VELOCITY, DEFAULT_VELOCITY, KEY_COLUMN_WIDTH, NOTE_RADIUS,
-    PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote, black_row_tint, cell_at, grid_rect,
-    is_black_key, note_rect, piano_roll, row_rect,
+    ACCENT_DOT, ACCENT_DOT_INSET, ACCENT_THRESHOLD, ACCENT_VELOCITY, DEFAULT_VELOCITY,
+    KEY_COLUMN_WIDTH, NOTE_RADIUS, PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote,
+    black_row_tint, cell_at, grid_rect, is_black_key, note_rect, piano_roll, row_rect,
 };
 pub use segmented::segmented;
 pub use shadow::{
-    Depth, paint_soft_circle, paint_soft_circle_with_fill, paint_soft_rect,
-    paint_soft_rect_with_fill, soft_circle_shapes, soft_rect_shapes, soft_rect_shapes_with_fill,
+    Depth, FOCUS_RING, FOCUS_RING_GAP, paint_focus_circle, paint_focus_rect, paint_soft_circle,
+    paint_soft_circle_with_fill, paint_soft_rect, paint_soft_rect_with_fill, soft_circle_shapes,
+    soft_rect_shapes, soft_rect_shapes_with_fill,
 };
 pub use slider::{
     FADER_TRACK, FADER_TRAVEL, SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL, SLIDER_WIDTH, SliderSpec,

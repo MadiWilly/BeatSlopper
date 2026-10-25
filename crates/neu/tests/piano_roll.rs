@@ -339,6 +339,42 @@ fn delete_key_removes_the_selected_note() {
 }
 
 #[test]
+fn delete_key_only_acts_while_the_roll_has_focus() {
+    let mut h = harness(ThemeMode::Dark, two_notes());
+    assert!(!h.get_by_label("Piano roll").is_focused());
+
+    // A click takes focus (the focus ring frame renders) and Delete removes the selection.
+    let first = note_rect(&h, 0).center();
+    click(&mut h, first);
+    assert!(h.get_by_label("Piano roll").is_focused());
+    assert_eq!(h.state().model.selected, Some(0));
+    h.key_press(Key::Delete);
+    h.run();
+    assert_eq!(h.state().last().removed, Some(0));
+    assert_eq!(h.state().notes, vec![note(4, 1, 52)]);
+
+    // Select the remaining note, then move focus elsewhere: Delete is ignored.
+    let only = note_rect(&h, 0).center();
+    click(&mut h, only);
+    assert_eq!(h.state().model.selected, Some(0));
+    assert!(h.get_by_label("Piano roll").is_focused());
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    h.run();
+    assert!(!h.get_by_label("Piano roll").is_focused());
+    let edits = h.state().log.len();
+    h.key_press(Key::Delete);
+    h.key_press(Key::Backspace);
+    h.run();
+    assert_eq!(h.state().log.len(), edits, "no edit without focus");
+    assert_eq!(h.state().notes, vec![note(4, 1, 52)]);
+    assert_eq!(h.state().model.selected, Some(0), "the selection survives");
+}
+
+#[test]
 fn shift_click_toggles_the_accent_velocity() {
     let mut h = harness(ThemeMode::Dark, two_notes());
     let body = note_rect(&h, 0).center();

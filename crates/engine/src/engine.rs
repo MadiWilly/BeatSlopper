@@ -680,6 +680,13 @@ pub struct Engine {
 /// allocate afterwards. `sample_rate` is in Hz (tests use 48 000). The bank starts empty
 /// (every pattern blank, chain `[A x1]`, pattern mode).
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
+    // A non-finite or non-positive rate would make the step length 0 and fire every step on
+    // every sample; fall back to 48 kHz like the kit and the FX chain do.
+    let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
+        sample_rate
+    } else {
+        48_000.0
+    };
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
     let (midi_producer, midi_consumer) = RingBuffer::new(QUEUE_CAPACITY);
     let shared = Arc::new(Shared::default());
