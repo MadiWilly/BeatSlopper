@@ -1,21 +1,24 @@
-//! Visual gallery of the `neu` M0 to M4 and the M6 mixer widgets in both themes.
+//! Visual gallery of the `neu` M0 to M4, M6 mixer and M7 piano-roll widgets in both themes.
 //!
 //! `cargo run -p neu --example gallery [-- --exit-after-secs N] [--light|--dark] [--scroll PX]`
 //!
 //! Shows a panel with every widget in its ON and OFF states, the raw depth swatches, the
 //! theme toggle, the mock's SYNTH and FX panels built from the M2 controls (knobs, dials,
 //! segmented selectors, vertical sliders, the limiter lamp), the SEQUENCER panel (the mock's
-//! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills)
-//! and a KEYS panel (two octaves of piano keys with a few held notes and the octave/swing
-//! steppers), so the look can be checked against `design/preview-a.html`. The transport line
-//! carries the brand wordmark (M4), and every knob, dial and slider shows a styled value
-//! tooltip after a short hover.
+//! demo pattern in step cells with a running playhead, beat numbers and per-row clear pills),
+//! the PIANO ROLL panel (a chord, a long note and the full draw / move / resize / delete
+//! interaction on a scrollable three-octave grid with the running playhead) and a KEYS panel
+//! (two octaves of piano keys with a few held notes and the octave/swing steppers), so the
+//! look can be checked against `design/preview-a.html`. The transport line carries the brand
+//! wordmark (M4), and every knob, dial and slider shows a styled value tooltip after a short
+//! hover.
 
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Align2, Layout, Rect, Vec2, pos2, vec2};
 use neu::{
-    Depth, DialSize, Icon, KnobSize, KnobSpec, SliderSpec, StepCellSpec, TextKind, Theme, ThemeMode,
+    Depth, DialSize, Icon, KnobSize, KnobSpec, PianoRollModel, RollNote, SliderSpec, StepCellSpec,
+    TextKind, Theme, ThemeMode,
 };
 
 /// The mock's drum rows (`rows` in `design/preview-a.html`): name, volume and the demo
@@ -278,6 +281,12 @@ struct Gallery {
     playhead: usize,
     /// MIXER panel state: three strips and the master's stereo peak (held for display).
     mixer: [Strip; 3],
+    /// PIANO ROLL panel state: the view model (scroll, selection, playhead) and the notes the
+    /// roll edits through its output.
+    roll: PianoRollModel,
+    roll_notes: Vec<RollNote>,
+    /// The last edit the roll reported, for the panel head.
+    last_roll_edit: String,
     started: Instant,
     exit_after: Option<Duration>,
     /// Initial vertical scroll offset (`--scroll`), applied for the first few frames (the
@@ -364,6 +373,9 @@ impl Gallery {
                     phase: 0.25,
                 },
             ],
+            roll: PianoRollModel::default(),
+            roll_notes: Self::demo_roll_notes(),
+            last_roll_edit: String::new(),
             started: Instant::now(),
             exit_after,
             scroll_to,
@@ -372,6 +384,28 @@ impl Gallery {
 
     fn base_note(octave: i32) -> u8 {
         ((octave + 1) * 12).clamp(0, 127) as u8
+    }
+
+    /// The PIANO ROLL demo: a C minor chord (C3 Eb3 G3) over the first beat, a few bass
+    /// pick-ups, and a long accented C4 across the second half of the bar.
+    fn demo_roll_notes() -> Vec<RollNote> {
+        let note = |start: u8, length: u8, pitch: u8, velocity: f32| RollNote {
+            start,
+            length,
+            pitch,
+            velocity,
+            selected: false,
+        };
+        vec![
+            note(0, 4, 48, 0.8),
+            note(0, 4, 51, 0.8),
+            note(0, 4, 55, 0.8),
+            note(4, 1, 43, 0.8),
+            note(6, 2, 46, 1.0),
+            note(8, 8, 60, 1.0),
+            note(12, 1, 58, 0.8),
+            note(14, 2, 55, 0.8),
+        ]
     }
 
     fn labels_for_octave(octave: i32) -> [Option<char>; 128] {
@@ -425,7 +459,7 @@ impl eframe::App for Gallery {
                             // The mock's `.brand`: the wordmark with +0.16em tracking.
                             neu::brand(ui, &theme, "BeatSlopper");
                             ui.add_space(24.0);
-                            neu::label(ui, &theme, "M6 · Soft Console gallery");
+                            neu::label(ui, &theme, "M7 · Soft Console gallery");
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -539,6 +573,7 @@ impl eframe::App for Gallery {
                         ctx.request_repaint_after(Duration::from_millis(30));
                     }
                     self.sequencer_panel(ui, &theme);
+                    self.piano_roll_panel(ui, &theme);
 
                     // KEYS panel, like the mock: title + octave stepper in the head, two octaves
                     // of keys below. Padding is the mock's 16 20 18 (approximated by the panel's
@@ -1144,6 +1179,82 @@ impl Gallery {
             if clear {
                 self.bass = [-1; 16];
                 self.bass_accent = [false; 16];
+            }
+        });
+    }
+
+    /// The M7 PIANO ROLL panel: title, a gesture hint, the selection read-out and a Clear pill
+    /// in the head; the roll below with the sequencer's playhead (fractional while playing).
+    /// The gallery owns the notes and applies every edit the roll reports.
+    fn piano_roll_panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        self.roll.playhead_step = self.playing.then(|| {
+            let ms = self.started.elapsed().as_millis() as f32;
+            (ms / 125.0) % self.roll.steps as f32
+        });
+        neu::panel(ui, theme, |ui| {
+            ui.horizontal(|ui| {
+                neu::title(ui, theme, "Piano roll");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 20.0;
+                    if neu::button(ui, theme, "Clear").clicked() {
+                        self.roll_notes.clear();
+                        self.roll.selected = None;
+                        self.last_roll_edit = "cleared".to_owned();
+                    }
+                    let selected = match self.roll.selected {
+                        Some(i) => self
+                            .roll_notes
+                            .get(i)
+                            .map(|n| {
+                                format!(
+                                    "{} @ {} x{}",
+                                    neu::note_name(n.pitch),
+                                    n.start + 1,
+                                    n.length
+                                )
+                            })
+                            .unwrap_or_default(),
+                        None => "none".to_owned(),
+                    };
+                    neu::value(ui, theme, &format!("sel {selected}  ·  {}", self.last_roll_edit));
+                    neu::label(
+                        ui,
+                        theme,
+                        "drag = draw / move / edge resize · dbl-click = delete · shift-click = accent · wheel = scroll",
+                    );
+                });
+            });
+            ui.add_space(14.0);
+            let out = neu::piano_roll(ui, theme, &mut self.roll, &self.roll_notes);
+            if let Some(n) = out.add {
+                self.roll_notes.push(n);
+                self.roll.selected = Some(self.roll_notes.len() - 1);
+                self.last_roll_edit = format!("added {} x{}", neu::note_name(n.pitch), n.length);
+            } else if let Some((i, n)) = out.moved {
+                if let Some(slot) = self.roll_notes.get_mut(i) {
+                    *slot = n;
+                    self.last_roll_edit = format!(
+                        "moved {} @ {} x{} v{:.1}",
+                        neu::note_name(n.pitch),
+                        n.start + 1,
+                        n.length,
+                        n.velocity
+                    );
+                }
+            } else if let Some(i) = out.removed
+                && i < self.roll_notes.len()
+            {
+                let n = self.roll_notes.remove(i);
+                self.last_roll_edit = format!("removed {}", neu::note_name(n.pitch));
+                // Indices above the removed note shift down by one.
+                self.roll.selected = match self.roll.selected {
+                    Some(s) if s == i => None,
+                    Some(s) if s > i => Some(s - 1),
+                    other => other,
+                };
+            }
+            if out.scrolled {
+                self.last_roll_edit = format!("view from {}", neu::note_name(self.roll.low_pitch));
             }
         });
     }

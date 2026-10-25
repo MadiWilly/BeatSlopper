@@ -131,7 +131,11 @@ impl AppState {
     }
 
     /// Snapshot of the UI state as a project (what Save writes and Export renders).
+    ///
+    /// The `..Project::default()` is deliberate although every field is listed today: a field
+    /// the engine adds to `Project` (M7 and later) then defaults instead of breaking the build.
     #[must_use]
+    #[allow(clippy::needless_update)]
     pub fn build_project(&self) -> Project {
         let params = ParamId::ALL
             .iter()
@@ -143,6 +147,7 @@ impl AppState {
             swing: self.swing,
             bank: self.bank.clone(),
             params,
+            mixer: self.mixer,
             preset_index: self.preset_index,
             octave: self.input.octave,
             velocity: self.input.velocity,
@@ -175,6 +180,9 @@ impl AppState {
         }
         self.input.set_octave(project.octave);
         self.input.set_velocity(project.velocity);
+        // M6: the mixer (a v3 file has none and loads with the defaults).
+        self.mixer = project.mixer;
+        self.mixer.normalise();
         self.bank = project.bank.clone();
         self.bank.normalise();
         self.selected_step = None;
@@ -619,6 +627,65 @@ mod tests {
         );
         let _ = std::fs::remove_file(song);
         assert_eq!(ExportKind::Loop { repeats: 4 }.describe(), "loop x4");
+    }
+
+    #[test]
+    fn mixer_round_trips_through_the_project_and_v3_files_load_defaults() {
+        use engine::{Channel, ChannelParam, MixerState};
+
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.set_mixer(Channel::Kick, ChannelParam::Level, -6.0);
+        state.set_mixer(Channel::Clap, ChannelParam::Pan, 0.4);
+        state.set_mixer(Channel::ClosedHat, ChannelParam::Mute, 1.0);
+        state.set_mixer(Channel::Snare, ChannelParam::Solo, 1.0);
+        state.set_mixer(Channel::Snare, ChannelParam::ReverbSend, 0.8);
+        state.set_mixer(Channel::Synth, ChannelParam::DelaySend, 0.25);
+        assert_ne!(state.mixer, MixerState::default());
+
+        let project = state.build_project();
+        assert_eq!(project.version, engine::project::FORMAT_VERSION);
+        assert_eq!(project.mixer, state.mixer);
+        let json = project.to_json_pretty();
+        assert!(json.contains("\"mixer\""));
+        let back = Project::from_json(&json).unwrap();
+        assert_eq!(back.mixer, state.mixer);
+
+        let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
+        loaded.apply_project(&back);
+        assert_eq!(loaded.mixer, state.mixer);
+        assert_eq!(loaded.strip(Channel::Kick).level_db, -6.0);
+        assert!(loaded.strip(Channel::ClosedHat).mute);
+        assert!(loaded.strip(Channel::Snare).solo);
+        while !loaded.outbox.is_empty() {
+            engine.process_messages();
+            loaded.flush_outbox();
+        }
+        engine.process_messages();
+        assert_eq!(engine.mixer(), &state.mixer, "the load resent the mixer");
+
+        // Through a file as well.
+        let path = temp_path("mixer.beatslopper.json");
+        assert!(state.save_project_to(path.clone()));
+        let (mut from_file, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(from_file.load_project_from(path.clone()));
+        assert_eq!(from_file.mixer, state.mixer);
+        let _ = std::fs::remove_file(path);
+
+        // A version-3 file (no `mixer`) loads with the default strips, whatever the mirror
+        // held before.
+        let v3_text = r#"{ "version": 3, "bpm": 99.0, "swing": 0.1, "preset_index": 2 }"#;
+        let old = Project::from_json(v3_text).unwrap();
+        assert_eq!(old.version, engine::project::FORMAT_VERSION);
+        assert_eq!(old.bpm, 99.0);
+        assert_eq!(old.mixer, MixerState::default());
+        loaded.apply_project(&old);
+        assert_eq!(loaded.bpm, 99.0);
+        assert_eq!(loaded.mixer, MixerState::default());
+        assert_eq!(loaded.strip(Channel::Kick).level_db, 0.0);
+        assert!(!loaded.strip(Channel::ClosedHat).mute);
+        // Undo brings the non-default mixer back.
+        assert!(loaded.undo());
+        assert_eq!(loaded.mixer, state.mixer);
     }
 
     #[test]

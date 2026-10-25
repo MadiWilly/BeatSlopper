@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M6 (Mixer view) app; M7 engine + widget in parallel. M0-M5 tagged. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** M7 (Piano roll) app integration. M0-M6 tagged. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -57,12 +57,12 @@
 - [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-25 M5 + M6 engine/widgets: all green (fmt, clippy -D warnings, 441 tests, deny licenses ok,
+2026-10-25 M6 + M7 engine/widget: all green (fmt, clippy -D warnings, 480 tests, deny licenses ok,
 release build, smoke exit 0).
 
 ## Next action
-M6 app (mixer panel) | M7 engine (polyphonic notes, v5) | M7 neu (piano roll widget) in parallel;
-then gate, tag m6; then M7 app; gate, tag m7, final summary.
+M7 app: GRID | ROLL toggle, piano roll panel bound to the edit pattern notes (SetNote/RemoveNote),
+polyphonic send_bank, then gate, tag m7, final summary, stop.
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
@@ -81,11 +81,11 @@ then gate, tag m6; then M7 app; gate, tag m7, final summary.
 
 ## M6: Mixer view
 - [x] engine: six channels with level/pan/mute/solo/sends, meters via atomics, v4 migration
-- [ ] app: mixer panel with faders, pan, mute/solo, sends, meters
-- [ ] Tests per PLAN.md M6; gate green, tag m6
+- [x] app: mixer panel with faders, pan, mute/solo, sends, meters
+- [x] Tests per PLAN.md M6; gate green, tag m6
 
 ## M7: Piano roll
-- [ ] engine: polyphonic note list per pattern, exact on/off scheduling, v5 migration
+- [x] engine: polyphonic note list per pattern, exact on/off scheduling, v5 migration
 - [ ] app: piano roll panel (draw, move, resize, delete, accent, zoom), synced with the grid
 - [ ] Tests per PLAN.md M7; gate green, tag m7, final summary updated
 

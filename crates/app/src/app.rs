@@ -56,6 +56,15 @@
 //! dirty park a [`PendingAction`] that the project panel turns into a DISCARD / KEEP confirm.
 //! The window title follows [`crate::window::window_title`] and the first frame fixes an
 //! undersized window ([`crate::window`]).
+//!
+//! Mixer (M6): [`AppState::mixer`] mirrors the engine's six strips; [`AppState::set_mixer`]
+//! clamps with `ChannelParam::clamp`, stores, sends `Message::SetMixer` and records the undo
+//! step (discrete for mute / solo, coalesced per drag for level, pan and the sends). The
+//! mixer is part of the [`Snapshot`], the project file (v4) and `resend_all`
+//! ([`mixer_messages`]: 36 values). The engine's block peaks are read every frame
+//! ([`AppState::update_meters`]) and shown with a [`METER_DECAY_DB_PER_S`] fall
+//! ([`decay_meter`]); the UI keeps repainting while a meter is still falling. The top row's
+//! right slot shows the FX rack or the MIXER ([`AppState::right_panel`], persisted).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -65,8 +74,9 @@ use std::time::{Duration, Instant};
 use eframe::{App, CreationContext, Frame, Storage};
 use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE, MAX_REPEATS, pattern_letter};
 use engine::{
-    Bank, ChainEntry, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, Message, MidiHandle,
-    PATTERN_COUNT, ParamId, Pattern, PatternLength, PlayMode, Position, SynthStep,
+    Bank, ChainEntry, Channel, ChannelParam, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, Message,
+    Meters, MidiHandle, MixerState, PATTERN_COUNT, ParamId, Pattern, PatternLength, PlayMode,
+    Position, SynthStep,
 };
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -94,6 +104,15 @@ pub const EXPORT_REPEATS_KEY: &str = "export_repeats";
 
 /// eframe storage key for the chosen MIDI input port name.
 pub const MIDI_PORT_KEY: &str = "midi_port";
+
+/// eframe storage key for the right-hand top panel choice (FX rack or MIXER).
+pub const RIGHT_PANEL_KEY: &str = "right_panel";
+
+/// How fast a shown meter falls after its peak, in dB per second (M6).
+pub const METER_DECAY_DB_PER_S: f32 = 20.0;
+
+/// Shown meter levels at or below this are treated as silent (no repaint needed).
+pub const METER_SILENT: f32 = 0.001;
 
 /// How often the MIDI port list is re-read while the selector is showing.
 pub const MIDI_PORTS_REFRESH: Duration = Duration::from_secs(2);
@@ -138,6 +157,61 @@ pub enum RightTab {
     Chain,
 }
 
+/// Which panel the top row's right-hand slot shows (M6): the FX rack or the MIXER. Both heads
+/// carry the `FX | Mixer` tab; the choice is persisted under [`RIGHT_PANEL_KEY`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RightPanel {
+    #[default]
+    Fx,
+    Mixer,
+}
+
+/// The decayed level a meter shows one frame on: a new peak replaces the shown level at once,
+/// otherwise the shown level falls by [`METER_DECAY_DB_PER_S`] (`shown * 10^(-20 * dt / 20)`
+/// over `dt` seconds). Non-finite or negative input reads as silence.
+#[must_use]
+pub fn decay_meter(shown: f32, new: f32, dt_seconds: f32) -> f32 {
+    let shown = if shown.is_finite() {
+        shown.max(0.0)
+    } else {
+        0.0
+    };
+    let new = if new.is_finite() { new.max(0.0) } else { 0.0 };
+    let dt = if dt_seconds.is_finite() {
+        dt_seconds.max(0.0)
+    } else {
+        0.0
+    };
+    let fallen = shown * 10f32.powf(-METER_DECAY_DB_PER_S * dt / 20.0);
+    let level = new.max(fallen);
+    if level <= METER_SILENT * 0.1 {
+        0.0
+    } else {
+        level
+    }
+}
+
+/// Applies [`decay_meter`] to every channel and master value: `shown` becomes the levels to
+/// draw given the engine's latest block peaks `new` and the `dt_seconds` since the last call.
+pub fn decay_meters(shown: &mut Meters, new: &Meters, dt_seconds: f32) {
+    for (s, n) in shown.channel.iter_mut().zip(new.channel.iter()) {
+        *s = decay_meter(*s, *n, dt_seconds);
+    }
+    for (s, n) in shown.master.iter_mut().zip(new.master.iter()) {
+        *s = decay_meter(*s, *n, dt_seconds);
+    }
+}
+
+/// `true` when any shown meter is still above [`METER_SILENT`] (so the UI keeps repainting).
+#[must_use]
+pub fn meters_active(shown: &Meters) -> bool {
+    shown
+        .channel
+        .iter()
+        .chain(shown.master.iter())
+        .any(|v| *v > METER_SILENT)
+}
+
 /// Blink period of the queued-pattern letter: visible for half of it (2 Hz toggling).
 pub const QUEUED_BLINK_SECONDS: f64 = 0.5;
 
@@ -154,6 +228,8 @@ pub enum EditKey {
     Swing,
     DrumVolume(DrumRow),
     DrumTune(DrumRow),
+    /// A mixer strip's continuous value (level, pan, a send); mute / solo are discrete.
+    Mixer(Channel, ChannelParam),
 }
 
 /// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
@@ -260,8 +336,19 @@ pub struct AppState {
     pub follow: bool,
     /// Which panel the right-hand column shows.
     pub right_tab: RightTab,
+    /// Which panel the top row's right slot shows: the FX rack or the MIXER (persisted).
+    pub right_panel: RightPanel,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
     pub song_selected: Option<usize>,
+    /// UI-side mirror of the engine's mixer (M6): six strips of level, pan, mute, solo and
+    /// sends. Edit through [`AppState::set_mixer`] so the engine follows.
+    pub mixer: MixerState,
+    /// Block peaks as last read from the engine (`EngineHandle::meters`, every frame).
+    pub meters: Meters,
+    /// The decayed levels the mixer draws (see [`decay_meters`]).
+    pub shown_meters: Meters,
+    /// When the shown meters were last updated (for the decay's `dt`).
+    pub meters_updated: Option<Instant>,
     /// Messages that did not fit the engine queue yet, sent in order by
     /// [`AppState::flush_outbox`] every frame.
     pub outbox: VecDeque<Message>,
@@ -376,7 +463,12 @@ impl AppState {
             shown_bar: 0,
             follow: true,
             right_tab: RightTab::Project,
+            right_panel: RightPanel::Fx,
             song_selected: Some(0),
+            mixer: MixerState::default(),
+            meters: Meters::SILENT,
+            shown_meters: Meters::SILENT,
+            meters_updated: None,
             outbox: VecDeque::new(),
             engine_mode: PlayMode::Pattern,
             playing: false,
@@ -522,13 +614,108 @@ impl AppState {
         }
     }
 
-    /// Sends everything the engine mirrors: parameters, tempo, swing and the whole bank
-    /// (startup, project load, undo).
+    /// Sends everything the engine mirrors: parameters, tempo, swing, the mixer and the whole
+    /// bank (startup, project load, undo).
     pub fn resend_all(&mut self) {
         self.resend_all_params();
         self.send(Message::SetBpm(self.bpm));
         self.send(Message::SetSwing(self.swing));
+        self.resend_mixer();
         self.send_bank();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Mixer (M6): the strip mirror, `SetMixer`, and the decaying meters.
+
+    /// The strip of `channel` (level, pan, mute, solo, sends).
+    #[must_use]
+    pub fn strip(&self, channel: Channel) -> &engine::Strip {
+        self.mixer.strip(channel)
+    }
+
+    /// Clamps `value` with [`ChannelParam::clamp`] (mute / solo snap to 0 / 1), stores it in
+    /// the mixer mirror and sends `Message::SetMixer`. Returns the stored value. A real change
+    /// is an undo step: discrete for mute / solo, coalesced per drag for level, pan and the
+    /// sends ([`AppState::edit_mixer`] adds the drag-start hint).
+    pub fn set_mixer(&mut self, channel: Channel, param: ChannelParam, value: f32) -> f32 {
+        let value = param.clamp(channel, value);
+        if value != self.mixer.get(channel, param) {
+            if param.is_toggle() {
+                self.begin_edit();
+            } else {
+                self.begin_continuous_edit(EditKey::Mixer(channel, param), false);
+            }
+        }
+        let stored = self.mixer.set(channel, param, value);
+        self.send(Message::SetMixer {
+            channel,
+            param,
+            value: stored,
+        });
+        stored
+    }
+
+    /// [`AppState::set_mixer`] from a control: `drag_started` always starts a new undo step
+    /// for a continuous value (toggles are discrete anyway).
+    pub fn edit_mixer(
+        &mut self,
+        channel: Channel,
+        param: ChannelParam,
+        value: f32,
+        drag_started: bool,
+    ) -> f32 {
+        if drag_started
+            && !param.is_toggle()
+            && param.clamp(channel, value) != self.mixer.get(channel, param)
+        {
+            self.begin_continuous_edit(EditKey::Mixer(channel, param), true);
+        }
+        self.set_mixer(channel, param, value)
+    }
+
+    /// Flips `channel`'s mute (one undo step).
+    pub fn toggle_mute(&mut self, channel: Channel) {
+        let on = self.mixer.strip(channel).mute;
+        self.set_mixer(channel, ChannelParam::Mute, if on { 0.0 } else { 1.0 });
+    }
+
+    /// Flips `channel`'s solo (one undo step).
+    pub fn toggle_solo(&mut self, channel: Channel) {
+        let on = self.mixer.strip(channel).solo;
+        self.set_mixer(channel, ChannelParam::Solo, if on { 0.0 } else { 1.0 });
+    }
+
+    /// Sends every mixer value ([`mixer_messages`]: 36 `SetMixer`s) so the engine's mixer
+    /// matches the mirror.
+    pub fn resend_mixer(&mut self) {
+        for msg in mixer_messages(&self.mixer) {
+            self.send(msg);
+        }
+    }
+
+    /// Reads the engine's latest block peaks and decays the shown meters towards them
+    /// ([`decay_meters`] with the wall-clock time since the last call). Called every frame.
+    pub fn update_meters(&mut self) {
+        let now = Instant::now();
+        let dt = self
+            .meters_updated
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        self.meters_updated = Some(now);
+        let new = self.engine.meters();
+        self.update_meters_with(new, dt);
+    }
+
+    /// The decay step with explicit inputs (tests): `new` replaces the raw meters and the shown
+    /// meters fall by [`METER_DECAY_DB_PER_S`] over `dt_seconds` unless `new` is louder.
+    pub fn update_meters_with(&mut self, new: Meters, dt_seconds: f32) {
+        self.meters = new;
+        decay_meters(&mut self.shown_meters, &new, dt_seconds);
+    }
+
+    /// `true` while a shown meter is still falling (above [`METER_SILENT`]).
+    #[must_use]
+    pub fn meters_active(&self) -> bool {
+        meters_active(&self.shown_meters)
     }
 
     /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine. A change
@@ -1062,6 +1249,7 @@ impl AppState {
             bpm: self.bpm,
             swing: self.swing,
             preset_index: self.preset_index,
+            mixer: self.mixer,
             project_path: self.project_path.clone(),
         }
     }
@@ -1139,6 +1327,7 @@ impl AppState {
             bpm,
             swing,
             preset_index,
+            mixer,
             project_path,
         } = snapshot;
         self.bank = bank;
@@ -1146,6 +1335,7 @@ impl AppState {
         self.bpm = bpm;
         self.swing = swing;
         self.preset_index = preset_index;
+        self.mixer = mixer;
         self.project_path = project_path;
         self.last_continuous_edit = None;
         self.dirty = true;
@@ -1513,6 +1703,23 @@ pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
     out
 }
 
+/// The messages that put `mixer` into the engine: one `SetMixer` per channel and parameter
+/// (`Channel::COUNT * ChannelParam::ALL.len()` = 36), in strip then parameter order.
+#[must_use]
+pub fn mixer_messages(mixer: &MixerState) -> Vec<Message> {
+    let mut out = Vec::with_capacity(Channel::COUNT * ChannelParam::ALL.len());
+    for channel in Channel::ALL {
+        for param in ChannelParam::ALL {
+            out.push(Message::SetMixer {
+                channel,
+                param,
+                value: mixer.get(channel, param),
+            });
+        }
+    }
+    out
+}
+
 /// The messages that put `bank`'s chain into the engine: `SetChainLen` then one
 /// `SetChainEntry` per entry (at most `MAX_CHAIN + 1`).
 #[must_use]
@@ -1588,9 +1795,13 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<Option<String>>(s, MIDI_PORT_KEY))
             .flatten();
+        let right_panel: Option<RightPanel> = cc
+            .storage
+            .and_then(|s| eframe::get_value::<RightPanel>(s, RIGHT_PANEL_KEY));
 
         let mut state = AppState::with_audio(mode);
         state.theme_override = theme_override;
+        state.right_panel = right_panel.unwrap_or_default();
         if let Some(index) = preset_index {
             // Re-apply the remembered preset so the sound matches the highlighted name.
             state.apply_preset(index);
@@ -1699,6 +1910,7 @@ impl BeatSlopperApp {
         }
         self.state.flush_outbox();
         self.state.update_playhead();
+        self.state.update_meters();
         self.state.poll_export();
         self.state.expire_status();
         // Shortcuts first, so their keys are consumed before the piano sees the frame.
@@ -1715,11 +1927,12 @@ impl BeatSlopperApp {
 
         if self.state.playing
             || self.state.playhead.playing
+            || self.state.meters_active()
             || midi_events > 0
             || !self.state.outbox.is_empty()
         {
-            // The playhead moves between frames; keep drawing while the loop runs (and keep
-            // flushing while the outbox has messages waiting).
+            // The playhead moves between frames; keep drawing while the loop runs, while the
+            // meters are still falling, and while the outbox has messages waiting.
             ctx.request_repaint();
         } else if self.state.is_exporting() || self.state.status.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -1826,6 +2039,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
+        eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
     }
 
     fn persist_egui_memory(&self) -> bool {
@@ -2219,7 +2433,10 @@ mod tests {
         state.set_swing(0.25);
         let free_before = state.engine.free_slots();
         state.resend_all();
-        let expected = ParamId::COUNT + 2 + bank_messages(&state.bank, None).len();
+        let expected = ParamId::COUNT
+            + 2
+            + mixer_messages(&state.mixer).len()
+            + bank_messages(&state.bank, None).len();
         assert!(expected < engine::QUEUE_CAPACITY, "{expected}");
         assert_eq!(free_before - state.engine.free_slots(), expected);
         assert!(state.outbox.is_empty(), "the default bank fits in one go");
@@ -2227,6 +2444,229 @@ mod tests {
         assert_eq!(engine.bpm(), 140.0);
         assert_eq!(engine.transport().swing(), 0.25);
         assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.mixer(), &state.mixer);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M6: mixer mirror, undo granularity, meters.
+
+    #[test]
+    fn set_mixer_clamps_stores_and_reaches_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.mixer, MixerState::default());
+        assert_eq!(
+            state.set_mixer(Channel::Kick, ChannelParam::Level, 100.0),
+            engine::mixer::MAX_LEVEL_DB
+        );
+        assert_eq!(
+            state.set_mixer(Channel::Snare, ChannelParam::Level, -1000.0),
+            engine::mixer::MIN_LEVEL_DB
+        );
+        assert_eq!(state.set_mixer(Channel::Clap, ChannelParam::Pan, 7.0), 1.0);
+        assert_eq!(
+            state.set_mixer(Channel::ClosedHat, ChannelParam::DelaySend, -0.5),
+            0.0
+        );
+        assert_eq!(
+            state.set_mixer(Channel::OpenHat, ChannelParam::Mute, 0.7),
+            1.0
+        );
+        assert!(state.strip(Channel::OpenHat).mute);
+        assert_eq!(
+            state.set_mixer(Channel::Synth, ChannelParam::ReverbSend, f32::NAN),
+            1.0,
+            "non-finite resets to the channel default"
+        );
+        assert_eq!(
+            state.set_mixer(Channel::Synth, ChannelParam::Solo, 1.0),
+            1.0
+        );
+        assert!(state.strip(Channel::Synth).solo);
+        assert!(state.dirty);
+
+        engine.process_messages();
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(
+            engine.mixer().get(Channel::Kick, ChannelParam::Level),
+            engine::mixer::MAX_LEVEL_DB
+        );
+        assert!(engine.mixer().strip(Channel::OpenHat).mute);
+        assert_eq!(
+            engine.mixer().effective_gain(Channel::Kick),
+            0.0,
+            "synth solo"
+        );
+
+        // Every strip value is resent in one go: 36 messages.
+        let messages = mixer_messages(&state.mixer);
+        assert_eq!(messages.len(), Channel::COUNT * ChannelParam::ALL.len());
+        assert_eq!(
+            messages[0],
+            Message::SetMixer {
+                channel: Channel::Kick,
+                param: ChannelParam::Level,
+                value: engine::mixer::MAX_LEVEL_DB
+            }
+        );
+        let (mut other, mut fresh) = AppState::headless(ThemeMode::Dark);
+        other.mixer = state.mixer;
+        let free_before = other.engine.free_slots();
+        other.resend_mixer();
+        assert_eq!(free_before - other.engine.free_slots(), 36);
+        fresh.process_messages();
+        assert_eq!(fresh.mixer(), &state.mixer);
+    }
+
+    #[test]
+    fn mute_and_solo_are_discrete_undo_steps_and_a_fader_drag_coalesces() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.toggle_mute(Channel::Kick);
+        state.toggle_mute(Channel::Kick);
+        state.toggle_solo(Channel::Snare);
+        assert!(!state.strip(Channel::Kick).mute);
+        assert!(state.strip(Channel::Snare).solo);
+        assert_eq!(state.undo.len(), 3, "three clicks, three steps");
+
+        // A fader drag: many changes within the gap are one step.
+        for v in 1..=20 {
+            state.set_mixer(Channel::Clap, ChannelParam::Level, -(v as f32));
+        }
+        assert_eq!(state.undo.len(), 4);
+        assert_eq!(state.strip(Channel::Clap).level_db, -20.0);
+        // Another strip's fader is another control.
+        state.set_mixer(Channel::OpenHat, ChannelParam::Level, -3.0);
+        assert_eq!(state.undo.len(), 5);
+        // A pan drag coalesces too, and `drag_started` cuts it.
+        for v in 1..=5 {
+            state.set_mixer(Channel::Kick, ChannelParam::Pan, v as f32 / 10.0);
+        }
+        assert_eq!(state.undo.len(), 6);
+        state.edit_mixer(Channel::Kick, ChannelParam::Pan, -0.5, true);
+        assert_eq!(state.undo.len(), 7);
+        state.edit_mixer(Channel::Kick, ChannelParam::Pan, -0.6, false);
+        assert_eq!(state.undo.len(), 7, "the drag continues");
+        // A mute in the middle of a drag ends it.
+        state.set_mixer(Channel::Synth, ChannelParam::ReverbSend, 0.5);
+        state.toggle_mute(Channel::Synth);
+        state.set_mixer(Channel::Synth, ChannelParam::ReverbSend, 0.4);
+        assert_eq!(state.undo.len(), 10);
+        // Setting the value a strip already has is not an edit.
+        state.set_mixer(Channel::Synth, ChannelParam::ReverbSend, 0.4);
+        state.toggle_mute(Channel::Synth);
+        state.toggle_mute(Channel::Synth);
+        assert_eq!(state.undo.len(), 12);
+
+        engine.process_messages();
+        assert_eq!(engine.mixer(), &state.mixer);
+
+        // Undo walks back through the mixer and resends it: the synth ends muted (12), was
+        // unmuted (11), had its send at 0.4 (10), was muted (9), had its send at 0.5 (8).
+        assert!(state.strip(Channel::Synth).mute);
+        assert!(state.undo());
+        assert!(!state.strip(Channel::Synth).mute);
+        assert!(state.undo());
+        assert!(state.strip(Channel::Synth).mute);
+        assert_eq!(state.strip(Channel::Synth).reverb_send, 0.4);
+        assert!(state.undo());
+        assert_eq!(state.strip(Channel::Synth).reverb_send, 0.5);
+        assert!(state.undo());
+        assert!(!state.strip(Channel::Synth).mute);
+        assert!(state.undo());
+        assert_eq!(state.strip(Channel::Synth).reverb_send, 1.0, "the default");
+        assert_eq!(state.strip(Channel::Kick).pan, -0.6);
+        assert!(state.undo()); // the -0.5 / -0.6 drag at once
+        assert_eq!(state.strip(Channel::Kick).pan, 0.5);
+        assert!(state.undo()); // the whole first pan drag
+        assert_eq!(state.strip(Channel::Kick).pan, 0.0);
+        assert_eq!(state.strip(Channel::OpenHat).level_db, -3.0);
+        assert!(state.undo()); // open hat level
+        assert_eq!(state.strip(Channel::OpenHat).level_db, 0.0);
+        assert_eq!(state.strip(Channel::Clap).level_db, -20.0);
+        assert!(state.undo()); // the whole clap drag at once
+        assert_eq!(state.strip(Channel::Clap).level_db, 0.0);
+        assert!(state.undo()); // snare solo
+        assert!(!state.strip(Channel::Snare).solo);
+        assert!(state.undo()); // kick unmute
+        assert!(state.strip(Channel::Kick).mute);
+        assert!(state.undo()); // kick mute
+        assert!(!state.undo());
+        assert_eq!(state.mixer, MixerState::default());
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &MixerState::default());
+
+        assert!(state.redo());
+        assert!(state.strip(Channel::Kick).mute);
+        sync(&mut state, &mut engine);
+        assert!(engine.mixer().strip(Channel::Kick).mute);
+    }
+
+    #[test]
+    fn meter_decay_replaces_peaks_and_falls_twenty_db_per_second() {
+        // A new, louder peak replaces the shown level at once.
+        assert_eq!(decay_meter(0.0, 0.5, 0.016), 0.5);
+        assert_eq!(decay_meter(0.2, 0.8, 1.0), 0.8);
+        // Without new signal the level falls 20 dB per second: -20 dB after 1 s (x 0.1),
+        // -10 dB after 0.5 s, -1 dB after 50 ms.
+        assert!((decay_meter(1.0, 0.0, 1.0) - 0.1).abs() < 1e-6);
+        assert!((decay_meter(1.0, 0.0, 0.5) - 10f32.powf(-0.5)).abs() < 1e-6);
+        assert!((decay_meter(1.0, 0.0, 0.05) - 10f32.powf(-0.05)).abs() < 1e-6);
+        // A quieter new peak loses to the decaying one.
+        let fallen = decay_meter(1.0, 0.0, 0.1);
+        assert_eq!(decay_meter(1.0, 0.5, 0.1), fallen);
+        // No time passed: nothing falls.
+        assert_eq!(decay_meter(0.7, 0.0, 0.0), 0.7);
+        // Bad input reads as silence; the tail snaps to exactly zero.
+        assert_eq!(decay_meter(f32::NAN, f32::NAN, f32::NAN), 0.0);
+        assert_eq!(decay_meter(-1.0, -1.0, 1.0), 0.0);
+        assert_eq!(decay_meter(0.00005, 0.0, 0.0), 0.0);
+        assert_eq!(decay_meter(1.0, 0.0, 10.0), 0.0, "-200 dB is silence");
+
+        let mut shown = Meters::SILENT;
+        let mut new = Meters::SILENT;
+        new.channel[Channel::Snare.index()] = 0.9;
+        new.master = [0.6, 0.3];
+        decay_meters(&mut shown, &new, 0.0);
+        assert_eq!(shown, new);
+        assert!(meters_active(&shown));
+        decay_meters(&mut shown, &Meters::SILENT, 1.0);
+        assert!((shown.channel[Channel::Snare.index()] - 0.09).abs() < 1e-6);
+        assert!((shown.master[0] - 0.06).abs() < 1e-6);
+        assert_eq!(shown.channel[Channel::Kick.index()], 0.0);
+        decay_meters(&mut shown, &Meters::SILENT, 5.0);
+        assert!(!meters_active(&shown));
+
+        // Through the state: the raw meters are replaced, the shown ones decay.
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(!state.meters_active());
+        state.update_meters_with(new, 0.0);
+        assert_eq!(state.meters, new);
+        assert_eq!(state.shown_meters, new);
+        assert!(state.meters_active());
+        state.update_meters_with(Meters::SILENT, 1.0);
+        assert_eq!(state.meters, Meters::SILENT);
+        assert!((state.shown_meters.master[1] - 0.03).abs() < 1e-6);
+        // The real path reads the engine (silent here) without panicking.
+        state.update_meters();
+        assert!(state.meters_updated.is_some());
+    }
+
+    #[test]
+    fn rendered_audio_shows_up_in_the_meters() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_bank();
+        state.play();
+        engine.process_messages();
+        // The first block holds the demo kick's attack on step 1.
+        let mut out = vec![0.0f32; 1024 * 2];
+        engine.render(&mut out, 1024);
+        state.update_meters();
+        assert!(
+            state.meters.channel[Channel::Kick.index()] > 0.01,
+            "the demo kick on step 1 peaks: {:?}",
+            state.meters
+        );
+        assert!(state.meters.master_peak() > 0.01);
+        assert!(state.meters_active());
     }
 
     // -----------------------------------------------------------------------------------------

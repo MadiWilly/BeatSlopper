@@ -10,8 +10,8 @@ use engine::export::{
 };
 use engine::project::{FORMAT_VERSION, is_project_path};
 use engine::{
-    Bank, ChainEntry, Channel, ChannelParam, DrumRow, ExportError, MixerState, ParamId, Pattern,
-    PatternLength, PlayMode, Project, ProjectError, new_engine,
+    Bank, ChainEntry, Channel, ChannelParam, DrumRow, ExportError, MixerState, Note, ParamId,
+    Pattern, PatternLength, PlayMode, Project, ProjectError, new_engine,
 };
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -108,7 +108,11 @@ fn custom_project_round_trips_through_json() {
 fn json_layout_is_as_documented() {
     let json = Project::default().to_json_pretty();
     for field in [
-        "\"version\": 4",
+        "\"version\": 5",
+        "\"notes\": [",
+        "\"start\": 0",
+        "\"pitch\": 36",
+        "\"velocity\": 0.8",
         "\"mixer\"",
         "\"strips\"",
         "\"delay_send\": 1.0",
@@ -131,6 +135,10 @@ fn json_layout_is_as_documented() {
     ] {
         assert!(json.contains(field), "missing {field} in:\n{json}");
     }
+    assert!(
+        !json.contains("\"synth\""),
+        "the derived lane is not written since version 5:\n{json}"
+    );
 }
 
 #[test]
@@ -428,10 +436,10 @@ fn v2_json() -> String {
 }
 
 #[test]
-fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v4() {
+fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v5() {
     let p = Project::from_json(&v2_json()).expect("v2 file loads");
     assert_eq!(p.version, FORMAT_VERSION);
-    assert_eq!(FORMAT_VERSION, 4);
+    assert_eq!(FORMAT_VERSION, 5);
     assert_eq!(p.bpm, 101.0);
     assert_eq!(p.swing, 0.1);
     assert_eq!(p.preset_index, 2);
@@ -451,6 +459,11 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v4() {
     assert_eq!(a.synth[7].note, Some(43));
     assert_eq!(a.synth.iter().filter(|s| s.note.is_some()).count(), 1);
     assert!(a.synth[16..].iter().all(|s| s.note.is_none()), "padding");
+    assert_eq!(
+        a.notes(),
+        &[Note::new(7, 1, 43, 0.8)],
+        "the lane step became a length-1 note"
+    );
     assert_eq!(a.drum_volume[DrumRow::OpenHat.index()], -3.0);
     assert_eq!(a.drum_tune[DrumRow::Snare.index()], 2.0);
     assert!(p.bank.patterns[1..].iter().all(Pattern::is_empty));
@@ -459,17 +472,19 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v4() {
     assert_eq!(p.bank.current, 0);
     assert_eq!(p.pattern(), a);
 
-    // Re-saving writes version 4 with a bank, a default mixer and no legacy field; that file
-    // round-trips.
+    // Re-saving writes version 5 with a bank, a default mixer, notes instead of a lane and no
+    // legacy field; that file round-trips.
     assert_eq!(p.mixer, MixerState::default());
-    let v4 = p.to_json_pretty();
-    assert!(v4.starts_with("{\n  \"version\": 4,"));
-    assert!(v4.contains("\"bank\""));
-    assert!(v4.contains("\"mixer\""));
-    assert!(!v4.contains("\n  \"pattern\""));
-    let back = Project::from_json(&v4).unwrap();
+    let v5 = p.to_json_pretty();
+    assert!(v5.starts_with("{\n  \"version\": 5,"));
+    assert!(v5.contains("\"bank\""));
+    assert!(v5.contains("\"mixer\""));
+    assert!(v5.contains("\"notes\""));
+    assert!(!v5.contains("\"synth\""));
+    assert!(!v5.contains("\n  \"pattern\""));
+    let back = Project::from_json(&v5).unwrap();
     assert_eq!(back, p);
-    assert_eq!(back.to_json_pretty(), v4);
+    assert_eq!(back.to_json_pretty(), v5);
 }
 
 #[test]
@@ -510,11 +525,19 @@ fn row_lengths_follow_the_pattern_length_in_json() {
             "a 64-step row has 64 entries"
         );
     }
-    assert_eq!(patterns[0]["synth"].as_array().unwrap().len(), 64);
+    assert!(
+        patterns[0].get("synth").is_none(),
+        "no derived lane in the file"
+    );
+    assert_eq!(
+        patterns[0]["notes"].as_array().unwrap().len(),
+        9,
+        "the demo bassline's notes"
+    );
     assert_eq!(patterns[1]["length"], 32);
     assert_eq!(patterns[1]["drums"][0].as_array().unwrap().len(), 32);
     assert_eq!(patterns[2]["length"], 16);
-    assert_eq!(patterns[2]["synth"].as_array().unwrap().len(), 16);
+    assert_eq!(patterns[2]["notes"].as_array().unwrap().len(), 0);
     assert_eq!(value["bank"]["chain"].as_array().unwrap().len(), 1);
     assert_eq!(value["bank"]["chain"][0]["pattern"], 0);
     assert_eq!(value["bank"]["chain"][0]["repeats"], 1);

@@ -83,3 +83,12 @@ recorded in `design/WINNER.md` "As-built tweaks".
   the reverb, and the dry synth is no longer attenuated by the old crossfades (about +4.4 dB
   at default settings). Wet levels are unchanged.
 - Meters are block peaks published per render through atomics; the UI applies the decay.
+
+## 2026-10-25: Polyphonic notes (M7 engine)
+- The synth lane is now a derived view of a polyphonic note list; grid edits upsert length-1
+  notes. A note ends on the sample before its end step's trigger (length-1 notes therefore
+  hand over legato to a same-pitch note on the next step instead of the old 90 % gate). The
+  M3 sequencer timing tests were restated for the new rule with the same step coverage; no
+  assertion was weakened.
+- Notes that run past the pattern end are released at the wrap; a pattern shortened below
+  the playing bar still finishes that bar.

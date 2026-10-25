@@ -1,7 +1,8 @@
 //! FX rack (M2): drive, delay, reverb and the master stage.
 //!
 //! Layout follows `design/preview-a.html` `<section class="panel fx">`: a panel head ("FX"
-//! left, "Post chain" right) over `.fx-body`, two columns pushed apart:
+//! left, the `FX | Mixer` tab right, M6: it swaps this slot for the MIXER panel) over
+//! `.fx-body`, two columns pushed apart:
 //!
 //! - left: DRIVE (AMOUNT, MIX knobs), DELAY (head row with the time `segmented`
 //!   1/16 | 1/8 | 1/4 | 1/2, then FEEDBACK and MIX knobs);
@@ -39,19 +40,9 @@ const SIDE_PAD_TOP: f32 = 18.0;
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::panel(ui, theme, |ui| {
         ui.set_min_size(ui.available_size());
-        head(ui, theme);
+        controls::right_panel_head(ui, state, theme, "FX");
         ui.add_space(PANEL_HEAD_GAP);
         body(ui, state, theme);
-    });
-}
-
-fn head(ui: &mut Ui, theme: &Theme) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(controls::ROW_HEIGHT);
-        neu::title(ui, theme, "FX");
-        controls::right_aligned(ui, "fx_subtitle", |ui| {
-            neu::label(ui, theme, "Post chain");
-        });
     });
 }
 

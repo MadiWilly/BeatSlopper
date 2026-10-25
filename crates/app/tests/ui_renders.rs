@@ -1018,3 +1018,161 @@ fn song_panel_renders_in_both_themes_without_editing() {
         assert!(!state.dirty);
     }
 }
+
+// -------------------------------------------------------------------------------------------
+// M6: the MIXER panel.
+
+/// The MIXER panel renders on its own in both themes without touching the mixer or the
+/// parameters, with every strip control addressable by name.
+#[test]
+fn mixer_panel_renders_in_both_themes_without_editing() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let (state, _engine) = AppState::headless(mode);
+        let theme = Theme::for_mode(mode);
+        let mut harness = Harness::builder()
+            .with_size(egui::Vec2::new(ui::mixer::WIDTH + 40.0, 420.0))
+            .build_ui_state(
+                move |ui, state: &mut AppState| ui::mixer::show(ui, state, &theme),
+                state,
+            );
+        harness.run_steps(4);
+        for name in ui::mixer::CHANNEL_NAMES {
+            harness.get_by_label(&format!("{name} pan"));
+            harness.get_by_label(&format!("{name} delay send"));
+            harness.get_by_label(&format!("{name} reverb send"));
+            harness.get_by_label(&format!("{name} level"));
+            harness.get_by_label(&format!("Mute {name}"));
+            harness.get_by_label(&format!("Solo {name}"));
+        }
+        harness.get_by_label("Master");
+        harness.get_by_label("Limit");
+        for legend in ui::mixer::KNOB_LEGENDS {
+            harness.get_by_label(legend);
+        }
+        // Six channel meters and the master's stereo meter.
+        assert_eq!(harness.get_all_by_label("Level").count(), 6);
+        harness.get_by_label("Stereo level");
+        let state = harness.into_state();
+        assert_eq!(state.mode, mode);
+        assert_eq!(state.mixer, engine::MixerState::default());
+        assert_eq!(state.params, default_params());
+        assert!(!state.dirty);
+    }
+}
+
+/// The `FX | Mixer` tab in the FX rack's head swaps the slot for the MIXER panel; M / S
+/// clicks set the strip's mute / solo (discrete, undoable) and the LIMIT toggle is the
+/// limiter parameter.
+#[test]
+fn mixer_tab_shows_the_panel_and_mute_solo_clicks_set_the_strip() {
+    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().right_panel,
+        app::app::RightPanel::Fx
+    );
+    harness.get_by_label("Drive");
+    assert!(harness.query_by_label("Mute Kick").is_none());
+
+    radio(&harness, "Mixer").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().right_panel,
+        app::app::RightPanel::Mixer
+    );
+    assert!(
+        harness.query_by_label("Drive").is_none(),
+        "the rack is gone"
+    );
+    assert!(
+        !harness.state().state().dirty,
+        "switching tabs is not an edit"
+    );
+
+    harness.get_by_label("Mute Kick").click();
+    harness.run_steps(2);
+    let state = harness.state().state();
+    assert!(state.mixer.strips[0].mute);
+    assert!(!state.mixer.strips[0].solo);
+    assert!(state.dirty);
+    assert_eq!(state.undo.len(), 1);
+
+    harness.get_by_label("Solo Kick").click();
+    harness.run_steps(2);
+    let state = harness.state().state();
+    assert!(state.mixer.strips[0].solo);
+    assert!(state.mixer.strips[0].mute);
+    assert_eq!(state.undo.len(), 2);
+    // The other strips are untouched.
+    assert!(state.mixer.strips[1..].iter().all(|s| !s.mute && !s.solo));
+
+    // Clicking again clears; Ctrl+Z steps back one click at a time.
+    harness.get_by_label("Mute Kick").click();
+    harness.run_steps(2);
+    assert!(!harness.state().state().mixer.strips[0].mute);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert!(harness.state().state().mixer.strips[0].mute);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert!(!harness.state().state().mixer.strips[0].solo);
+    assert!(harness.state().state().mixer.strips[0].mute);
+
+    // LIMIT in the master column is the limiter parameter.
+    assert!(harness.state().state().limiter_on());
+    harness.get_by_label("Limit").click();
+    harness.run_steps(2);
+    assert!(!harness.state().state().limiter_on());
+
+    // Back to the FX rack from the mixer's head.
+    radio(&harness, "FX").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().right_panel,
+        app::app::RightPanel::Fx
+    );
+    harness.get_by_label("Drive");
+    assert!(harness.query_by_label("Mute Kick").is_none());
+}
+
+/// With the MIXER tab active the top row keeps its height: at the default window size the
+/// whole sequencer is still visible without scrolling (the FX-rack variant is
+/// `whole_sequencer_is_visible_at_the_default_window_size`).
+#[test]
+fn whole_sequencer_is_visible_with_the_mixer_shown() {
+    let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    app.state_mut().right_panel = app::app::RightPanel::Mixer;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+    harness.run_steps(3);
+    harness.get_by_label("Mute Kick");
+    let bass = harness.get_by_label("Bass step 16").rect();
+    let octave = harness.get_by_label("Octave").rect();
+    let sequencer_bottom = bass.max.y + ui::sequencer::ROW_GAP + 10.0 + 20.0;
+    let keys_panel_top = octave.min.y - 30.0;
+    assert!(
+        sequencer_bottom <= keys_panel_top,
+        "sequencer ends at {sequencer_bottom} but the KEYS panel starts at {keys_panel_top}"
+    );
+    // The mixer's strips end inside the top row: the master meter and the synth fader sit
+    // above the sequencer panel.
+    let seq = harness.get_by_label("Sequencer").rect();
+    let synth_level = harness.get_by_label("Synth level").rect();
+    let stereo = harness.get_by_label("Stereo level").rect();
+    assert!(
+        synth_level.max.y + 30.0 <= seq.min.y,
+        "{synth_level:?} vs {seq:?}"
+    );
+    assert!(stereo.max.y + 20.0 <= seq.min.y, "{stereo:?} vs {seq:?}");
+    // Six strips side by side: the kick fader is left of the synth fader, both in the slot.
+    let kick_level = harness.get_by_label("Kick level").rect();
+    assert!(kick_level.max.x < synth_level.min.x);
+    assert!(synth_level.max.x < stereo.min.x);
+}

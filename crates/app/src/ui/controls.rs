@@ -12,7 +12,7 @@ use engine::ParamId;
 use neu::slider::SliderSpec;
 use neu::{DialSize, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, RightTab};
+use crate::app::{AppState, RightPanel, RightTab};
 
 /// Height of a group head row (`.ghead`, `.col > .lbl`): the segmented control's height.
 pub const ROW_HEIGHT: f32 = 30.0;
@@ -85,11 +85,27 @@ pub fn fmt_db(gain: f32) -> String {
     if gain <= 0.0 {
         return "-inf dB".to_owned();
     }
-    let db = 20.0 * gain.log10();
+    fmt_level_db(20.0 * gain.log10())
+}
+
+/// A level already in decibels (the mixer faders): `-6.0` -> `"-6.0 dB"`, `0.0` ->
+/// `"0.0 dB"`, `3.0` -> `"+3.0 dB"`.
+pub fn fmt_level_db(db: f32) -> String {
     if db.abs() < 0.05 {
         "0.0 dB".to_owned()
     } else {
         format!("{db:+.1} dB")
+    }
+}
+
+/// Pan position `-1..=1` (the mixer PAN knobs): `-0.3` -> `"L 30"`, `0.0` -> `"C"`, `0.3` ->
+/// `"R 30"`.
+pub fn fmt_pan(pan: f32) -> String {
+    let pct = (pan * 100.0).round() as i32;
+    match pct {
+        0 => "C".to_owned(),
+        p if p < 0 => format!("L {}", -p),
+        p => format!("R {p}"),
     }
 }
 
@@ -333,6 +349,35 @@ pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str)
     });
 }
 
+/// Items of the top row's right-slot tab, in [`RightPanel`] order.
+pub const RIGHT_PANEL_TABS: [&str; 2] = ["FX", "Mixer"];
+
+/// The head row shared by the FX rack and the MIXER panel (M6): the title on the left and the
+/// `FX | Mixer` tab (`neu::segmented`) flush right. A click switches
+/// [`AppState::right_panel`].
+pub fn right_panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(ROW_HEIGHT);
+        neu::title(ui, theme, title);
+        right_aligned(ui, "right_panel_tabs", |ui| {
+            let before = match state.right_panel {
+                RightPanel::Fx => 0,
+                RightPanel::Mixer => 1,
+            };
+            let mut selected = before;
+            neu::segmented(ui, theme, &mut selected, &RIGHT_PANEL_TABS)
+                .on_hover_text("FX: the effect parameters. Mixer: levels, pans, sends, meters.");
+            if selected != before {
+                state.right_panel = if selected == 0 {
+                    RightPanel::Fx
+                } else {
+                    RightPanel::Mixer
+                };
+            }
+        });
+    });
+}
+
 /// Pushes `add`'s contents to the right edge of a horizontal `ui`, using the width they had
 /// last frame (egui's right-to-left layouts put nested groups at the far left, so measuring
 /// is the reliable way). The first frame lays them out flush left; the next one is right.
@@ -375,6 +420,16 @@ mod tests {
         assert_eq!(fmt_db(2.0), "+6.0 dB");
         assert_eq!(fmt_db(0.5), "-6.0 dB");
         assert_eq!(fmt_db(0.0), "-inf dB");
+        assert_eq!(fmt_level_db(-6.0), "-6.0 dB");
+        assert_eq!(fmt_level_db(0.0), "0.0 dB");
+        assert_eq!(fmt_level_db(-0.04), "0.0 dB");
+        assert_eq!(fmt_level_db(3.0), "+3.0 dB");
+        assert_eq!(fmt_level_db(-60.0), "-60.0 dB");
+        assert_eq!(fmt_pan(-0.3), "L 30");
+        assert_eq!(fmt_pan(0.0), "C");
+        assert_eq!(fmt_pan(0.004), "C");
+        assert_eq!(fmt_pan(0.3), "R 30");
+        assert_eq!(fmt_pan(1.0), "R 100");
     }
 
     #[test]

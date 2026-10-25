@@ -17,12 +17,15 @@
 //!   tooltip ([`tooltip_text`]) on every knob, dial and slider, styled by [`Theme::apply`].
 //! * M6 mixer: the tall [`fader`], the peak [`meter`] / [`stereo_meter`] (dB curve via
 //!   [`meter_fraction`]) and the square [`toggle_button_sized`] for mute / solo.
+//! * M7 editor: the [`piano_roll`] (notes as rounded bars on a step x pitch grid, with draw /
+//!   move / resize / delete gestures and the geometry helpers [`cell_at`], [`note_rect`]).
 
 pub mod button;
 pub mod knob;
 pub mod meter;
 pub mod panel;
 pub mod piano_keys;
+pub mod piano_roll;
 pub mod segmented;
 pub mod shadow;
 pub mod slider;
@@ -44,6 +47,11 @@ pub use panel::panel;
 pub use piano_keys::{
     PianoKey, PianoModel, PianoOutput, key_at, key_layout, keyboard_size, keyboard_width,
     note_name, piano_keys,
+};
+pub use piano_roll::{
+    ACCENT_THRESHOLD, ACCENT_VELOCITY, DEFAULT_VELOCITY, KEY_COLUMN_WIDTH, NOTE_RADIUS,
+    PianoRollModel, PianoRollOutput, RESIZE_HANDLE, RollNote, black_row_tint, cell_at, grid_rect,
+    is_black_key, note_rect, piano_roll, row_rect,
 };
 pub use segmented::segmented;
 pub use shadow::{

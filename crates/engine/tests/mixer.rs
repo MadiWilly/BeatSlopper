@@ -9,6 +9,7 @@ mod common;
 
 use common::{SAMPLE_RATE, all_finite, is_silent, left, ms_to_frames, peak, render, right, rms};
 use engine::export::render_loop;
+use engine::project::FORMAT_VERSION;
 use engine::{
     Channel, ChannelParam, DrumRow, Engine, EngineHandle, Message, Meters, MixerState, ParamId,
     Project, STEPS, new_engine,
@@ -330,14 +331,14 @@ fn meters_report_block_peaks_per_channel_and_master() {
 }
 
 #[test]
-fn project_v3_loads_default_mixer_and_round_trips_as_v4() {
+fn project_v3_loads_default_mixer_and_round_trips_as_current_version() {
     let mut v3 = serde_json::to_value(Project::default()).unwrap();
     v3["version"] = serde_json::json!(3);
     v3.as_object_mut().unwrap().remove("mixer");
     let text = v3.to_string();
     assert!(!text.contains("\"mixer\""));
     let p = Project::from_json(&text).expect("v3 loads");
-    assert_eq!(p.version, 4);
+    assert_eq!(p.version, FORMAT_VERSION);
     assert_eq!(p.mixer, MixerState::default());
 
     let mut edited = p.clone();
@@ -347,7 +348,7 @@ fn project_v3_loads_default_mixer_and_round_trips_as_v4() {
         .set(Channel::Snare, ChannelParam::ReverbSend, 0.9);
     edited.mixer.set(Channel::OpenHat, ChannelParam::Mute, 1.0);
     let json = edited.to_json_pretty();
-    assert!(json.starts_with("{\n  \"version\": 4,"));
+    assert!(json.starts_with(&format!("{{\n  \"version\": {FORMAT_VERSION},")));
     assert!(json.contains("\"mixer\""));
     let back = Project::from_json(&json).unwrap();
     assert_eq!(back, edited);

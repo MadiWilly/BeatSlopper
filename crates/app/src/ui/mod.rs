@@ -6,16 +6,19 @@
 //! Top to bottom: transport bar, main area (SYNTH panel | FX rack above SEQUENCER | right
 //! column), KEYS panel. The right column ([`RIGHT_COLUMN_WIDTH`]) shows the PROJECT panel or
 //! the SONG CHAIN panel ([`AppState::right_tab`]: the page is 1140 tall and has no room for
-//! both). The main area scrolls vertically when the window is at its minimum height.
+//! both). The top row's right slot ([`fx_rack::WIDTH`]) shows the FX rack or the MIXER
+//! ([`AppState::right_panel`], M6; both heads carry the `FX | Mixer` tab). The main area
+//! scrolls vertically when the window is at its minimum height.
 
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, ScrollArea, Ui, vec2};
 use neu::Theme;
 
-use crate::app::{AppState, RightTab};
+use crate::app::{AppState, RightPanel, RightTab};
 
 pub mod controls;
 pub mod fx_rack;
 pub mod keyboard;
+pub mod mixer;
 pub mod project_bar;
 pub mod sequencer;
 pub mod song;
@@ -70,7 +73,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         .show(ui, |ui| main_area(ui, state, theme));
 }
 
-/// The main area: SYNTH panel (flexible width) | FX rack ([`fx_rack::WIDTH`]) on top, then
+/// The main area: SYNTH panel (flexible width) | FX rack or MIXER ([`fx_rack::WIDTH`]) on top, then
 /// SEQUENCER (flexible width) | PROJECT or SONG CHAIN ([`RIGHT_COLUMN_WIDTH`]). The top row takes whatever
 /// height the sequencer row ([`sequencer::panel_height`], known up front) leaves, but never
 /// less than [`TOP_ROW_MIN_HEIGHT`]; when the panels need more height than there is (minimum
@@ -95,7 +98,10 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
                 ui.allocate_ui_with_layout(
                     vec2(fx_rack::WIDTH, top_height),
                     Layout::top_down(Align::Min),
-                    |ui| fx_rack::show(ui, state, theme),
+                    |ui| match state.right_panel {
+                        RightPanel::Fx => fx_rack::show(ui, state, theme),
+                        RightPanel::Mixer => mixer::show(ui, state, theme),
+                    },
                 );
             });
             ui.horizontal_top(|ui| {

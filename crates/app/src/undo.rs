@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use engine::{Bank, ParamId};
+use engine::{Bank, MixerState, ParamId};
 
 /// Most undo steps remembered; older ones are dropped.
 pub const UNDO_CAP: usize = 100;
@@ -35,6 +35,8 @@ pub struct Snapshot {
     pub bpm: f32,
     pub swing: f32,
     pub preset_index: usize,
+    /// The six mixer strips (M6).
+    pub mixer: MixerState,
     /// The file the project was saved to / opened from, so undoing Open / New restores it.
     pub project_path: Option<PathBuf>,
 }
@@ -138,6 +140,7 @@ mod tests {
             bpm,
             swing: 0.0,
             preset_index: 0,
+            mixer: MixerState::default(),
             project_path: None,
         }
     }

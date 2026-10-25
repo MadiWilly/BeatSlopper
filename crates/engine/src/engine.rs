@@ -26,18 +26,29 @@
 //! Block peaks of every channel (post-fader) and of the master output are published once per
 //! `render` as [`Meters`] through lock-free atomics ([`EngineHandle::meters`]).
 //!
-//! # Sequencer (M3)
+//! # Sequencer (M3, polyphonic notes since M7)
 //!
 //! The scheduler runs per sample inside [`Engine::render`], so triggers are sample-accurate
 //! and independent of the block size. While the transport plays, `pos` counts samples from
 //! the start of the 16-step bar; step `n` fires when `pos` reaches
 //! [`Transport::step_trigger_sample`] (`round((n + swing_offset) * samples_per_step)`), and the
 //! bar wraps to `pos = 0` after `round(16 * samples_per_step)` samples, where step 0 fires
-//! again. Drum steps call [`DrumKit::trigger`]; synth-lane steps start a voice and schedule a
-//! note-off after 90 % of a step ([`SEQ_GATE`]). The sequencer's own note is tracked
-//! separately from keyboard notes so a held key is never cut by the sequencer. A tempo
-//! change while playing keeps the fractional position in the bar, so the loop neither jumps
-//! nor skips or repeats steps.
+//! again. Drum steps call [`DrumKit::trigger`]. Synth notes ([`Note`]) of the playing pattern
+//! start when their `start` step (`bar * 16 + step`) fires: `voices.note_on(pitch, velocity)`
+//! for every note starting there (chords are simply several notes), and a note-off is
+//! scheduled for **the trigger sample of step `start + length` minus one sample** (with that
+//! step's swing offset), so a length-1 note on step 0 at 120 BPM / 48 kHz sounds for samples
+//! `0..=5998`, a note of length 3 on step 2 for `12 000..=29 998`, and a note that ends where
+//! another of the same pitch starts hands its voice over cleanly (one release sample, then the
+//! retrigger). A note that runs past the pattern end is released at the pattern's last
+//! sample (its wrap); a pattern switch, song advance, stop or play releases every active
+//! sequencer note. Active sequencer notes live in a fixed array of `(pitch, off sample)` pairs,
+//! one per voice ([`MAX_VOICES`]); a pitch is tracked once (a new note on a sounding pitch
+//! releases and reuses its slot) and when the array is full the note ending soonest is cut,
+//! so polyphony is bounded by the voice pool's stealing. Sequencer notes are tracked
+//! separately from keyboard notes so a held key is never cut by the sequencer. A tempo change
+//! while playing keeps the fractional position in the bar, so the loop neither jumps nor
+//! skips or repeats steps (pending note-offs keep their sample positions).
 //!
 //! # Patterns and song mode (M5)
 //!
@@ -76,11 +87,11 @@ use crate::fx::{FxChain, Limiter};
 use crate::mixer::{Channel, ChannelParam, MixerState};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::pattern::{
-    Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern, PlayMode, STEPS,
+    Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, Note, PATTERN_COUNT, Pattern, PlayMode, STEPS,
 };
 use crate::synth::SineOsc;
 use crate::transport::Transport;
-use crate::voice::{SynthParams, VoicePool};
+use crate::voice::{MAX_VOICES, SynthParams, VoicePool};
 
 /// Capacity of the UI -> audio message queue.
 pub const QUEUE_CAPACITY: usize = 1024;
@@ -97,8 +108,13 @@ pub const MASTER_GAIN_SMOOTH_MS: f32 = DEFAULT_SMOOTH_MS;
 pub const MIXER_SMOOTH_MS: f32 = DEFAULT_SMOOTH_MS;
 /// Largest master gain accepted by [`Engine::set_master_gain`] (+12 dB).
 pub const MAX_MASTER_GAIN: f32 = 4.0;
-/// Gate length of a sequencer synth-lane note as a fraction of one step: the note-off comes
-/// at 90 % of the step so a repeated note retriggers cleanly.
+/// Gate length of an M3 sequencer synth-lane note as a fraction of one step. Unused since M7:
+/// a note now sounds until the trigger sample of step `start + length` minus one sample (see
+/// the module docs), so a length-1 note fills its whole step.
+#[deprecated(
+    since = "0.1.0",
+    note = "M7 notes end one sample before the trigger of step `start + length`; there is no gate fraction"
+)]
 pub const SEQ_GATE: f64 = 0.9;
 
 /// Messages from the UI thread to the audio thread. Must stay `Copy`-cheap and allocation-free.
@@ -211,6 +227,27 @@ pub enum Message {
     },
     /// Set the number of valid chain entries (`0..=MAX_CHAIN`).
     SetChainLen(u8),
+    /// Set or add a synth note of pattern `pattern` (M7): `index < note_count` replaces that
+    /// note, `index == note_count` appends, anything larger is ignored, as is a note with
+    /// `length == 0` or a `start` at or beyond the pattern length. The note list stays sorted
+    /// (so the note's index may change) and the grid lane is rebuilt.
+    SetNote {
+        /// Pattern index `0..PATTERN_COUNT`.
+        pattern: u8,
+        /// Position in the sorted note list, `0..=note_count`.
+        index: u8,
+        /// The note (clamped into range).
+        note: Note,
+    },
+    /// Remove synth note `index` of pattern `pattern` (out-of-range indices are ignored).
+    RemoveNote {
+        /// Pattern index `0..PATTERN_COUNT`.
+        pattern: u8,
+        /// Position in the sorted note list, `0..note_count`.
+        index: u8,
+    },
+    /// Remove every synth note of a pattern (same as `ClearSynth` for that pattern).
+    ClearNotes(u8),
     /// Set one mixer value; it is clamped with [`ChannelParam::clamp`] (mute/solo snap to
     /// 0/1) and smoothed over about [`MIXER_SMOOTH_MS`].
     SetMixer {
@@ -624,11 +661,14 @@ pub struct Engine {
     /// Next step of the bar to fire (`0..=16`; 16 means every step has fired and the bar is
     /// waiting to wrap).
     next_step: usize,
-    /// Monotonic sample clock used to time the sequencer note-off.
+    /// Monotonic sample clock used to time the sequencer note-offs.
     clock: u64,
-    /// The synth-lane note the sequencer is currently sounding and the `clock` value at
-    /// which it is released.
-    seq_note: Option<(u8, u64)>,
+    /// The synth notes the sequencer is currently sounding: `(pitch, clock value at which
+    /// it is released)`, at most one entry per pitch, one slot per voice.
+    seq_active: [Option<(u8, u64)>; MAX_VOICES],
+    /// Earliest `off` among `seq_active` (`u64::MAX` when none), so the per-sample tick only
+    /// scans the slots when a release is due.
+    seq_next_off: u64,
     /// Notes currently held from the keyboard (`note_on` without `note_off`); the sequencer
     /// never releases these.
     kbd_held: [bool; 128],
@@ -693,7 +733,8 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             pos: 0,
             next_step: 0,
             clock: 0,
-            seq_note: None,
+            seq_active: [None; MAX_VOICES],
+            seq_next_off: u64::MAX,
             kbd_held: [false; 128],
         },
     )
@@ -761,7 +802,8 @@ impl Engine {
     /// Releases every sounding voice (keyboard and sequencer notes alike).
     pub fn all_notes_off(&mut self) {
         self.kbd_held = [false; 128];
-        self.seq_note = None;
+        self.seq_active = [None; MAX_VOICES];
+        self.seq_next_off = u64::MAX;
         self.voices.all_notes_off();
     }
 
@@ -833,7 +875,7 @@ impl Engine {
     /// Starts (or restarts) the sequencer from step 0 of the current pattern (song mode:
     /// chain entry 0); step 0 fires on the next rendered sample.
     pub fn play(&mut self) {
-        self.release_seq_note();
+        self.release_seq_notes();
         self.pos = 0;
         self.next_step = 0;
         self.rewind();
@@ -841,11 +883,11 @@ impl Engine {
         self.publish();
     }
 
-    /// Stops the sequencer, releases its note and rewinds to step 0. Drums ring out
+    /// Stops the sequencer, releases its notes and rewinds to step 0. Drums ring out
     /// naturally and keyboard notes keep sounding.
     pub fn stop(&mut self) {
         self.transport.set_playing(false);
-        self.release_seq_note();
+        self.release_seq_notes();
         self.pos = 0;
         self.next_step = 0;
         self.rewind();
@@ -1037,6 +1079,36 @@ impl Engine {
         self.bank.clear_pattern(index);
     }
 
+    // --- notes (M7) -----------------------------------------------------------------------
+
+    /// Sets or adds a synth note of pattern `pattern`: `index < note_count` replaces that
+    /// note, `index == note_count` appends. Returns the note's index in the (re-sorted) list,
+    /// or `None` when `index` is out of range or the note is invalid (`length == 0`, or
+    /// `start` at or beyond the pattern length); nothing changes then. The grid lane is
+    /// rebuilt. Notes already sounding are unaffected.
+    pub fn set_note(&mut self, pattern: u8, index: u8, note: Note) -> Option<usize> {
+        let p = self.bank.pattern_mut(pattern);
+        let index = usize::from(index);
+        match index.cmp(&p.notes().len()) {
+            std::cmp::Ordering::Less => p.set_note(index, note),
+            std::cmp::Ordering::Equal => p.add_note(note),
+            std::cmp::Ordering::Greater => None,
+        }
+    }
+
+    /// Removes synth note `index` of pattern `pattern`. Returns `false` when `index` is out
+    /// of range. The grid lane is rebuilt.
+    pub fn remove_note(&mut self, pattern: u8, index: u8) -> bool {
+        self.bank
+            .pattern_mut(pattern)
+            .remove_note(usize::from(index))
+    }
+
+    /// Removes every synth note of pattern `pattern` (the grid lane becomes rests).
+    pub fn clear_notes(&mut self, pattern: u8) {
+        self.bank.pattern_mut(pattern).clear_notes();
+    }
+
     /// Sets chain entry `index` (`0..MAX_CHAIN`), growing the chain to include it. Takes
     /// effect when the song next reaches that entry.
     pub fn set_chain_entry(&mut self, index: u8, pattern: u8, repeats: u8) {
@@ -1180,8 +1252,11 @@ impl Engine {
         self.switch_to(start);
     }
 
-    /// Makes `index` the playing pattern at bar 0 and pushes its volume/tune into the kit.
+    /// Makes `index` the playing pattern at bar 0, releases every active sequencer note (a
+    /// note cannot outlive its pattern's pass) and pushes the pattern's volume/tune into the
+    /// kit.
     fn switch_to(&mut self, index: u8) {
+        self.release_seq_notes();
         self.playing = pattern_index(index) as u8;
         self.bar = 0;
         self.apply_kit_settings(self.playing);
@@ -1245,17 +1320,85 @@ impl Engine {
         (step as u8, frac)
     }
 
-    /// Releases the sequencer's sounding note, unless the keyboard holds the same note.
-    fn release_seq_note(&mut self) {
-        if let Some((note, _)) = self.seq_note.take()
-            && !self.kbd_held[usize::from(note.min(127))]
-        {
-            self.voices.note_off(note);
+    /// Releases a sequencer pitch, unless the keyboard holds the same note.
+    fn release_pitch(&mut self, pitch: u8) {
+        if !self.kbd_held[usize::from(pitch.min(127))] {
+            self.voices.note_off(pitch);
         }
     }
 
-    /// Fires every drum and synth-lane event of step `step` of the current bar of the
-    /// playing pattern.
+    /// Releases every active sequencer note (keyboard-held pitches excepted).
+    fn release_seq_notes(&mut self) {
+        for i in 0..MAX_VOICES {
+            if let Some((pitch, _)) = self.seq_active[i].take() {
+                self.release_pitch(pitch);
+            }
+        }
+        self.seq_next_off = u64::MAX;
+    }
+
+    /// Recomputes `seq_next_off` from the active slots.
+    fn refresh_next_off(&mut self) {
+        self.seq_next_off = self
+            .seq_active
+            .iter()
+            .flatten()
+            .map(|&(_, off)| off)
+            .min()
+            .unwrap_or(u64::MAX);
+    }
+
+    /// Clock value at which pattern step `step` (`bar * 16 + step`, possibly in a later bar)
+    /// of the playing pattern triggers, given that the current bar started `pos` samples ago;
+    /// steps past the pattern end map to the pattern's wrap (the first sample of the next
+    /// pass). The wrap is never before the end of the bar being played: a pattern shortened
+    /// below the current bar finishes that bar first (M5 rule), and so do its notes.
+    fn step_clock(&self, step: usize) -> u64 {
+        let end_bars = usize::from(self.bars_of(self.playing)).max(usize::from(self.bar) + 1);
+        let step = step.min(end_bars * STEPS);
+        let bar_start = self.clock.saturating_sub(self.pos);
+        let bars_ahead = (step / STEPS).saturating_sub(usize::from(self.bar)) as u64;
+        bar_start
+            + bars_ahead * self.bar_len
+            + self
+                .transport
+                .step_trigger_sample(step % STEPS, self.samples_per_step)
+    }
+
+    /// Starts `note` (which begins on the step being fired) and schedules its release for
+    /// one sample before the trigger of step `start + length` (the pattern's wrap at the
+    /// latest). A pitch that is already sounding from the sequencer is released and its slot
+    /// reused; when every slot is taken the note ending soonest is cut.
+    fn trigger_note(&mut self, note: Note) {
+        let pitch = note.pitch.min(127);
+        let off = self
+            .step_clock(note.end())
+            .saturating_sub(1)
+            .max(self.clock);
+        let slot = self
+            .seq_active
+            .iter()
+            .position(|s| s.is_some_and(|(p, _)| p == pitch))
+            .or_else(|| self.seq_active.iter().position(Option::is_none))
+            .or_else(|| {
+                self.seq_active
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, s)| s.map(|(_, off)| (i, off)))
+                    .min_by_key(|&(_, off)| off)
+                    .map(|(i, _)| i)
+            })
+            .unwrap_or(0);
+        if let Some((old, _)) = self.seq_active[slot].take() {
+            self.release_pitch(old);
+        }
+        self.voices.note_on(pitch, note.velocity);
+        self.seq_active[slot] = Some((pitch, off));
+        self.seq_next_off = self.seq_next_off.min(off);
+    }
+
+    /// Fires every drum and synth event of step `step` of the current bar of the playing
+    /// pattern: drum hits, then every note whose `start` is that pattern step.
     fn fire_step(&mut self, step: usize) {
         let index = (usize::from(self.bar) * STEPS + step).min(MAX_STEPS - 1);
         let pattern = self.bank.pattern(self.playing);
@@ -1263,23 +1406,39 @@ impl Engine {
         for row in DrumRow::ALL {
             drums[row.index()] = pattern.drums[row.index()][index];
         }
-        let synth = pattern.synth[index];
+        let note_count = pattern.notes().len();
         for row in DrumRow::ALL {
             if let Some(velocity) = drums[row.index()].velocity() {
                 self.drums.trigger(row, velocity);
             }
         }
-        if let Some((note, velocity)) = synth.trigger() {
-            // The lane is monophonic: a new note always releases the previous one first.
-            self.release_seq_note();
-            self.voices.note_on(note, velocity);
-            let gate = ((self.samples_per_step * SEQ_GATE).round() as u64).max(1);
-            self.seq_note = Some((note, self.clock + gate));
+        // Notes are sorted by start, so the matching ones are contiguous; the scan over at
+        // most MAX_NOTES fixed slots is cheap and allocation-free.
+        for i in 0..note_count {
+            let note = self.bank.pattern(self.playing).notes[i];
+            if usize::from(note.start) == index {
+                self.trigger_note(note);
+            } else if usize::from(note.start) > index {
+                break;
+            }
         }
     }
 
-    /// One sample of the scheduler: fires due steps, releases the sequencer note at its gate
-    /// end and advances the bar position (wrapping at the bar end).
+    /// Releases every sequencer note whose off sample has come.
+    fn release_due_notes(&mut self) {
+        for i in 0..MAX_VOICES {
+            if let Some((pitch, off)) = self.seq_active[i]
+                && self.clock >= off
+            {
+                self.seq_active[i] = None;
+                self.release_pitch(pitch);
+            }
+        }
+        self.refresh_next_off();
+    }
+
+    /// One sample of the scheduler: fires due steps, releases sequencer notes whose off
+    /// sample has come and advances the bar position (wrapping at the bar end).
     #[inline]
     fn sequencer_tick(&mut self) {
         if self.transport.is_playing() {
@@ -1294,10 +1453,8 @@ impl Engine {
                 self.fire_step(step);
             }
         }
-        if let Some((_, off)) = self.seq_note
-            && self.clock >= off
-        {
-            self.release_seq_note();
+        if self.clock >= self.seq_next_off {
+            self.release_due_notes();
         }
         self.clock += 1;
         if self.transport.is_playing() {
@@ -1357,6 +1514,17 @@ impl Engine {
                 repeats,
             } => self.set_chain_entry(index, pattern, repeats),
             Message::SetChainLen(len) => self.set_chain_len(len),
+            Message::SetNote {
+                pattern,
+                index,
+                note,
+            } => {
+                self.set_note(pattern, index, note);
+            }
+            Message::RemoveNote { pattern, index } => {
+                self.remove_note(pattern, index);
+            }
+            Message::ClearNotes(pattern) => self.clear_notes(pattern),
             Message::SetMixer {
                 channel,
                 param,

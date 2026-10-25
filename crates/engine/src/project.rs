@@ -1,19 +1,21 @@
-//! Project file (M3/M5/M6): `*.beatslopper.json` holding BPM, swing, the pattern bank (eight
-//! patterns, chain, play mode), synth/FX params, the mixer, preset and keyboard settings.
+//! Project file (M3/M5/M6/M7): `*.beatslopper.json` holding BPM, swing, the pattern bank
+//! (eight patterns with their notes, chain, play mode), synth/FX params, the mixer, preset and
+//! keyboard settings.
 //!
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 4), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 5), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 4,
+//!   "version": 5,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
 //!     "patterns": [
-//!       { "length": 16, "drums": [[...], [...], [...], [...], [...]], "synth": [...],
+//!       { "length": 16, "drums": [[...], [...], [...], [...], [...]],
+//!         "notes": [ { "start": 0, "length": 1, "pitch": 36, "velocity": 0.8 } ],
 //!         "drum_volume": [...], "drum_tune": [...] },
 //!       "... 8 patterns in all (A..H)"
 //!     ],
@@ -35,18 +37,22 @@
 //! }
 //! ```
 //!
-//! Each pattern row is a plain array of 16, 32 or 64 step objects (see
-//! [`crate::pattern`] for the exact rules). Parameters are keyed by [`ParamId::key`] so
-//! renaming a UI label never breaks a file. On load, unknown parameter keys are ignored and
-//! missing ones take [`ParamId::default_value`]; missing top-level fields take their
-//! [`Project::default`] value.
+//! Each drum row is a plain array of 16, 32 or 64 step objects and `notes` lists the
+//! pattern's synth notes (see [`crate::pattern`] for the exact rules; the derived `synth`
+//! lane is not written). Parameters are keyed by [`ParamId::key`] so renaming a UI label
+//! never breaks a file. On load, unknown parameter keys are ignored and missing ones take
+//! [`ParamId::default_value`]; missing top-level fields take their [`Project::default`]
+//! value.
 //!
-//! Migration: a version-3 file has no `mixer`; it loads with [`MixerState::default`] (unity,
-//! centre, synth sent to delay and reverb, snare/clap lightly to the reverb), which plays
-//! the way M5 did. A version-2 file has a single `pattern`; it becomes pattern A with the
-//! chain `[A x1]`, pattern mode, A selected ([`Bank::from_pattern`]). Version 1 (just
-//! `version`, `bpm`, `swing`, `master_gain`) still opens with the default bank. Files written
-//! by a *newer* format version are refused ([`ProjectError::Version`]).
+//! Migration: a version-4 file has a `synth` lane per pattern instead of `notes`; each lane
+//! step with a note becomes a length-1 [`crate::pattern::Note`] (velocity 1.0 when accented,
+//! 0.8 otherwise), handled by the pattern deserializer. A version-3 file has no `mixer`; it
+//! loads with [`MixerState::default`] (unity, centre, synth sent to delay and reverb,
+//! snare/clap lightly to the reverb), which plays the way M5 did. A version-2 file has a
+//! single `pattern`; it becomes pattern A with the chain `[A x1]`, pattern mode, A selected
+//! ([`Bank::from_pattern`]). Version 1 (just `version`, `bpm`, `swing`, `master_gain`) still
+//! opens with the default bank. Files written by a *newer* format version are refused
+//! ([`ProjectError::Version`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -70,7 +76,9 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 ///   `velocity`; `master_gain` moved into `params`.
 /// - 3: `pattern` becomes `bank` (eight patterns with lengths, chain, play mode, current).
 /// - 4: adds `mixer` (six strips: level, pan, mute, solo, delay/reverb sends).
-pub const FORMAT_VERSION: u32 = 4;
+/// - 5: each pattern's `synth` lane becomes a polyphonic `notes` list (start, length, pitch,
+///   velocity); the lane is derived on load.
+pub const FORMAT_VERSION: u32 = 5;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -370,7 +378,7 @@ mod tests {
     #[test]
     fn json_is_pretty_and_sorted() {
         let text = Project::default().to_json_pretty();
-        assert!(text.starts_with("{\n  \"version\": 4,"));
+        assert!(text.starts_with("{\n  \"version\": 5,"));
         assert!(text.ends_with("}\n"));
         let amp = text.find("\"amp_attack\"").unwrap();
         let osc = text.find("\"osc1_wave\"").unwrap();
@@ -389,10 +397,10 @@ mod tests {
         assert_eq!(p.version, FORMAT_VERSION);
         assert_eq!(p.mixer, MixerState::default());
         // Out-of-range mixer values are normalised on load.
-        let mut v4 = serde_json::to_value(Project::default()).unwrap();
-        v4["mixer"]["strips"][0]["level_db"] = serde_json::json!(99.0);
-        v4["mixer"]["strips"][5]["pan"] = serde_json::json!(-4.0);
-        let p = Project::from_json(&v4.to_string()).unwrap();
+        let mut v5 = serde_json::to_value(Project::default()).unwrap();
+        v5["mixer"]["strips"][0]["level_db"] = serde_json::json!(99.0);
+        v5["mixer"]["strips"][5]["pan"] = serde_json::json!(-4.0);
+        let p = Project::from_json(&v5.to_string()).unwrap();
         assert_eq!(p.mixer.strips[0].level_db, crate::mixer::MAX_LEVEL_DB);
         assert_eq!(p.mixer.strips[5].pan, -1.0);
     }
@@ -437,11 +445,11 @@ mod tests {
 
     #[test]
     fn newer_version_is_refused_and_garbage_is_a_json_error() {
-        let err = Project::from_json(r#"{ "version": 5 }"#).unwrap_err();
+        let err = Project::from_json(r#"{ "version": 6 }"#).unwrap_err();
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 5,
+                found: 6,
                 supported: FORMAT_VERSION
             }
         ));

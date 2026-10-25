@@ -50,7 +50,7 @@ pub use engine::{Meters, MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
 pub use mixer::{Channel, ChannelParam, MixerState, Strip};
 pub use pattern::{
-    BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern,
-    PatternLength, PlayMode, STEPS, SynthStep,
+    BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_NOTES, MAX_STEPS, Note, PATTERN_COUNT,
+    Pattern, PatternLength, PlayMode, STEPS, SynthStep,
 };
 pub use project::{Project, ProjectError};

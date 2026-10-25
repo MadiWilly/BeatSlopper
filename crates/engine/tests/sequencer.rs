@@ -6,12 +6,18 @@
 //! non-zero sample is at most one sample after the trigger (the tests allow +-1). The drum
 //! kit is exercised by its own onset test, which checks every step from a fresh engine so it
 //! does not depend on how long a drum rings.
+//!
+//! M7 note-off rule: a lane note (a length-1 [`engine::Note`]) now sounds until one sample
+//! before the next step's trigger (the M3 build gated it at 90 % of the step), and a note of
+//! the same pitch on the very next step retriggers the voice click-free, so back-to-back lane
+//! steps leave no silence for the onset detector. The lanes below therefore never put notes
+//! on two consecutive steps; every step is still covered (split into even/odd renders).
 
 mod common;
 
 use common::*;
 use engine::drums::DrumRow;
-use engine::engine::{MAX_MASTER_GAIN, SEQ_GATE};
+use engine::engine::MAX_MASTER_GAIN;
 use engine::pattern::STEPS;
 use engine::{Message, Pattern, new_engine};
 
@@ -29,27 +35,42 @@ const A4: u8 = 69;
 const EPS: f32 = ONSET_EPS;
 
 // (a) Synth lane: every step at 120 BPM triggers at exactly n * 6000.
+//
+// Even and odd steps are rendered separately (see the module docs): with the M7 rule a note
+// fills its whole step, so consecutive notes would merge for the onset detector. Together the
+// two renders check all 16 steps.
 #[test]
 fn steps_trigger_every_6000_samples_at_120_bpm() {
-    let (_h, mut engine) = seq_engine();
-    lane(&mut engine, A4, |_| true);
-    let mono = play_and_render(&mut engine, BAR_120);
-    assert!(all_finite(&mono));
-    let expected: Vec<usize> = (0..STEPS).map(|n| n * STEP_120).collect();
-    assert_onsets(&onsets(&mono), &expected);
+    for parity in 0..2 {
+        let (_h, mut engine) = seq_engine();
+        lane(&mut engine, A4, |n| n % 2 == parity);
+        let mono = play_and_render(&mut engine, BAR_120);
+        assert!(all_finite(&mono));
+        let expected: Vec<usize> = (parity..STEPS).step_by(2).map(|n| n * STEP_120).collect();
+        assert_onsets(&onsets(&mono), &expected);
 
-    // Each note is gated at 90 % of a step and the lane is silent again before the next step.
-    let gate = (STEP_120 as f64 * SEQ_GATE) as usize;
-    for n in 0..STEPS {
-        let start = n * STEP_120;
-        assert!(
-            !is_silent(&mono[start + 2..start + gate]),
-            "step {n} should sound during its gate"
-        );
-        assert!(
-            is_silent(&mono[start + gate + ms_to_frames(5.0)..start + STEP_120]),
-            "step {n} should be silent after its gate and release"
-        );
+        // Each note sounds right up to the next step's trigger (its note-off is one sample
+        // before it; the M3 90 % gate would already have been silent here) and the lane is
+        // silent again after the 1 ms release, well before the step after that.
+        for n in (parity..STEPS).step_by(2) {
+            let start = n * STEP_120;
+            assert!(
+                !is_silent(&mono[start + 2..start + STEP_120 / 2]),
+                "step {n} should sound during its first half"
+            );
+            assert!(
+                !is_silent(&mono[start + STEP_120 - 100..start + STEP_120 - 1]),
+                "step {n} should still sound just before the next step"
+            );
+            let quiet_from = start + STEP_120 + ms_to_frames(5.0);
+            let next_note = (start + 2 * STEP_120).min(BAR_120);
+            if quiet_from < next_note {
+                assert!(
+                    is_silent(&mono[quiet_from..next_note]),
+                    "step {n} should be silent after its release"
+                );
+            }
+        }
     }
 }
 
@@ -98,13 +119,14 @@ fn swing_half_delays_odd_steps_only() {
 }
 
 // (c) At 90 BPM a step is 8000 samples and the bar wraps after 128 000, firing step 0 again.
+// (Even steps only, so every note ends in silence; see the module docs.)
 #[test]
 fn ninety_bpm_steps_are_8000_samples_and_the_bar_wraps() {
     let (handle, mut engine) = seq_engine();
     engine.set_bpm(90.0);
     assert_eq!(engine.transport().samples_per_step(SAMPLE_RATE), 8000.0);
     assert_eq!(engine.transport().bar_samples(SAMPLE_RATE), 128_000.0);
-    lane(&mut engine, A4, |_| true);
+    lane(&mut engine, A4, |n| n % 2 == 0);
 
     let mono = play_and_render(&mut engine, BAR_90);
     let pos = handle.position();
@@ -114,18 +136,20 @@ fn ninety_bpm_steps_are_8000_samples_and_the_bar_wraps() {
 
     let more = left(&render(&mut engine, STEP_90));
     let all: Vec<f32> = mono.into_iter().chain(more).collect();
-    let expected: Vec<usize> = (0..=STEPS).map(|n| n * STEP_90).collect();
+    let expected: Vec<usize> = (0..=STEPS).step_by(2).map(|n| n * STEP_90).collect();
     assert_onsets(&onsets(&all), &expected);
 }
 
 // (d) A tempo change mid-bar keeps the position in the bar: no step repeats or is skipped.
+// (Odd steps only, so every note ends in silence; see the module docs.)
 #[test]
 fn bpm_change_mid_bar_neither_retriggers_nor_skips_steps() {
     let (mut handle, mut engine) = seq_engine();
-    lane(&mut engine, A4, |_| true);
-    // 50 000 samples at 120 BPM: steps 0..=8 have fired, pos = 50 000 / 96 000 of the bar.
+    lane(&mut engine, A4, |n| n % 2 == 1);
+    // 50 000 samples at 120 BPM: steps 0..=8 have fired (odd ones: 1, 3, 5, 7),
+    // pos = 50 000 / 96 000 of the bar.
     let first = play_and_render(&mut engine, 50_000);
-    assert_eq!(onsets(&first).len(), 9);
+    assert_eq!(onsets(&first).len(), 4);
 
     assert!(handle.send(Message::SetBpm(90.0)));
     // Rescaled position: round(50 000 / 96 000 * 128 000) = 66 667, so 61 333 samples remain
@@ -134,12 +158,12 @@ fn bpm_change_mid_bar_neither_retriggers_nor_skips_steps() {
     assert_eq!(engine.bpm(), 90.0);
     let all: Vec<f32> = first.into_iter().chain(rest).collect();
     let found = onsets(&all);
-    assert_eq!(found.len(), 2 * STEPS, "onsets {found:?}");
+    assert_eq!(found.len(), STEPS, "onsets {found:?}");
 
     // Step 9 of the first bar lands at 72 000 on the new grid, i.e. 5 333 samples after the
-    // change; everything after that is spaced exactly one 90 BPM step apart.
+    // change; everything after that is spaced exactly two 90 BPM steps apart.
     let after: Vec<usize> = found.iter().copied().filter(|&i| i > 50_000).collect();
-    assert_eq!(after.len(), 2 * STEPS - 9);
+    assert_eq!(after.len(), STEPS - 4);
     assert!(
         after[0].abs_diff(55_333) <= 1,
         "first onset after the change: {}",
@@ -147,7 +171,7 @@ fn bpm_change_mid_bar_neither_retriggers_nor_skips_steps() {
     );
     for w in after.windows(2) {
         assert!(
-            w[1].abs_diff(w[0] + STEP_90) <= 1,
+            w[1].abs_diff(w[0] + 2 * STEP_90) <= 1,
             "uneven spacing after the tempo change: {w:?}"
         );
     }
@@ -350,9 +374,10 @@ fn trigger_positions_are_block_size_independent() {
     for block in [1_usize, 7, 512] {
         let (_h, mut engine) = seq_engine();
         engine.set_swing(0.25);
-        // Steps 0, 1, 4, 5, ...: an odd (swung) step is never directly followed by a note,
-        // so every note ends in silence before the next one and is detectable as an onset.
-        lane(&mut engine, A4, |n| n % 4 < 2);
+        // Steps 0, 3, 5, 8, 11, 13 (and 16 = step 0 of the next bar): a mix of straight and
+        // swung steps with no two in a row, so every note ends in silence before the next
+        // one and is detectable as an onset (see the module docs).
+        lane(&mut engine, A4, |n| matches!(n % 8, 0 | 3 | 5));
         engine.play();
         let mono = left(&render_in_blocks(&mut engine, BAR_120 + STEP_120, block));
         results.push((block, mono));
@@ -367,7 +392,7 @@ fn trigger_positions_are_block_size_independent() {
     }
     // Sanity: the expected swung grid, including step 0 of the next bar.
     let expected: Vec<usize> = (0..=STEPS)
-        .filter(|n| n % 4 < 2)
+        .filter(|n| matches!(n % 8, 0 | 3 | 5))
         .map(|n| {
             let swing = if n % 2 == 1 { STEP_120 / 4 } else { 0 };
             n * STEP_120 + swing
