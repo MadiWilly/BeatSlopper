@@ -82,7 +82,7 @@ yet, leave it; its session reports to the old orchestrator session, so check the
 ## Loop command for the new session
 Paste this to run unattended:
 
-    /loop Continue the BeatSlopper build: read docs/HANDOFF.md first, then follow docs/PLAN.md "Loop procedure" with the "Phase 3 brief" and the "Phase 4 brief" (order M8 -> M10 -> M9 -> M11), using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state; merge the side-session branches listed in HANDOFF.md into main as they finish. Stop the loop when M11 is done and green and every finished branch is merged, or everything is blocked.
+    /loop Continue the BeatSlopper build: read docs/HANDOFF.md first (its takeover notes), then follow docs/PLAN.md "Loop procedure" with the "Phase 5 brief" (M12 -> M13 -> M14, design/round3/WINNER.md is the source of truth), using PROGRESS.md, DECISIONS.md and BLOCKERS.md as state. Stop the loop when M14 is done and green, or everything is blocked.
 
 ## Added after the handoff was written
 - `madi/design-cleanup-3a9db8` (session "Design cleanup: selection states and polish"): the
@@ -101,3 +101,37 @@ Paste this to run unattended:
   ghost notes, selected track gets the keys), M11 FL-style mixer (inserts, slots, routing).
   Order: M8 wiring -> M10 -> M9 -> M11. Interfaces in docs/ARCHITECTURE.md, reasons and sources
   in DECISIONS.md.
+
+## Takeover notes for the next orchestrator (written 2026-10-25 ~19:50, user low on usage)
+State of main (pushed): m8, m9, m10, m11 tagged and green. Phase 3 + Phase 4 are DONE: tracks
+(layering), preset library + browser, FL-style mixer with inserts / slots / routing. The user
+then dropped the neumorphic design: **Phase 5 = UI overhaul** (docs/PLAN.md "Phase 5 brief").
+- The user picked design **B "Deck"** (FL-Studio-like) from `design/round3/`; the token sheet
+  and layout budgets are `design/round3/WINNER.md` (the source of truth; the old
+  `design/WINNER.md` is history). Milestones M12 (neu restyle + shell + PATTERN view), M13
+  (piano roll, mixer drawer, synth & fx windows), M14 (song, browser, plugins, keyboard,
+  polish, captures, tag). Stop the loop when M14 is done and green.
+- **M12 neu half is committed** (3dd6203: `crates/neu` fully restyled, 146 tests; see
+  docs/ARCHITECTURE.md "M12 as built (neu)"). **26 app kittests fail on the old geometry**
+  until the shell lands; that is expected and listed in that section.
+- **M12 app half (the shell rewrite) was IN FLIGHT** when this note was written: a subagent was
+  rewriting `crates/app/src/ui/mod.rs` (+ new `ui/shell.rs`), `window.rs`, `app.rs` (a `View`
+  enum replacing right_tab / right_panel / lane_view) and the app tests, per the brief in
+  docs/PLAN.md Phase 5 step 2 and WINNER.md section 5. If `git status` shows uncommitted app
+  changes: run `cargo build -p app` and `cargo test -p app`; if green, review and commit; if
+  mid-way, finish the shell yourself from WINNER.md (toolbar, browser column, channel rack,
+  main window with F5..F9 views, mixer bar, keyboard strip, hint bar, work-area window sizing,
+  tests at 840x600 / 1280x800 / 1920x1080). Then the full gate, tag m12, push, then M13.
+- Gate pitfalls: the running app locks `target/release/beatslopper.exe`, so the release build
+  and smoke test run from a detached worktree with its own target dir (see the orchestrator
+  memory "beatslopper-gate-release-lock"); the user works at this PC, so never launch the
+  app window while they ask for quiet (memory "no-app-launch-while-user-works"); PrintWindow
+  captures need `SetProcessDPIAware` and the window handle from the process (the title now
+  carries BPM + pattern). The display is 3840x2160 at 150 %: the old 1280-pt page did not fit
+  in a 1280-px window, which is what started the redesign (capture in design/round3/captures).
+- Side branches: every one listed above is merged; `madi/test-feedback-deb72b` had no new
+  commits all day.
+- Open follow-ups (small): the engine's `cargo doc -D warnings` has four stale intra-doc links
+  (fx/ducker.rs:12, project.rs:75, engine.rs ~1293, pattern.rs:13); export vs live render
+  differ for the first ~50 ms because live smoothers glide (a "snap" message would fix it);
+  the 8 classic presets are still outside `presets::LIBRARY`.
