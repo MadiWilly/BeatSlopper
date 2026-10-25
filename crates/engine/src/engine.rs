@@ -20,6 +20,28 @@
 //! change while playing keeps the fractional position in the bar, so the loop neither jumps
 //! nor skips or repeats steps.
 //!
+//! # Patterns and song mode (M5)
+//!
+//! The engine owns a [`Bank`]: eight patterns, the chain, the play mode and the selected
+//! (`current`) pattern. Two indices matter on the audio thread: the *edit* pattern (where
+//! step/row/volume/tune messages land, [`Engine::edit_pattern`]) and the *playing* pattern
+//! ([`Position::pattern`]). The bar is always 16 steps; the step fired is `bar * 16 + step`
+//! of the playing pattern. Every time `pos` wraps, the bar-boundary logic runs:
+//!
+//! - pattern mode: a queued [`Message::SelectPattern`] switches the playing pattern now
+//!   (bar 0); otherwise, once `bar` reaches the playing pattern's bar count, the pattern
+//!   restarts from bar 0 (as the selected pattern). A length change therefore applies at the
+//!   next bar boundary, because the bar count is re-read there.
+//! - song mode (non-empty chain): once the pattern's bars are done one repeat of the entry
+//!   is consumed; when the repeats are used up the chain advances (wrapping at `chain_len`)
+//!   and the new entry's pattern starts at bar 0. Switching into song mode while playing
+//!   restarts the chain from entry 0 at the next bar boundary. An empty chain behaves like
+//!   pattern mode on the selected pattern.
+//!
+//! [`Engine::play`] always starts at step 0 of the current pattern (song mode: chain entry
+//! 0). Nothing here allocates: the bank is fixed-size, pattern copies are plain `memcpy`s and
+//! [`Engine::set_bank`] (a project load) is meant to be called before the stream starts.
+//!
 //! Real-time rules: everything used by [`Engine::render`] is pre-allocated in [`new_engine`].
 //! `render` never allocates, locks, does I/O, logs or panics; it tolerates `out` buffers that
 //! are shorter than `frames * 2` by rendering what fits.
@@ -33,7 +55,9 @@ use crate::drums::{DrumKit, DrumRow};
 use crate::dsp::db_to_gain;
 use crate::fx::{FxChain, Limiter};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
-use crate::pattern::{Pattern, STEPS};
+use crate::pattern::{
+    Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern, PlayMode, STEPS,
+};
 use crate::synth::SineOsc;
 use crate::transport::Transport;
 use crate::voice::{SynthParams, VoicePool};
@@ -81,63 +105,159 @@ pub enum Message {
     SetParam(ParamId, f32),
     /// Tempo in beats per minute (60..=200); used by the BPM-synced delay and the M3 transport.
     SetBpm(f32),
-    /// Start the sequencer from step 0.
+    /// Start the sequencer from step 0 of the current pattern (song mode: chain entry 0).
     Play,
     /// Stop the sequencer, release its notes and rewind to step 0.
     Stop,
     /// Swing amount `0.0..=0.75`: odd steps are delayed by that fraction of a step.
     SetSwing(f32),
-    /// Set one drum step.
+    /// Set one drum step of the edit pattern.
     SetDrumStep {
         /// Drum row.
         row: DrumRow,
-        /// Step index `0..16`.
+        /// Step index `0..length` of the edit pattern (wraps).
         step: u8,
         /// Whether the step fires.
         on: bool,
         /// Accented (full velocity).
         accent: bool,
     },
-    /// Set one synth-lane step.
+    /// Set one synth-lane step of the edit pattern.
     SetSynthStep {
-        /// Step index `0..16`.
+        /// Step index `0..length` of the edit pattern (wraps).
         step: u8,
         /// MIDI note, or `None` for a rest.
         note: Option<u8>,
         /// Accented (full velocity).
         accent: bool,
     },
-    /// Clear one drum row.
+    /// Clear one drum row of the edit pattern.
     ClearRow(DrumRow),
-    /// Clear the synth lane.
+    /// Clear the synth lane of the edit pattern.
     ClearSynth,
-    /// Clear every row and the synth lane.
+    /// Clear every row and the synth lane of the edit pattern.
     ClearAll,
-    /// Per-row drum volume in dB (-24..=6).
+    /// Per-row drum volume in dB (-24..=6) of the edit pattern.
     SetDrumVolume {
         /// Drum row.
         row: DrumRow,
         /// Volume in dB.
         db: f32,
     },
-    /// Per-row drum tune in semitones (-12..=12).
+    /// Per-row drum tune in semitones (-12..=12) of the edit pattern.
     SetDrumTune {
         /// Drum row.
         row: DrumRow,
         /// Tune in semitones.
         semitones: f32,
     },
+    /// Choose which pattern the step/row/volume/tune messages edit (`0..PATTERN_COUNT`).
+    /// Does not change what plays.
+    SetEditPattern(u8),
+    /// Set a pattern's length to 16, 32 or 64 steps (anything else rounds up to the next
+    /// allowed length). For the playing pattern this applies at its next bar boundary.
+    SetPatternLength {
+        /// Pattern index `0..PATTERN_COUNT`.
+        pattern: u8,
+        /// Length in steps.
+        steps: u8,
+    },
+    /// Copy pattern `from` over pattern `to`.
+    CopyPattern {
+        /// Source pattern index.
+        from: u8,
+        /// Destination pattern index.
+        to: u8,
+    },
+    /// Clear every step of a pattern (length, volume and tune are kept).
+    ClearPattern(u8),
+    /// Select a pattern: it becomes the edit pattern and the selected (`current`) one. In
+    /// pattern mode while playing the switch is queued to the next 16-step bar boundary
+    /// ([`Position::queued`]); when stopped it is immediate.
+    SelectPattern(u8),
+    /// Switch between pattern and song mode. While playing, song mode starts the chain from
+    /// entry 0 at the next bar boundary; pattern mode queues the selected pattern.
+    SetPlayMode(PlayMode),
+    /// Set chain entry `index` (`0..MAX_CHAIN`); the chain grows to include it.
+    SetChainEntry {
+        /// Chain position.
+        index: u8,
+        /// Pattern index `0..PATTERN_COUNT`.
+        pattern: u8,
+        /// Repeat count `1..=8`.
+        repeats: u8,
+    },
+    /// Set the number of valid chain entries (`0..=MAX_CHAIN`).
+    SetChainLen(u8),
 }
 
 /// Where the sequencer is, as last published by the audio thread.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
-    /// Current step `0..16`.
+    /// Current step within the bar, `0..16`.
     pub step: u8,
     /// Fraction of the current step already elapsed, `0.0..1.0`.
     pub frac: f32,
     /// Whether the transport is running.
     pub playing: bool,
+    /// The pattern that is playing (or will play on the next `Play`), `0..PATTERN_COUNT`.
+    pub pattern: u8,
+    /// 0-based bar within the playing pattern (`0..pattern bars`).
+    pub bar: u8,
+    /// Chain entry being played (song mode; `0` otherwise).
+    pub song_index: u8,
+    /// Pattern queued by `SelectPattern` for the next bar boundary (pattern mode).
+    pub queued: Option<u8>,
+}
+
+impl Position {
+    /// A stopped position at step 0 of pattern `pattern`.
+    #[must_use]
+    pub const fn stopped(pattern: u8) -> Self {
+        Self {
+            step: 0,
+            frac: 0.0,
+            playing: false,
+            pattern,
+            bar: 0,
+            song_index: 0,
+            queued: None,
+        }
+    }
+
+    /// Step index within the playing pattern: `bar * 16 + step`.
+    #[must_use]
+    pub fn pattern_step(&self) -> usize {
+        usize::from(self.bar) * STEPS + usize::from(self.step)
+    }
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Self::stopped(0)
+    }
+}
+
+/// Marker for "no queued pattern" in the packed position word.
+const NO_QUEUE: u32 = 0xFF;
+
+/// Packs `pattern | bar << 8 | song_index << 16 | queued << 24` (`0xFF` = none).
+fn pack_song(pattern: u8, bar: u8, song_index: u8, queued: Option<u8>) -> u32 {
+    u32::from(pattern)
+        | u32::from(bar) << 8
+        | u32::from(song_index) << 16
+        | queued.map_or(NO_QUEUE, u32::from) << 24
+}
+
+/// Inverse of [`pack_song`].
+fn unpack_song(word: u32) -> (u8, u8, u8, Option<u8>) {
+    let queued = word >> 24;
+    (
+        (word & 0xFF) as u8,
+        ((word >> 8) & 0xFF) as u8,
+        ((word >> 16) & 0xFF) as u8,
+        (queued != NO_QUEUE).then_some(queued as u8),
+    )
 }
 
 /// Lock-free playhead state shared between [`Engine`] and [`EngineHandle`].
@@ -147,21 +267,32 @@ pub(crate) struct Shared {
     /// Fraction of the step in thousandths.
     frac_milli: AtomicU32,
     playing: AtomicBool,
+    /// Pattern, bar, song index and queued pattern, packed by [`pack_song`].
+    song: AtomicU32,
 }
 
 impl Shared {
-    pub(crate) fn publish(&self, step: u8, frac: f32, playing: bool) {
-        self.step.store(u32::from(step), Ordering::Relaxed);
-        let milli = (frac.clamp(0.0, 0.999) * 1000.0) as u32;
+    pub(crate) fn publish(&self, pos: Position) {
+        self.step.store(u32::from(pos.step), Ordering::Relaxed);
+        let milli = (pos.frac.clamp(0.0, 0.999) * 1000.0) as u32;
         self.frac_milli.store(milli, Ordering::Relaxed);
-        self.playing.store(playing, Ordering::Relaxed);
+        self.song.store(
+            pack_song(pos.pattern, pos.bar, pos.song_index, pos.queued),
+            Ordering::Relaxed,
+        );
+        self.playing.store(pos.playing, Ordering::Relaxed);
     }
 
     pub(crate) fn read(&self) -> Position {
+        let (pattern, bar, song_index, queued) = unpack_song(self.song.load(Ordering::Relaxed));
         Position {
-            step: (self.step.load(Ordering::Relaxed) % 16) as u8,
+            step: (self.step.load(Ordering::Relaxed) % STEPS as u32) as u8,
             frac: self.frac_milli.load(Ordering::Relaxed) as f32 / 1000.0,
             playing: self.playing.load(Ordering::Relaxed),
+            pattern,
+            bar,
+            song_index,
+            queued,
         }
     }
 }
@@ -291,8 +422,22 @@ pub struct Engine {
     bpm: f32,
     /// Transport state (bpm/swing/playing) for the step scheduler.
     transport: Transport,
-    /// The pattern the scheduler plays.
-    pattern: Pattern,
+    /// All patterns, the chain, the mode and the selected pattern.
+    bank: Bank,
+    /// Index of the pattern that step/row/volume/tune edits target.
+    edit: u8,
+    /// Index of the pattern the scheduler is playing (or will play on `play`).
+    playing: u8,
+    /// 0-based bar within the playing pattern.
+    bar: u8,
+    /// Chain entry being played (song mode).
+    song_index: u8,
+    /// Completed plays of the current chain entry.
+    song_repeat: u8,
+    /// Pattern queued for the next bar boundary (pattern mode).
+    queued: Option<u8>,
+    /// Set when song mode was entered while playing: restart the chain at the next bar.
+    song_restart: bool,
     /// The procedural drum kit, summed with the voices before the FX chain.
     drums: DrumKit,
     /// Playhead published to the UI.
@@ -320,7 +465,8 @@ pub struct Engine {
 /// Creates an engine and its UI-side handle.
 ///
 /// All buffers and DSP state are allocated here, once; the returned [`Engine`] does not
-/// allocate afterwards. `sample_rate` is in Hz (tests use 48 000).
+/// allocate afterwards. `sample_rate` is in Hz (tests use 48 000). The bank starts empty
+/// (every pattern blank, chain `[A x1]`, pattern mode).
 pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let (producer, consumer) = RingBuffer::new(QUEUE_CAPACITY);
     let (midi_producer, midi_consumer) = RingBuffer::new(QUEUE_CAPACITY);
@@ -355,7 +501,14 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             limiter_on: ParamId::LimiterOn.default_value() >= 0.5,
             bpm: crate::transport::DEFAULT_BPM,
             transport,
-            pattern: Pattern::default(),
+            bank: Bank::empty(),
+            edit: 0,
+            playing: 0,
+            bar: 0,
+            song_index: 0,
+            song_repeat: 0,
+            queued: None,
+            song_restart: false,
             drums: DrumKit::new(sample_rate),
             shared,
             samples_per_step,
@@ -372,6 +525,11 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
 /// Whole-sample bar length for a step length: `round(16 * samples_per_step)`, at least 1.
 fn bar_len_samples(samples_per_step: f64) -> u64 {
     ((samples_per_step * STEPS as f64).round() as u64).max(1)
+}
+
+/// Wraps a pattern index into `0..PATTERN_COUNT`.
+fn pattern_index(index: u8) -> usize {
+    usize::from(index) % PATTERN_COUNT
 }
 
 impl Engine {
@@ -495,14 +653,15 @@ impl Engine {
         self.bpm
     }
 
-    /// Starts (or restarts) the sequencer from step 0; step 0 fires on the next rendered
-    /// sample.
+    /// Starts (or restarts) the sequencer from step 0 of the current pattern (song mode:
+    /// chain entry 0); step 0 fires on the next rendered sample.
     pub fn play(&mut self) {
         self.release_seq_note();
         self.pos = 0;
         self.next_step = 0;
+        self.rewind();
         self.transport.set_playing(true);
-        self.shared.publish(0, 0.0, true);
+        self.publish();
     }
 
     /// Stops the sequencer, releases its note and rewinds to step 0. Drums ring out
@@ -512,7 +671,8 @@ impl Engine {
         self.release_seq_note();
         self.pos = 0;
         self.next_step = 0;
-        self.shared.publish(0, 0.0, false);
+        self.rewind();
+        self.publish();
     }
 
     /// Sets the swing amount (`0.0..=`[`MAX_SWING`](crate::transport::MAX_SWING)).
@@ -536,6 +696,10 @@ impl Engine {
             step,
             frac,
             playing: self.transport.is_playing(),
+            pattern: self.playing,
+            bar: self.bar,
+            song_index: self.song_index,
+            queued: self.queued,
         }
     }
 
@@ -545,45 +709,186 @@ impl Engine {
         &self.transport
     }
 
-    /// The pattern the sequencer plays.
+    // --- bank -----------------------------------------------------------------------------
+
+    /// All patterns, the chain, the play mode and the selected pattern.
     #[must_use]
-    pub fn pattern(&self) -> &Pattern {
-        &self.pattern
+    pub fn bank(&self) -> &Bank {
+        &self.bank
     }
 
-    /// Replaces the whole pattern (project load; call before the stream starts or accept a
-    /// one-off copy on the audio thread).
-    pub fn set_pattern(&mut self, pattern: &Pattern) {
-        self.pattern = pattern.clone();
-        for row in DrumRow::ALL {
-            let i = row.index();
-            self.set_drum_volume(row, self.pattern.drum_volume[i]);
-            self.set_drum_tune(row, self.pattern.drum_tune[i]);
+    /// Replaces the whole bank (project load). Copies and normalises `bank`, makes its
+    /// `current` pattern the edit pattern and rewinds to the start (restarting playback if
+    /// the transport is running). Meant to be called before the stream starts; on the audio
+    /// thread it is a fixed-size copy, not an allocation.
+    pub fn set_bank(&mut self, bank: &Bank) {
+        self.bank = bank.clone();
+        self.bank.normalise();
+        self.edit = self.bank.current;
+        if self.transport.is_playing() {
+            self.play();
+        } else {
+            self.rewind();
+            self.publish();
         }
     }
 
-    /// Sets one drum step.
+    /// Index of the pattern that step/row/volume/tune edits target.
+    #[must_use]
+    pub fn edit_pattern(&self) -> u8 {
+        self.edit
+    }
+
+    /// Chooses the edit pattern (`0..PATTERN_COUNT`, wraps). Does not change what plays.
+    pub fn set_edit_pattern(&mut self, index: u8) {
+        self.edit = pattern_index(index) as u8;
+    }
+
+    /// Index of the pattern the scheduler is playing (or will play on `play`).
+    #[must_use]
+    pub fn playing_pattern(&self) -> u8 {
+        self.playing
+    }
+
+    /// The pattern queued for the next bar boundary, if any (pattern mode).
+    #[must_use]
+    pub fn queued_pattern(&self) -> Option<u8> {
+        self.queued
+    }
+
+    /// Selects pattern `index`: it becomes the edit pattern and the bank's `current`. In
+    /// pattern mode (or song mode with an empty chain) while playing the switch of the
+    /// *playing* pattern is queued to the next 16-step bar boundary; selecting the pattern
+    /// that already plays cancels a pending queue. When stopped the switch is immediate.
+    pub fn select_pattern(&mut self, index: u8) {
+        let index = pattern_index(index) as u8;
+        self.edit = index;
+        self.bank.current = index;
+        if !self.transport.is_playing() {
+            self.rewind();
+        } else if !self.song_active() {
+            self.queued = (index != self.playing).then_some(index);
+        }
+    }
+
+    /// Switches between pattern and song mode. When stopped the start position follows
+    /// (song: chain entry 0). While playing, song mode restarts the chain from entry 0 at the
+    /// next bar boundary; pattern mode queues the selected pattern (if it is not already
+    /// playing) for the next bar boundary.
+    pub fn set_play_mode(&mut self, mode: PlayMode) {
+        self.bank.mode = mode;
+        if !self.transport.is_playing() {
+            self.rewind();
+            return;
+        }
+        match mode {
+            PlayMode::Song => {
+                self.queued = None;
+                self.song_restart = self.bank.chain_len > 0;
+            }
+            PlayMode::Pattern => {
+                self.song_restart = false;
+                self.queued = (self.bank.current != self.playing).then_some(self.bank.current);
+            }
+        }
+    }
+
+    /// Current play mode.
+    #[must_use]
+    pub fn play_mode(&self) -> PlayMode {
+        self.bank.mode
+    }
+
+    /// Sets the length of pattern `index` in steps (16/32/64; anything else rounds up to the
+    /// next allowed length). For the playing pattern it applies at its next bar boundary.
+    pub fn set_pattern_length(&mut self, index: u8, steps: u8) {
+        self.bank.pattern_mut(index).set_length_steps(steps);
+    }
+
+    /// Copies pattern `from` over pattern `to`. Kit volume/tune follow if `to` is playing.
+    pub fn copy_pattern(&mut self, from: u8, to: u8) {
+        self.bank.copy_pattern(from, to);
+        if pattern_index(to) == pattern_index(self.playing) {
+            self.apply_kit_settings(self.playing);
+        }
+    }
+
+    /// Clears every step of pattern `index` (length, volume and tune are kept).
+    pub fn clear_pattern(&mut self, index: u8) {
+        self.bank.clear_pattern(index);
+    }
+
+    /// Sets chain entry `index` (`0..MAX_CHAIN`), growing the chain to include it. Takes
+    /// effect when the song next reaches that entry.
+    pub fn set_chain_entry(&mut self, index: u8, pattern: u8, repeats: u8) {
+        self.bank
+            .set_entry(index, ChainEntry::new(pattern, repeats));
+        if !self.transport.is_playing() {
+            self.rewind();
+        }
+    }
+
+    /// Sets the number of valid chain entries (`0..=MAX_CHAIN`; entries beyond the current
+    /// length are reset to `A x1`).
+    pub fn set_chain_len(&mut self, len: u8) {
+        let len = usize::from(len).min(MAX_CHAIN);
+        let old = usize::from(self.bank.chain_len).min(MAX_CHAIN);
+        for e in &mut self.bank.chain[old.min(len)..len] {
+            *e = ChainEntry::default();
+        }
+        self.bank.chain_len = len as u8;
+        if !self.transport.is_playing() {
+            self.rewind();
+        }
+    }
+
+    // --- edit pattern ---------------------------------------------------------------------
+
+    /// The edit pattern (what the step/row/volume/tune setters change).
+    #[must_use]
+    pub fn pattern(&self) -> &Pattern {
+        self.bank.pattern(self.edit)
+    }
+
+    /// Replaces the edit pattern (call before the stream starts or accept a one-off
+    /// fixed-size copy on the audio thread). Kit volume/tune follow if it is playing.
+    pub fn set_pattern(&mut self, pattern: &Pattern) {
+        let slot = self.bank.pattern_mut(self.edit);
+        *slot = pattern.clone();
+        slot.normalise();
+        if self.edit_is_playing() {
+            self.apply_kit_settings(self.playing);
+        }
+    }
+
+    /// Sets one drum step of the edit pattern.
     pub fn set_drum_step(&mut self, row: DrumRow, step: u8, on: bool, accent: bool) {
-        self.pattern.set_drum_step(row, step, on, accent);
+        self.edit_mut().set_drum_step(row, step, on, accent);
     }
 
-    /// Sets one synth-lane step.
+    /// Sets one synth-lane step of the edit pattern.
     pub fn set_synth_step(&mut self, step: u8, note: Option<u8>, accent: bool) {
-        self.pattern.set_synth_step(step, note, accent);
+        self.edit_mut().set_synth_step(step, note, accent);
     }
 
-    /// Per-row drum volume in dB (stored in the pattern and applied to the kit).
+    /// Per-row drum volume in dB of the edit pattern; applied to the kit when that pattern
+    /// is the playing one.
     pub fn set_drum_volume(&mut self, row: DrumRow, db: f32) {
-        self.pattern.set_drum_volume(row, db);
-        self.drums
-            .set_volume(row, self.pattern.drum_volume[row.index()]);
+        self.edit_mut().set_drum_volume(row, db);
+        if self.edit_is_playing() {
+            let db = self.pattern().drum_volume[row.index()];
+            self.drums.set_volume(row, db);
+        }
     }
 
-    /// Per-row drum tune in semitones (stored in the pattern and applied to the kit).
+    /// Per-row drum tune in semitones of the edit pattern; applied to the kit when that
+    /// pattern is the playing one.
     pub fn set_drum_tune(&mut self, row: DrumRow, semitones: f32) {
-        self.pattern.set_drum_tune(row, semitones);
-        self.drums
-            .set_tune(row, self.pattern.drum_tune[row.index()]);
+        self.edit_mut().set_drum_tune(row, semitones);
+        if self.edit_is_playing() {
+            let st = self.pattern().drum_tune[row.index()];
+            self.drums.set_tune(row, st);
+        }
     }
 
     /// Current (clamped) value of parameter `id`.
@@ -614,6 +919,105 @@ impl Engine {
             || self.transport.is_playing()
     }
 
+    // --- internals ------------------------------------------------------------------------
+
+    fn edit_mut(&mut self) -> &mut Pattern {
+        self.bank.pattern_mut(self.edit)
+    }
+
+    fn edit_is_playing(&self) -> bool {
+        pattern_index(self.edit) == pattern_index(self.playing)
+    }
+
+    /// `true` when the chain drives playback: song mode with at least one entry.
+    fn song_active(&self) -> bool {
+        self.bank.mode == PlayMode::Song && self.bank.chain_len > 0
+    }
+
+    /// Pattern of chain entry `index` (wrapped into the valid chain).
+    fn chain_pattern(&self, index: u8) -> u8 {
+        let len = usize::from(self.bank.chain_len).clamp(1, MAX_CHAIN);
+        self.bank.chain[usize::from(index) % len].pattern
+    }
+
+    /// Number of 16-step bars of pattern `index`.
+    fn bars_of(&self, index: u8) -> u8 {
+        self.bank.pattern(index).bars().min(u8::MAX as usize) as u8
+    }
+
+    /// Rewinds to the start position: bar 0, no queue, song entry 0, playing the pattern
+    /// that `play` would start with. Does not touch `pos`/`next_step` or the transport.
+    fn rewind(&mut self) {
+        self.bar = 0;
+        self.queued = None;
+        self.song_restart = false;
+        self.song_index = 0;
+        self.song_repeat = 0;
+        let start = if self.song_active() {
+            self.chain_pattern(0)
+        } else {
+            self.bank.current
+        };
+        self.switch_to(start);
+    }
+
+    /// Makes `index` the playing pattern at bar 0 and pushes its volume/tune into the kit.
+    fn switch_to(&mut self, index: u8) {
+        self.playing = pattern_index(index) as u8;
+        self.bar = 0;
+        self.apply_kit_settings(self.playing);
+    }
+
+    /// Pushes pattern `index`'s per-row volume and tune into the drum kit (smoothed there).
+    fn apply_kit_settings(&mut self, index: u8) {
+        let p = self.bank.pattern(index);
+        let (volume, tune) = (p.drum_volume, p.drum_tune);
+        for row in DrumRow::ALL {
+            self.drums.set_volume(row, volume[row.index()]);
+            self.drums.set_tune(row, tune[row.index()]);
+        }
+    }
+
+    /// Runs when `pos` wraps: advances the bar and applies pattern switches, pattern
+    /// restarts and chain progression (see the module docs).
+    fn bar_boundary(&mut self) {
+        self.bar = self.bar.saturating_add(1);
+        if self.song_active() {
+            self.queued = None;
+            if self.song_restart {
+                self.song_restart = false;
+                self.song_index = 0;
+                self.song_repeat = 0;
+                let start = self.chain_pattern(0);
+                self.switch_to(start);
+            } else if self.bar >= self.bars_of(self.playing) {
+                let len = usize::from(self.bank.chain_len).clamp(1, MAX_CHAIN);
+                let entry = self.bank.chain[usize::from(self.song_index) % len];
+                self.song_repeat = self.song_repeat.saturating_add(1);
+                if self.song_repeat >= entry.repeats.max(1) {
+                    self.song_repeat = 0;
+                    self.song_index = ((usize::from(self.song_index) + 1) % len) as u8;
+                }
+                let next = self.chain_pattern(self.song_index);
+                self.switch_to(next);
+            }
+        } else {
+            self.song_restart = false;
+            if let Some(next) = self.queued.take() {
+                self.bank.current = next;
+                self.switch_to(next);
+            } else if self.bar >= self.bars_of(self.playing) {
+                let current = self.bank.current;
+                self.switch_to(current);
+            }
+        }
+    }
+
+    /// Publishes the current position to the UI.
+    fn publish(&self) {
+        self.shared.publish(self.position());
+    }
+
     /// Current step and the fraction of it elapsed, derived from `pos` on the unswung grid.
     fn step_and_frac(&self) -> (u8, f32) {
         let steps = self.pos as f64 / self.samples_per_step;
@@ -631,14 +1035,22 @@ impl Engine {
         }
     }
 
-    /// Fires every drum and synth-lane event of step `step`.
+    /// Fires every drum and synth-lane event of step `step` of the current bar of the
+    /// playing pattern.
     fn fire_step(&mut self, step: usize) {
+        let index = (usize::from(self.bar) * STEPS + step).min(MAX_STEPS - 1);
+        let pattern = self.bank.pattern(self.playing);
+        let mut drums = [DrumStep::default(); DrumRow::COUNT];
         for row in DrumRow::ALL {
-            if let Some(velocity) = self.pattern.drums[row.index()][step].velocity() {
+            drums[row.index()] = pattern.drums[row.index()][index];
+        }
+        let synth = pattern.synth[index];
+        for row in DrumRow::ALL {
+            if let Some(velocity) = drums[row.index()].velocity() {
                 self.drums.trigger(row, velocity);
             }
         }
-        if let Some((note, velocity)) = self.pattern.synth[step].trigger() {
+        if let Some((note, velocity)) = synth.trigger() {
             // The lane is monophonic: a new note always releases the previous one first.
             self.release_seq_note();
             self.voices.note_on(note, velocity);
@@ -674,6 +1086,7 @@ impl Engine {
             if self.pos >= self.bar_len {
                 self.pos = 0;
                 self.next_step = 0;
+                self.bar_boundary();
             }
         }
     }
@@ -690,33 +1103,41 @@ impl Engine {
 
     /// Applies one message (shared by both queues).
     fn apply_message(&mut self, msg: Message) {
-        {
-            match msg {
-                Message::TestTone(on) => self.set_test_tone(on),
-                Message::MasterGain(g) => self.set_master_gain(g),
-                Message::NoteOn { note, velocity } => self.note_on(note, velocity),
-                Message::NoteOff { note } => self.note_off(note),
-                Message::AllNotesOff => self.all_notes_off(),
-                Message::SetParam(id, value) => self.set_param(id, value),
-                Message::SetBpm(bpm) => self.set_bpm(bpm),
-                Message::Play => self.play(),
-                Message::Stop => self.stop(),
-                Message::SetSwing(s) => self.set_swing(s),
-                Message::SetDrumStep {
-                    row,
-                    step,
-                    on,
-                    accent,
-                } => self.pattern.set_drum_step(row, step, on, accent),
-                Message::SetSynthStep { step, note, accent } => {
-                    self.pattern.set_synth_step(step, note, accent)
-                }
-                Message::ClearRow(row) => self.pattern.clear_row(row),
-                Message::ClearSynth => self.pattern.clear_synth(),
-                Message::ClearAll => self.pattern.clear_all(),
-                Message::SetDrumVolume { row, db } => self.set_drum_volume(row, db),
-                Message::SetDrumTune { row, semitones } => self.set_drum_tune(row, semitones),
-            }
+        match msg {
+            Message::TestTone(on) => self.set_test_tone(on),
+            Message::MasterGain(g) => self.set_master_gain(g),
+            Message::NoteOn { note, velocity } => self.note_on(note, velocity),
+            Message::NoteOff { note } => self.note_off(note),
+            Message::AllNotesOff => self.all_notes_off(),
+            Message::SetParam(id, value) => self.set_param(id, value),
+            Message::SetBpm(bpm) => self.set_bpm(bpm),
+            Message::Play => self.play(),
+            Message::Stop => self.stop(),
+            Message::SetSwing(s) => self.set_swing(s),
+            Message::SetDrumStep {
+                row,
+                step,
+                on,
+                accent,
+            } => self.set_drum_step(row, step, on, accent),
+            Message::SetSynthStep { step, note, accent } => self.set_synth_step(step, note, accent),
+            Message::ClearRow(row) => self.edit_mut().clear_row(row),
+            Message::ClearSynth => self.edit_mut().clear_synth(),
+            Message::ClearAll => self.edit_mut().clear_all(),
+            Message::SetDrumVolume { row, db } => self.set_drum_volume(row, db),
+            Message::SetDrumTune { row, semitones } => self.set_drum_tune(row, semitones),
+            Message::SetEditPattern(index) => self.set_edit_pattern(index),
+            Message::SetPatternLength { pattern, steps } => self.set_pattern_length(pattern, steps),
+            Message::CopyPattern { from, to } => self.copy_pattern(from, to),
+            Message::ClearPattern(index) => self.clear_pattern(index),
+            Message::SelectPattern(index) => self.select_pattern(index),
+            Message::SetPlayMode(mode) => self.set_play_mode(mode),
+            Message::SetChainEntry {
+                index,
+                pattern,
+                repeats,
+            } => self.set_chain_entry(index, pattern, repeats),
+            Message::SetChainLen(len) => self.set_chain_len(len),
         }
     }
 
@@ -748,7 +1169,37 @@ impl Engine {
             }
         }
         tail.fill(0.0);
-        let (step, frac) = self.step_and_frac();
-        self.shared.publish(step, frac, self.transport.is_playing());
+        self.publish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn song_word_packs_and_unpacks() {
+        for (p, b, s, q) in [
+            (0, 0, 0, None),
+            (7, 3, 63, Some(5)),
+            (1, 1, 200, Some(0)),
+            (255, 255, 255, Some(254)),
+        ] {
+            assert_eq!(unpack_song(pack_song(p, b, s, q)), (p, b, s, q));
+        }
+        let shared = Shared::default();
+        let pos = Position {
+            step: 9,
+            frac: 0.25,
+            playing: true,
+            pattern: 2,
+            bar: 1,
+            song_index: 3,
+            queued: Some(4),
+        };
+        shared.publish(pos);
+        assert_eq!(shared.read(), pos);
+        assert_eq!(pos.pattern_step(), 25);
+        assert_eq!(Position::default(), Position::stopped(0));
     }
 }

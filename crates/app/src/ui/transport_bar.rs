@@ -25,7 +25,8 @@ use neu::button::ICON_STROKE;
 use neu::shadow::Depth;
 use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
+use crate::app::{AppState, EditKey, MAX_BPM, MAX_SWING, MIN_BPM, MIN_SWING, truncate_name};
+use crate::shortcuts::Shortcut;
 use crate::ui::controls::{Knob, fmt_percent};
 
 /// Minimum height of the transport bar's content row (the dial normally sets it).
@@ -91,16 +92,14 @@ fn label(ui: &mut Ui, theme: &Theme, text: &str) -> egui::Response {
     ui.label(RichText::new(text).size(11.0).color(theme.text_secondary))
 }
 
+/// The wordmark (`neu::brand`: 15 pt caps with the mock's +0.16em tracking) over the status
+/// sub-label.
 fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = theme.space_1;
-        ui.label(
-            RichText::new("BEATSLOPPER")
-                .size(15.0)
-                .color(theme.text_primary),
-        );
+        neu::brand(ui, theme, "BeatSlopper");
         match audio_error {
-            None => label(ui, theme, "M3 · SOFT CONSOLE"),
+            None => label(ui, theme, "M4 · SOFT CONSOLE"),
             Some(err) if err.contains("stream error") => label(ui, theme, "AUDIO STREAM ERROR"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };
@@ -155,13 +154,19 @@ pub fn transport_button(ui: &mut Ui, theme: &Theme, icon: Icon, on: bool) -> Res
 fn transport_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-        if transport_button(ui, theme, Icon::Play, state.playing).clicked() {
+        if transport_button(ui, theme, Icon::Play, state.playing)
+            .on_hover_text(Shortcut::PlayStop.label())
+            .clicked()
+        {
             state.toggle_play();
         }
         if transport_button(ui, theme, Icon::Stop, false).clicked() {
             state.stop();
         }
-        if transport_button(ui, theme, Icon::Record, state.armed).clicked() {
+        if transport_button(ui, theme, Icon::Record, state.armed)
+            .on_hover_text(Shortcut::ToggleArm.label())
+            .clicked()
+        {
             state.toggle_arm();
         }
     });
@@ -192,6 +197,9 @@ fn swing_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let mut swing = before;
     let response = neu::knob(ui, theme, &mut swing, &spec);
     if response.changed() || swing != before {
+        if response.drag_started() {
+            state.begin_continuous_edit(EditKey::Swing, true);
+        }
         state.set_swing(swing);
     }
 }

@@ -326,3 +326,95 @@ Glide is the time to cover 95 % of a pitch jump. The test tone is summed in afte
 - `TextKind::Brand` (15 px, +0.16em tracking, weight 300) and a `brand(ui, theme, text)` helper.
 - Every knob/dial/vslider shows its formatted value and label in a tooltip on hover (egui
   `on_hover_text` styled by `Theme::apply`: surface fill, raised shadow, no stroke).
+
+## M5 additions (patterns + song mode)
+
+### engine: data
+- `MAX_STEPS = 64`, `PATTERN_COUNT = 8`, `MAX_CHAIN = 64`, `BAR_STEPS = 16`.
+- `Pattern` gains `length: u8` (16, 32 or 64; `PatternLength::{Bar1, Bar2, Bar4}` helper) and
+  its step storage grows to `MAX_STEPS` per row; rows beyond `length` are kept but not played.
+  Serialisation stays a plain array per row (JSON lists); version-2 files with 16 entries load
+  with `length = 16` (pad with empty steps), files with 32/64 entries load as is. No allocation
+  on the audio thread: step storage is fixed-size (`[DrumStep; MAX_STEPS]`, serde via a small
+  `serialize_with`/`deserialize_with` pair, no new crates).
+- `Bank { patterns: [Pattern; PATTERN_COUNT], chain: [ChainEntry; MAX_CHAIN], chain_len: u8,
+  mode: PlayMode, current: u8 }`, `ChainEntry { pattern: u8, repeats: u8 (1..=8) }`,
+  `PlayMode { Pattern, Song }`. `Bank::default()` = demo in A, empty B..H, chain [A x1], mode
+  Pattern, current 0. `Bank::demo()` additionally fills B with a variation and chain A A B A.
+- `Project` version 3: `bank: Bank` replaces `pattern`; `from_json` migrates v2 (`pattern` ->
+  patterns[0], chain [A x1]) and v1. `Project::default()` uses `Bank::default()`.
+
+### engine: messages and scheduler
+- Edits target the *edit* pattern: `SetEditPattern(u8)`; the existing step/row/volume/tune
+  messages apply to it. New: `SetPatternLength { pattern: u8, steps: u8 }`, `CopyPattern {
+  from: u8, to: u8 }`, `ClearPattern(u8)`, `SelectPattern(u8)` (pattern mode: the playing
+  pattern switches at the next 16-step bar boundary while playing, immediately when stopped;
+  also sets the edit pattern), `SetPlayMode(PlayMode)`, `SetChainEntry { index: u8, pattern:
+  u8, repeats: u8 }`, `SetChainLen(u8)`. All `Copy`.
+- Scheduler: the bar is always 16 steps; a pattern of length L plays L/16 bars then restarts
+  (pattern mode) or advances the chain (song mode: after `repeats` plays of the entry, next
+  entry, wrapping at `chain_len`; an empty chain plays the current pattern). A queued
+  `SelectPattern` takes effect at the next bar boundary. Changing a playing pattern's length
+  takes effect at its next bar boundary too. Play always starts at step 0 of the current
+  pattern (song mode: chain index 0).
+- `Position` gains `pattern: u8` (playing), `bar: u8` (0-based bar within the pattern),
+  `song_index: u8`, `queued: Option<u8>` (pattern mode), published through more atomics.
+- `Engine::set_bank(&Bank)`, `bank() -> &Bank`, `edit_pattern() -> u8`, plus direct setters
+  mirroring the messages. `set_pattern(&Pattern)` keeps working on the edit pattern.
+
+### engine: export
+- `render_loop(project, repeats, sr)` renders the current pattern `repeats` times in pattern
+  mode; `render_song(project, sr)` renders the whole chain once (plus tail); `export_frames`
+  gains a `song: bool`; `render_loop_wav(.., song: bool, ..)` or a second entry point
+  `render_song_wav`. Length = sum over chain of `repeats * length_steps * spp` (+ tail).
+
+## M5 as built (engine)
+`Bank { patterns: [Pattern; 8], chain: [ChainEntry; 64], chain_len, mode: PlayMode, current }`,
+`Pattern.length` 16/32/64 with 64-slot rows, `Project` v3 with `bank` (`pattern()` compat
+accessor), messages `SetEditPattern`, `SetPatternLength`, `CopyPattern`, `ClearPattern`,
+`SelectPattern` (queued at the bar boundary while playing), `SetPlayMode`, `SetChainEntry`,
+`SetChainLen`; `Position { pattern, bar, song_index, queued }`; `render_song`,
+`render_song_wav`, `export_frames(.., song, ..)`. Step messages target the edit pattern.
+`send_pattern` from the UI must send only the pattern's `length` steps.
+
+## M6 additions (mixer)
+
+### engine: channels (`mixer.rs`)
+- `Channel { Kick, Snare, Clap, ClosedHat, OpenHat, Synth }` (`ALL`, `COUNT = 6`, `index`,
+  `label`), `ChannelParam { Level (dB, -60..=6, default 0), Pan (-1..=1, 0), Mute (0/1),
+  Solo (0/1), DelaySend (0..=1, default: Synth 1.0 else 0), ReverbSend (0..=1, default:
+  Synth 1.0, Snare 0.3, Clap 0.3, else 0) }` with `range()`/`default_value()`/`key()`.
+- `MixerState { strips: [Strip; 6] }`, `Strip { level_db, pan, mute, solo, delay_send,
+  reverb_send }` (serde, `Default`), `MixerState::effective_gain(ch) -> f32` (mute/solo
+  logic: when any solo is on, non-solo channels are silent), `pan_gains(pan) -> (l, r)`
+  equal-power (-3 dB at centre).
+- `Message::SetMixer { channel: Channel, param: ChannelParam, value: f32 }` (Copy);
+  `Engine::set_mixer(channel, param, value)`, `mixer() -> &MixerState`, `set_mixer_state(&)`.
+- Signal flow per sample: `DrumKit::tick_rows(&mut [f32; 5])` (per-row outputs; keep `tick()`
+  as the sum for compatibility) and the synth mono; each channel: insert (synth only: drive)
+  -> smoothed gain (level * mute/solo) -> pan -> stereo dry bus, plus post-fader sends into a
+  stereo delay bus and a stereo reverb bus; `FxChain` gains `process_bus(dry: (l, r), delay_in:
+  (l, r), reverb_in: (l, r)) -> (l, r)` where `DelayMix`/`ReverbMix` act as return levels
+  (0 = no return) and `DriveAmount/DriveMix` stay the synth insert; `process(l, r)` keeps
+  working as "everything through the synth channel" for existing tests. Then master gain,
+  limiter, test tone.
+- Meters: `Meters { channel: [f32; 6], master: [f32; 2] }` published per block as the block
+  peak (linear) through `AtomicU32` bit patterns in `Shared`; `EngineHandle::meters()` reads
+  them; the UI applies its own decay. Allocation-free.
+- `Project` v4: `mixer: MixerState`; v3 files load with `MixerState::default()`.
+- Export honours the mixer.
+
+### neu
+- `fader(ui, &Theme, &mut f32, &SliderSpec) -> Response`: a taller vertical slider (track
+  6x140) with a meter strip beside it (`meter(ui, &Theme, level: f32, height)`: inset-s track,
+  accent fill proportional to level, accent_hover above -6 dBFS). `pan_knob` = `knob` with
+  `bipolar` (already available). Mute/solo = `toggle_button` "M" / "S" (square 28 variant:
+  `toggle_button_sized`).
+
+### app
+- `ui/mixer.rs`: a MIXER panel toggled from the transport (pill "MIXER" / "FX", swapping the
+  right-hand panel beside the synth): six strips (label, pan knob Sm, DELAY/REVERB send knobs
+  Sm, fader + meter, M/S toggles) and a MASTER strip (gain dial Sm, stereo meters, LIMIT).
+  All bound to `AppState.mixer: MixerState` with `set_mixer` sending `SetMixer`; undo-able;
+  saved in the project; `resend_all` includes the mixer. Meters polled each frame from
+  `engine.meters()` with a 300 ms decay.

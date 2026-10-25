@@ -11,7 +11,10 @@
 //! - [`midi`]: MIDI input (`midir` port on its own thread, pure message parser).
 //! - [`presets`]: the built-in synth presets shown in the SYNTH panel.
 //! - [`project`]: save / load / WAV export glue over `engine::Project` (worker thread).
+//! - [`shortcuts`]: keyboard shortcuts as a pure mapping from egui input.
+//! - [`undo`]: the undo / redo snapshot stack.
 //! - [`ui`]: the panels, as functions over `&mut AppState` and `&neu::Theme`.
+//! - [`window`]: window sizing at display scaling and the title with the unsaved marker.
 
 pub mod app;
 pub mod audio_io;
@@ -19,7 +22,10 @@ pub mod input;
 pub mod midi;
 pub mod presets;
 pub mod project;
+pub mod shortcuts;
 pub mod ui;
+pub mod undo;
+pub mod window;
 
 pub use app::{AppState, BeatSlopperApp, default_params, resolve_theme_mode};
 pub use audio_io::AudioOutput;

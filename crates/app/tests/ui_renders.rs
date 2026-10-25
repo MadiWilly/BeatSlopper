@@ -1,13 +1,14 @@
 //! egui_kittest: the M0-M4 screens render in both themes without a window or an audio device,
 //! the computer keyboard plays the on-screen piano, the SYNTH / FX panels leave every
-//! parameter untouched until a control is used, clicking a sequencer cell toggles it, and the
-//! MIDI lamp / selector render without opening a port.
+//! parameter untouched until a control is used, clicking a sequencer cell toggles it, the
+//! MIDI lamp / selector render without opening a port, and the M4 polish works end to end:
+//! Space / R / Ctrl+Z shortcuts, the "Unsaved changes" marker, the DISCARD / KEEP confirm.
 
 use app::ui;
 use app::{AppState, BeatSlopperApp, default_params};
 use egui::{Event, Key, Modifiers};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use engine::{DrumRow, Pattern, SynthStep};
 use neu::{Theme, ThemeMode};
 
@@ -532,4 +533,225 @@ fn whole_sequencer_is_visible_at_the_default_window_size() {
         sequencer_bottom <= keys_panel_top,
         "sequencer ends at {sequencer_bottom} but the KEYS panel starts at {keys_panel_top}"
     );
+}
+
+// -------------------------------------------------------------------------------------------
+// M4: polish (shortcuts, undo, unsaved marker, discard confirm).
+
+fn temp_project_path(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("beatslopper-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
+#[test]
+fn space_toggles_play_and_r_arms_without_playing_notes() {
+    let mut harness = app_harness();
+    harness.key_press(Key::Space);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().playing, "Space starts the loop");
+    harness.key_press(Key::R);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().armed, "R arms recording");
+    assert!(harness.state().state().is_recording());
+    harness.key_press(Key::Space);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(!harness.state().state().playing, "Space stops it");
+    assert!(harness.state().state().armed, "stopping keeps the arm");
+    harness.key_press(Key::R);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(!harness.state().state().armed);
+    let state = harness.state().state();
+    assert_eq!(state.note_on_count, 0, "neither key is a piano key");
+    assert!(state.held_notes.iter().all(|h| !h));
+    assert!(!state.dirty, "transport state is not a project edit");
+}
+
+#[test]
+fn ctrl_z_after_a_step_click_restores_it_and_ctrl_y_redoes() {
+    let mut harness = app_harness();
+    let kick = DrumRow::Kick.index();
+    harness.get_by_label("Kick step 2").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().pattern.drums[kick][1].on);
+    assert!(harness.state().state().dirty);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(
+        !harness.state().state().pattern.drums[kick][1].on,
+        "Ctrl+Z undid"
+    );
+    assert_eq!(harness.state().state().pattern, Pattern::demo());
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Y);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(
+        harness.state().state().pattern.drums[kick][1].on,
+        "Ctrl+Y redid"
+    );
+
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(
+        harness.state().state().pattern.drums[kick][1].on,
+        "Ctrl+Shift+Z: nothing to redo"
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(!harness.state().state().pattern.drums[kick][1].on);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(
+        harness.state().state().pattern.drums[kick][1].on,
+        "Ctrl+Shift+Z redoes"
+    );
+    // Ctrl+Z is not a piano key: `Z` alone would shift the octave.
+    assert_eq!(harness.state().state().input.octave, 4);
+    assert_eq!(harness.state().state().note_on_count, 0);
+}
+
+#[test]
+fn undo_and_redo_pills_work_and_grey_out() {
+    let mut harness = app_harness();
+    // Nothing to undo yet: the pills are disabled.
+    assert!(harness.get_by_label("Undo").accesskit_node().is_disabled());
+    assert!(harness.get_by_label("Redo").accesskit_node().is_disabled());
+
+    harness.get_by_label("Snare step 1").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+    assert!(!harness.get_by_label("Undo").accesskit_node().is_disabled());
+    harness.get_by_label("Undo").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(!harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+    assert!(!harness.get_by_label("Redo").accesskit_node().is_disabled());
+    harness.get_by_label("Redo").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+}
+
+#[test]
+fn unsaved_marker_appears_after_an_edit_and_clears_on_save() {
+    let mut harness = app_harness();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label(ui::project_bar::UNSAVED_LABEL)
+            .is_none()
+    );
+    assert_eq!(harness.state().title(), Some("BeatSlopper"));
+
+    harness.get_by_label("Clap step 1").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(harness.state().state().dirty);
+    harness.get_by_label(ui::project_bar::UNSAVED_LABEL);
+    assert_eq!(harness.state().title(), Some("BeatSlopper *"));
+
+    // Save to a known temp file: Ctrl+S needs no dialog once there is a path.
+    let path = temp_project_path("marker.beatslopper.json");
+    harness.state_mut().state_mut().project_path = Some(path.clone());
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert!(!harness.state().state().dirty);
+    assert!(
+        harness
+            .query_by_label(ui::project_bar::UNSAVED_LABEL)
+            .is_none()
+    );
+    assert_eq!(
+        harness.state().title(),
+        Some("BeatSlopper – marker.beatslopper.json")
+    );
+    assert!(path.is_file());
+    harness.get_by_label("marker.beatslopper.json");
+
+    // Another edit dirties again (and the title gets its star back).
+    harness.get_by_label("Clap step 1").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    harness.get_by_label(ui::project_bar::UNSAVED_LABEL);
+    assert_eq!(
+        harness.state().title(),
+        Some("BeatSlopper – marker.beatslopper.json *")
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
+    let mut harness = app_harness();
+    harness.get_by_label("Kick step 2").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    let edited = harness.state().state().pattern.clone();
+
+    harness.get_by_label("New").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(
+        harness.state().state().pending_action,
+        Some(app::app::PendingAction::New)
+    );
+    harness.get_by_label(ui::project_bar::DISCARD_QUESTION);
+    assert_eq!(
+        harness.state().state().pattern,
+        edited,
+        "nothing discarded yet"
+    );
+
+    harness.get_by_label("Keep").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(harness.state().state().pending_action, None);
+    assert!(
+        harness
+            .query_by_label(ui::project_bar::DISCARD_QUESTION)
+            .is_none()
+    );
+    assert_eq!(harness.state().state().pattern, edited);
+    assert!(harness.state().state().dirty);
+
+    // Ctrl+N asks too; Escape cancels.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(
+        harness.state().state().pending_action,
+        Some(app::app::PendingAction::New)
+    );
+    harness.key_press(Key::Escape);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(harness.state().state().pending_action, None);
+    assert_eq!(harness.state().state().pattern, edited);
+
+    // DISCARD creates the new project; undo brings the edit back.
+    harness.get_by_label("New").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    harness.get_by_label("Discard").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(harness.state().state().pattern, Pattern::empty());
+    assert!(!harness.state().state().dirty);
+    assert!(
+        harness
+            .query_by_label(ui::project_bar::DISCARD_QUESTION)
+            .is_none()
+    );
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(harness.state().state().pattern, edited);
+}
+
+/// Open while dirty asks as well; headless there is no dialog, so DISCARD just clears the
+/// pending action.
+#[test]
+fn open_while_dirty_asks_and_never_opens_a_dialog_headless() {
+    let mut harness = app_harness();
+    harness.get_by_label("Kick step 2").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    harness.get_by_label("Open").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(
+        harness.state().state().pending_action,
+        Some(app::app::PendingAction::Open)
+    );
+    harness.get_by_label("Discard").click();
+    harness.run_steps(2); // the frame that handles the input, then the one that redraws
+    assert_eq!(harness.state().state().pending_action, None);
+    assert!(harness.state().state().dirty, "no file was opened");
 }

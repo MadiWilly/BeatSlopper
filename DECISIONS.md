@@ -64,3 +64,12 @@ when the kit is silent; black-key note names use text-primary for AA contrast in
 velocity control is a `neu` knob instead of a stock egui slider; egui widget outlines are
 zeroed so depth comes only from the kit's shadows. Layout deviations from the token sheet are
 recorded in `design/WINNER.md` "As-built tweaks".
+
+## 2026-10-25: M4 polish findings
+- Window size: eframe restores a persisted size and never clamps it to the work area, so an old
+  smaller size stuck across launches. The app now re-requests the size on the first frame when
+  the restored size is more than 10 % off, clamped to the monitor minus a margin. Displays
+  with fewer than 1140 logical points of height (1080p at 125 %+) get the clamped size and scroll.
+- Undo snapshots include the project path so undoing an Open does not retarget Ctrl+S.
+- The UI->engine MIDI path uses a bounded `sync_channel` for the UI mirror because the
+  unbounded std channel allocates per send inside the MIDI callback.

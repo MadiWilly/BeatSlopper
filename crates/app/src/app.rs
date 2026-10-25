@@ -31,12 +31,24 @@
 //! UI through `midi_rx`; [`AppState::poll_midi`] drains that every tick and applies them with
 //! [`NoteSource::Midi`], which lights keys and feeds note entry / overdub exactly like the
 //! computer keyboard but does *not* send `NoteOn` / `NoteOff` again.
+//!
+//! Polish (M4): every user edit goes through [`AppState::begin_edit`] (discrete edits) or
+//! [`AppState::begin_continuous_edit`] (knob drags, coalesced per drag) before it mutates the
+//! mirrors, which pushes a [`Snapshot`] onto [`AppState::undo`] and sets [`AppState::dirty`].
+//! [`AppState::undo`] / [`AppState::redo`] restore a snapshot and `resend_all`. Shortcuts
+//! ([`crate::shortcuts`]) are read in [`AppState::take_shortcuts`] and dispatched by
+//! [`BeatSlopperApp::tick`]; the ones that open file dialogs are refused unless
+//! [`AppState::dialogs_enabled`] (never under `--smoke-test` or in tests). New / Open while
+//! dirty park a [`PendingAction`] that the project panel turns into a DISCARD / KEEP confirm.
+//! The window title follows [`crate::window::window_title`] and the first frame fixes an
+//! undersized window ([`crate::window`]).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
+use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE};
 use engine::{DrumRow, EngineHandle, Message, MidiHandle, ParamId, Pattern, Position, STEPS};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
@@ -46,6 +58,9 @@ use crate::input::{InputState, NoteEvent};
 use crate::midi::{MidiConnection, MidiInput, UI_QUEUE_CAPACITY};
 use crate::presets;
 use crate::project::ExportJob;
+use crate::shortcuts::{self, Shortcut};
+use crate::undo::{Snapshot, UndoStack};
+use crate::window;
 
 /// eframe storage key for the manual theme override.
 pub const THEME_OVERRIDE_KEY: &str = "theme_override";
@@ -84,6 +99,26 @@ pub const STATUS_DURATION: Duration = Duration::from_secs(5);
 
 /// A recorded note-on at or above this velocity becomes an accented step.
 pub const ACCENT_VELOCITY: f32 = 0.95;
+
+/// Changes to the same continuous control (knob, dial, slider) closer together than this join
+/// one undo step; the first change after a longer pause starts a new one.
+pub const CONTINUOUS_EDIT_GAP: Duration = Duration::from_millis(300);
+
+/// A New / Open that waits for the user to confirm discarding unsaved changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingAction {
+    New,
+    Open,
+}
+
+/// Identifies a continuous control for undo coalescing (see [`AppState::begin_continuous_edit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKey {
+    Param(ParamId),
+    Swing,
+    DrumVolume(DrumRow),
+    DrumTune(DrumRow),
+}
 
 /// Every parameter at its [`ParamId::default_value`], indexed by [`ParamId::index`].
 #[must_use]
@@ -209,6 +244,18 @@ pub struct AppState {
     /// Note-off messages sent so far (diagnostics).
     pub note_off_count: u64,
 
+    // ---- Polish (M4) ----
+    /// Undo / redo history of [`Snapshot`]s (the state *before* each edit).
+    pub undo: UndoStack,
+    /// `true` while the project differs from what was last saved / opened / created.
+    pub dirty: bool,
+    /// A New / Open waiting for the DISCARD / KEEP confirm in the project panel.
+    pub pending_action: Option<PendingAction>,
+    /// Whether file dialogs may open (false under `--smoke-test` and in headless tests).
+    pub dialogs_enabled: bool,
+    /// The last continuous control edited and when (undo coalescing of knob drags).
+    pub last_continuous_edit: Option<(EditKey, Instant)>,
+
     // ---- MIDI ----
     /// `false` disables MIDI entirely (`--smoke-test`): no port listing, no connecting.
     pub midi_enabled: bool,
@@ -249,7 +296,10 @@ impl AppState {
     /// `Engine` too so tests can render offline and check the messages arrived.
     pub fn headless(mode: ThemeMode) -> (Self, engine::Engine) {
         let (handle, engine) = engine::new_engine(48_000.0);
-        (Self::from_parts(mode, handle, None), engine)
+        let mut state = Self::from_parts(mode, handle, None);
+        // No test may ever block on an OS file dialog.
+        state.dialogs_enabled = false;
+        (state, engine)
     }
 
     /// Fresh state (defaults everywhere, the demo pattern) around an engine handle and an
@@ -270,11 +320,7 @@ impl AppState {
             playing: false,
             armed: false,
             selected_step: None,
-            playhead: Position {
-                step: 0,
-                frac: 0.0,
-                playing: false,
-            },
+            playhead: Position::stopped(0),
             project_path: None,
             export_repeats: EXPORT_REPEATS[0],
             status: None,
@@ -285,6 +331,11 @@ impl AppState {
             held_notes: [false; 128],
             note_on_count: 0,
             note_off_count: 0,
+            undo: UndoStack::new(),
+            dirty: false,
+            pending_action: None,
+            dialogs_enabled: true,
+            last_continuous_edit: None,
             midi_enabled: true,
             midi_ports: Vec::new(),
             midi_ports_refreshed: None,
@@ -313,6 +364,7 @@ impl AppState {
                 eprintln!("beatslopper: audio disabled: {err}");
                 let (mut state, _engine) = Self::headless(mode);
                 state.audio_error = Some(err);
+                state.dialogs_enabled = true;
                 state
             }
         }
@@ -356,12 +408,25 @@ impl AppState {
     }
 
     /// Clamps `value` into the parameter's range, stores it and tells the engine. Returns the
-    /// stored value.
+    /// stored value. A real change is an undo step, coalesced per drag
+    /// ([`AppState::begin_continuous_edit`]); [`AppState::edit_param`] adds the drag-start hint.
     pub fn set_param(&mut self, id: ParamId, value: f32) -> f32 {
         let value = id.clamp(value);
+        if value != self.params[id.index()] {
+            self.begin_continuous_edit(EditKey::Param(id), false);
+        }
         self.params[id.index()] = value;
         self.engine.send(Message::SetParam(id, value));
         value
+    }
+
+    /// [`AppState::set_param`] from a control: `drag_started` (egui's `Response::drag_started`,
+    /// or `true` for a click on a discrete control) always starts a new undo step.
+    pub fn edit_param(&mut self, id: ParamId, value: f32, drag_started: bool) -> f32 {
+        if drag_started && id.clamp(value) != self.params[id.index()] {
+            self.begin_continuous_edit(EditKey::Param(id), true);
+        }
+        self.set_param(id, value)
     }
 
     /// Sends every parameter to the engine (startup, or after the UI state was rebuilt).
@@ -381,32 +446,42 @@ impl AppState {
         self.send_pattern();
     }
 
-    /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine.
+    /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine. A change
+    /// is one undo step.
     pub fn set_bpm(&mut self, bpm: f32) {
         let bpm = if bpm.is_finite() {
             bpm.clamp(MIN_BPM, MAX_BPM)
         } else {
             DEFAULT_BPM
         };
+        if bpm != self.bpm {
+            self.begin_edit();
+        }
         self.bpm = bpm;
         self.engine.send(Message::SetBpm(bpm));
     }
 
-    /// Stores the swing (clamped to [`MIN_SWING`]`..=`[`MAX_SWING`]) and tells the engine.
+    /// Stores the swing (clamped to [`MIN_SWING`]`..=`[`MAX_SWING`]) and tells the engine. A
+    /// change is an undo step coalesced per knob drag.
     pub fn set_swing(&mut self, swing: f32) {
         let swing = if swing.is_finite() {
             swing.clamp(MIN_SWING, MAX_SWING)
         } else {
             0.0
         };
+        if swing != self.swing {
+            self.begin_continuous_edit(EditKey::Swing, false);
+        }
         self.swing = swing;
         self.engine.send(Message::SetSwing(swing));
     }
 
     /// Selects preset `index` (clamped to the list): every parameter goes back to its default,
-    /// the preset's values are applied on top and everything is sent to the engine.
+    /// the preset's values are applied on top and everything is sent to the engine. One undo
+    /// step.
     pub fn apply_preset(&mut self, index: usize) {
         let index = index.min(presets::ALL.len().saturating_sub(1));
+        self.begin_edit();
         self.preset_index = index;
         self.params = default_params();
         if let Some(preset) = presets::ALL.get(index) {
@@ -473,6 +548,7 @@ impl AppState {
         let step = step % STEPS;
         // An off step carries no accent.
         let accent = accent && on;
+        self.begin_edit();
         self.pattern.set_drum_step(row, step as u8, on, accent);
         self.engine.send(Message::SetDrumStep {
             row,
@@ -498,6 +574,7 @@ impl AppState {
         let step = step % STEPS;
         let note = note.map(|n| n.min(127));
         let accent = accent && note.is_some();
+        self.begin_edit();
         self.pattern.set_synth_step(step as u8, note, accent);
         self.engine.send(Message::SetSynthStep {
             step: step as u8,
@@ -531,43 +608,74 @@ impl AppState {
         }
     }
 
-    /// Clears one drum row (volume and tune stay).
+    /// Clears one drum row (volume and tune stay). An undo step only if the row had steps.
     pub fn clear_row(&mut self, row: DrumRow) {
+        if self.pattern.drums[row.index()].iter().any(|s| s.on) {
+            self.begin_edit();
+        }
         self.pattern.clear_row(row);
         self.engine.send(Message::ClearRow(row));
     }
 
-    /// Clears the bass lane.
+    /// Clears the bass lane. An undo step only if the lane had notes.
     pub fn clear_synth(&mut self) {
+        if self.pattern.synth.iter().any(|s| s.note.is_some()) {
+            self.begin_edit();
+        }
         self.pattern.clear_synth();
         self.engine.send(Message::ClearSynth);
     }
 
-    /// Clears every row and the bass lane.
+    /// Clears every row and the bass lane. An undo step only if there was something to clear.
     pub fn clear_all(&mut self) {
+        if !self.pattern.is_empty() {
+            self.begin_edit();
+        }
         self.pattern.clear_all();
         self.engine.send(Message::ClearAll);
     }
 
-    /// Per-row drum volume in dB (clamped by the pattern).
+    /// Per-row drum volume in dB (clamped by the pattern); undo coalesces per knob drag.
     pub fn set_drum_volume(&mut self, row: DrumRow, db: f32) {
+        let before = self.pattern.drum_volume[row.index()];
+        let db = if db.is_finite() {
+            db.clamp(*DRUM_VOLUME_RANGE.start(), *DRUM_VOLUME_RANGE.end())
+        } else {
+            before
+        };
+        if db != before {
+            self.begin_continuous_edit(EditKey::DrumVolume(row), false);
+        }
         self.pattern.set_drum_volume(row, db);
-        let db = self.pattern.drum_volume[row.index()];
         self.engine.send(Message::SetDrumVolume { row, db });
     }
 
-    /// Per-row drum tune in semitones (clamped by the pattern).
+    /// Per-row drum tune in semitones (clamped by the pattern); undo coalesces per knob drag.
     pub fn set_drum_tune(&mut self, row: DrumRow, semitones: f32) {
+        let before = self.pattern.drum_tune[row.index()];
+        let semitones = if semitones.is_finite() {
+            semitones.clamp(*DRUM_TUNE_RANGE.start(), *DRUM_TUNE_RANGE.end())
+        } else {
+            before
+        };
+        if semitones != before {
+            self.begin_continuous_edit(EditKey::DrumTune(row), false);
+        }
         self.pattern.set_drum_tune(row, semitones);
-        let semitones = self.pattern.drum_tune[row.index()];
         self.engine.send(Message::SetDrumTune { row, semitones });
     }
 
-    /// Sends the whole pattern as step messages (16 per drum row and 16 for the bass lane)
-    /// plus every row's volume and tune: [`PATTERN_MESSAGES`] messages in total.
+    /// Sends the whole pattern as step messages (16 per drum row and 16 for the bass lane: the
+    /// one-bar grid this UI edits; the engine wraps step indices into the pattern length, so the
+    /// 64-step storage beyond it is never sent) plus every row's volume and tune:
+    /// [`PATTERN_MESSAGES`] messages in total.
     pub fn send_pattern(&mut self) {
         for row in DrumRow::ALL {
-            for (step, cell) in self.pattern.drums[row.index()].iter().enumerate() {
+            for (step, cell) in self.pattern.drums[row.index()]
+                .iter()
+                .take(STEPS)
+                .enumerate()
+            {
                 self.engine.send(Message::SetDrumStep {
                     row,
                     step: step as u8,
@@ -576,7 +684,7 @@ impl AppState {
                 });
             }
         }
-        for (step, cell) in self.pattern.synth.iter().enumerate() {
+        for (step, cell) in self.pattern.synth.iter().take(STEPS).enumerate() {
             self.engine.send(Message::SetSynthStep {
                 step: step as u8,
                 note: cell.note,
@@ -595,11 +703,123 @@ impl AppState {
         }
     }
 
-    /// Replaces the pattern and sends it to the engine.
+    /// Replaces the pattern and sends it to the engine (one undo step).
     pub fn set_pattern(&mut self, pattern: Pattern) {
+        self.begin_edit();
         self.pattern = pattern;
         self.selected_step = None;
         self.send_pattern();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Undo / redo and the unsaved marker.
+
+    /// The current state as an undo [`Snapshot`].
+    #[must_use]
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            pattern: self.pattern.clone(),
+            params: self.params,
+            bpm: self.bpm,
+            swing: self.swing,
+            preset_index: self.preset_index,
+            project_path: self.project_path.clone(),
+        }
+    }
+
+    /// Call before a discrete user edit: records the current state as an undo step (unless it
+    /// equals the step on top, see [`UndoStack::push`]) and marks the project dirty. Ends any
+    /// running continuous edit, so the next knob change starts a new step.
+    pub fn begin_edit(&mut self) {
+        let snapshot = self.snapshot();
+        self.undo.push(snapshot);
+        self.last_continuous_edit = None;
+        self.dirty = true;
+    }
+
+    /// Call before a change to a continuous control (`key`): records an undo step when this is
+    /// the first change of a drag (`drag_started`), the first change to this control at all,
+    /// the first after a change to a *different* control, or the first after a pause of
+    /// [`CONTINUOUS_EDIT_GAP`]; changes closer together join the running step. Always marks
+    /// the project dirty.
+    pub fn begin_continuous_edit(&mut self, key: EditKey, drag_started: bool) {
+        let now = Instant::now();
+        let continuing = !drag_started
+            && self.last_continuous_edit.is_some_and(|(last, at)| {
+                last == key && now.duration_since(at) < CONTINUOUS_EDIT_GAP
+            });
+        if !continuing {
+            let snapshot = self.snapshot();
+            self.undo.push(snapshot);
+        }
+        self.last_continuous_edit = Some((key, now));
+        self.dirty = true;
+    }
+
+    /// Marks the project as having unsaved changes without an undo step.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Marks the project as matching its file (after save / open / new).
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Steps back one edit: restores the previous snapshot and resends everything to the
+    /// engine. Returns `false` when there was nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let current = self.snapshot();
+        match self.undo.undo(current) {
+            Some(snapshot) => {
+                self.restore(snapshot);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Re-applies the last undone edit. Returns `false` when there was nothing to redo.
+    pub fn redo(&mut self) -> bool {
+        let current = self.snapshot();
+        match self.undo.redo(current) {
+            Some(snapshot) => {
+                self.restore(snapshot);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts `snapshot` into the mirrors and the engine (`resend_all`); the project is dirty
+    /// afterwards (the file no longer matches), and a running knob drag is cut.
+    fn restore(&mut self, snapshot: Snapshot) {
+        let Snapshot {
+            pattern,
+            params,
+            bpm,
+            swing,
+            preset_index,
+            project_path,
+        } = snapshot;
+        self.pattern = pattern;
+        self.params = params;
+        self.bpm = bpm;
+        self.swing = swing;
+        self.preset_index = preset_index;
+        self.project_path = project_path;
+        self.last_continuous_edit = None;
+        self.dirty = true;
+        self.resend_all();
+    }
+
+    /// Reads this frame's shortcuts (consuming their keys) unless a text field has the
+    /// keyboard. The caller dispatches them (see [`BeatSlopperApp::tick`]).
+    pub fn take_shortcuts(&mut self, ctx: &egui::Context) -> Vec<Shortcut> {
+        if ctx.text_edit_focused() {
+            return Vec::new();
+        }
+        ctx.input_mut(shortcuts::take_shortcuts)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -701,22 +921,24 @@ impl AppState {
 
     /// Reads this frame's egui events and plays the computer keyboard. While a text edit has
     /// focus the keys type instead of play; anything still held is released so no note sticks.
-    /// With a bass step selected, Delete / Backspace clear it and Escape deselects it.
+    /// With a bass step selected, Delete / Backspace clear it and Escape deselects it; Escape
+    /// also cancels a pending DISCARD / KEEP confirm.
     pub fn handle_keyboard(&mut self, ctx: &egui::Context) {
         let events = if ctx.text_edit_focused() {
             self.input.release_all()
         } else {
+            let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            if escape && self.pending_action.is_some() {
+                self.cancel_pending();
+            }
             if self.selected_step.is_some() {
-                let (clear, deselect) = ctx.input(|i| {
-                    (
-                        i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
-                        i.key_pressed(egui::Key::Escape),
-                    )
+                let clear = ctx.input(|i| {
+                    i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
                 });
                 if clear {
                     self.clear_selected_step();
                 }
-                if deselect {
+                if escape {
                     self.selected_step = None;
                 }
             }
@@ -904,6 +1126,10 @@ pub struct BeatSlopperApp {
     smoke_done: bool,
     /// Whether `theme` has been applied to the context at least once.
     applied: bool,
+    /// The window title last sent (`None` until the first frame).
+    title: Option<String>,
+    /// Whether the first-frame window size check has run (see [`crate::window`]).
+    size_checked: bool,
 }
 
 impl BeatSlopperApp {
@@ -950,6 +1176,12 @@ impl BeatSlopperApp {
         state.midi_port = midi_port;
         state.refresh_midi_ports();
 
+        // Nothing above was a user edit: start with a clean project and no history. The smoke
+        // test never opens a dialog (no key reaches it, but be explicit).
+        state.undo.clear();
+        state.dirty = false;
+        state.dialogs_enabled = !smoke_test;
+
         let mut app = Self {
             theme: Theme::for_mode(mode),
             state,
@@ -957,6 +1189,8 @@ impl BeatSlopperApp {
             frames: 0,
             smoke_done: false,
             applied: false,
+            title: None,
+            size_checked: false,
         };
         app.apply_theme(&cc.egui_ctx);
         app
@@ -975,9 +1209,16 @@ impl BeatSlopperApp {
                 frames: 0,
                 smoke_done: false,
                 applied: false,
+                title: None,
+                size_checked: false,
             },
             engine,
         )
+    }
+
+    /// The window title last sent to the viewport (`None` before the first frame).
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     pub fn state(&self) -> &AppState {
@@ -1014,9 +1255,9 @@ impl BeatSlopperApp {
         }
     }
 
-    /// Per-frame logic (runs before the UI): theme sync, playhead, export polling, the
-    /// computer-keyboard piano and the smoke-test counter. Public so tests can drive a frame
-    /// without an `eframe::Frame`.
+    /// Per-frame logic (runs before the UI): theme sync, playhead, export polling, shortcuts,
+    /// the computer-keyboard piano, the window title / size and the smoke-test counter. Public
+    /// so tests can drive a frame without an `eframe::Frame`.
     pub fn tick(&mut self, ctx: &egui::Context) {
         self.sync_theme(ctx);
         if self.state.audio_error.is_none()
@@ -1027,7 +1268,15 @@ impl BeatSlopperApp {
         self.state.update_playhead();
         self.state.poll_export();
         self.state.expire_status();
+        // Shortcuts first, so their keys are consumed before the piano sees the frame.
+        if !self.smoke_test {
+            for shortcut in self.state.take_shortcuts(ctx) {
+                self.run_shortcut(shortcut);
+            }
+        }
         self.state.handle_keyboard(ctx);
+        self.sync_title(ctx);
+        self.check_window_size(ctx);
         // ---- MIDI ----
         let midi_events = self.state.poll_midi();
 
@@ -1049,6 +1298,65 @@ impl BeatSlopperApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             ctx.request_repaint();
+        }
+    }
+
+    /// Performs one keyboard shortcut. Dialog shortcuts go through the project panel's
+    /// actions, which refuse to open a dialog unless [`AppState::dialogs_enabled`].
+    pub fn run_shortcut(&mut self, shortcut: Shortcut) {
+        let state = &mut self.state;
+        match shortcut {
+            Shortcut::PlayStop => state.toggle_play(),
+            Shortcut::ToggleArm => state.toggle_arm(),
+            Shortcut::Undo => {
+                state.undo();
+            }
+            Shortcut::Redo => {
+                state.redo();
+            }
+            Shortcut::Save => crate::ui::project_bar::save(state),
+            Shortcut::SaveAs => crate::ui::project_bar::save_as(state),
+            Shortcut::Open => crate::ui::project_bar::request_open(state),
+            Shortcut::Export => crate::ui::project_bar::export(state),
+            Shortcut::New => {
+                state.request_new();
+            }
+        }
+    }
+
+    /// Sends the window title when it changed: the project file name and a trailing ` *`
+    /// while there are unsaved changes.
+    fn sync_title(&mut self, ctx: &egui::Context) {
+        let title = window::window_title(self.state.project_path.as_deref(), self.state.dirty);
+        if self.title.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = Some(title);
+        }
+    }
+
+    /// Once, on the first frame that reports a monitor: if the window opened clearly smaller
+    /// than [`window::REQUESTED_INNER_SIZE`] (a stale persisted size, a scaling quirk), ask
+    /// for the size that fits the monitor. See [`crate::window`] for the investigation.
+    fn check_window_size(&mut self, ctx: &egui::Context) {
+        if self.size_checked {
+            return;
+        }
+        let (inner, monitor) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (viewport.inner_rect, viewport.monitor_size)
+        });
+        let (Some(inner), Some(monitor)) = (inner, monitor) else {
+            // Headless (egui_kittest) or not yet known: try again next frame.
+            return;
+        };
+        self.size_checked = true;
+        let target = window::fit_inner_size(
+            window::REQUESTED_INNER_SIZE,
+            window::MIN_INNER_SIZE,
+            Some(monitor),
+        );
+        if window::needs_resize(inner.size(), target) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target));
         }
     }
 
@@ -1367,6 +1675,7 @@ mod tests {
             step,
             frac,
             playing: true,
+            ..Position::stopped(0)
         }
     }
 
@@ -1875,6 +2184,300 @@ mod tests {
         assert_eq!(truncate_name("", 5), "");
         assert_eq!(truncate_name("abc", 1), "…");
         assert_eq!(truncate_name("日本語のポート名です", 5), "日本語の…");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M4 polish: undo / redo, dirty flag, shortcuts dispatch.
+
+    /// Backdates the last continuous edit so the next change counts as "after a pause".
+    fn quiet_period(state: &mut AppState) {
+        if let Some((key, _)) = state.last_continuous_edit {
+            state.last_continuous_edit = Some((key, Instant::now() - CONTINUOUS_EDIT_GAP * 2));
+        }
+    }
+
+    #[test]
+    fn fresh_state_has_no_history_and_is_clean() {
+        let (state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(state.undo.is_empty());
+        assert!(!state.dirty);
+        assert_eq!(state.pending_action, None);
+        assert!(!state.dialogs_enabled, "tests never open dialogs");
+        let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+        assert!(app.state().undo.is_empty());
+        assert!(!app.state().dirty);
+        assert_eq!(app.title(), None, "no frame yet");
+    }
+
+    #[test]
+    fn a_step_toggle_is_undone_and_redone_in_the_mirror_and_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_pattern();
+        engine.process_messages();
+        let demo = Pattern::demo();
+        let kick = DrumRow::Kick.index();
+
+        state.toggle_drum_step(DrumRow::Kick, 1, false);
+        assert!(state.pattern.drums[kick][1].on);
+        assert!(state.dirty);
+        assert_eq!(state.undo.len(), 1);
+        assert!(state.undo.can_undo() && !state.undo.can_redo());
+
+        assert!(state.undo());
+        assert_eq!(state.pattern, demo);
+        assert!(!state.undo.can_undo() && state.undo.can_redo());
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern, "undo resends the pattern");
+
+        assert!(state.redo());
+        assert!(state.pattern.drums[kick][1].on);
+        assert!(state.undo.can_undo() && !state.undo.can_redo());
+        engine.process_messages();
+        assert_eq!(engine.pattern(), &state.pattern);
+
+        // Nothing more to redo / a second undo then exhausts the history.
+        assert!(!state.redo());
+        assert!(state.undo());
+        assert!(!state.undo());
+        assert_eq!(state.pattern, demo);
+    }
+
+    #[test]
+    fn undo_restores_params_bpm_swing_preset_and_resends() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_bpm(150.0);
+        state.set_swing(0.5);
+        quiet_period(&mut state);
+        state.set_param(ParamId::FilterCutoff, 500.0);
+        state.apply_preset(3);
+        assert_eq!(state.undo.len(), 4, "four distinct edits");
+
+        assert!(state.undo()); // preset
+        assert_eq!(state.preset_index, 0);
+        assert_eq!(state.param(ParamId::FilterCutoff), 500.0);
+        assert!(state.undo()); // cutoff
+        assert_eq!(
+            state.param(ParamId::FilterCutoff),
+            ParamId::FilterCutoff.default_value()
+        );
+        assert!(state.undo()); // swing
+        assert_eq!(state.swing, 0.0);
+        assert_eq!(state.bpm, 150.0);
+        assert!(state.undo()); // bpm
+        assert_eq!(state.bpm, DEFAULT_BPM);
+        engine.process_messages();
+        assert_eq!(engine.bpm(), DEFAULT_BPM);
+        assert_eq!(engine.transport().swing(), 0.0);
+        assert_eq!(
+            engine.param(ParamId::FilterCutoff),
+            ParamId::FilterCutoff.default_value()
+        );
+        assert_eq!(
+            state.snapshot(),
+            AppState::headless(ThemeMode::Dark).0.snapshot()
+        );
+
+        for _ in 0..4 {
+            assert!(state.redo());
+        }
+        assert_eq!(state.preset_index, 3);
+        assert_eq!(state.bpm, 150.0);
+        assert_eq!(state.swing, 0.5);
+        engine.process_messages();
+        assert_eq!(engine.bpm(), 150.0);
+        for id in ParamId::ALL {
+            assert_eq!(engine.param(*id), state.param(*id), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn a_knob_drag_coalesces_into_one_undo_step() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        // A drag: many changes within the gap.
+        for v in 1..=20 {
+            state.set_param(ParamId::DriveAmount, v as f32 / 40.0);
+        }
+        assert_eq!(state.undo.len(), 1, "one step for the whole drag");
+        assert_eq!(state.param(ParamId::DriveAmount), 0.5);
+
+        // Still within the gap, a *different* control starts a new step.
+        state.set_param(ParamId::DriveMix, 0.9);
+        assert_eq!(state.undo.len(), 2);
+        // Back on the first knob within the gap: new step again (the control changed).
+        state.set_param(ParamId::DriveAmount, 0.6);
+        assert_eq!(state.undo.len(), 3);
+
+        // After a pause the same knob starts a new step.
+        quiet_period(&mut state);
+        state.set_param(ParamId::DriveAmount, 0.7);
+        assert_eq!(state.undo.len(), 4);
+        // `drag_started` forces a new step even without a pause.
+        state.edit_param(ParamId::DriveAmount, 0.8, true);
+        assert_eq!(state.undo.len(), 5);
+        state.edit_param(ParamId::DriveAmount, 0.85, false);
+        assert_eq!(state.undo.len(), 5, "the drag continues");
+        // Setting the value it already has is not an edit.
+        state.edit_param(ParamId::DriveAmount, 0.85, true);
+        assert_eq!(state.undo.len(), 5);
+
+        // Undoing the last drag returns to the value before it (0.7), not to 0.8.
+        assert!(state.undo());
+        assert_eq!(state.param(ParamId::DriveAmount), 0.7);
+        assert!(state.undo());
+        assert_eq!(state.param(ParamId::DriveAmount), 0.6);
+        assert!(state.undo());
+        assert_eq!(state.param(ParamId::DriveAmount), 0.5);
+        assert!(state.undo());
+        assert_eq!(
+            state.param(ParamId::DriveMix),
+            ParamId::DriveMix.default_value()
+        );
+        assert!(state.undo());
+        assert_eq!(
+            state.param(ParamId::DriveAmount),
+            ParamId::DriveAmount.default_value()
+        );
+        assert!(!state.undo.can_undo());
+    }
+
+    #[test]
+    fn swing_and_row_knobs_coalesce_too_and_discrete_edits_cut_a_drag() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        for v in 1..=10 {
+            state.set_swing(v as f32 / 20.0);
+        }
+        assert_eq!(state.undo.len(), 1);
+        for v in 1..=10 {
+            state.set_drum_volume(DrumRow::Kick, -(v as f32));
+        }
+        assert_eq!(state.undo.len(), 2);
+        for v in 1..=10 {
+            state.set_drum_tune(DrumRow::Kick, v as f32 / 2.0);
+        }
+        assert_eq!(state.undo.len(), 3);
+        state.set_drum_tune(DrumRow::Snare, 1.0);
+        assert_eq!(state.undo.len(), 4, "another row is another control");
+        state.begin_continuous_edit(EditKey::DrumTune(DrumRow::Snare), true);
+        state.set_drum_tune(DrumRow::Snare, 2.0);
+        assert_eq!(state.undo.len(), 5, "a new drag on the same knob");
+
+        // A step toggle in the middle of a drag ends the drag: the next knob change is new.
+        state.set_param(ParamId::Glide, 0.2);
+        state.toggle_drum_step(DrumRow::Clap, 0, false);
+        state.set_param(ParamId::Glide, 0.3);
+        assert_eq!(state.undo.len(), 8);
+
+        // Seven undos: Glide, the clap step, Glide, both snare drags, the tune drag and the whole
+        // volume drag at once; the swing drag remains.
+        for _ in 0..7 {
+            assert!(state.undo());
+        }
+        assert_eq!(state.pattern.drum_volume[DrumRow::Kick.index()], 0.0);
+        assert_eq!(state.swing, 0.5);
+    }
+
+    #[test]
+    fn no_op_edits_add_no_history() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        state.clear_all();
+        assert_eq!(state.undo.len(), 1);
+        state.clear_all();
+        state.clear_row(DrumRow::Kick);
+        state.clear_synth();
+        assert_eq!(
+            state.undo.len(),
+            1,
+            "clearing an empty pattern is not an edit"
+        );
+        state.set_bpm(DEFAULT_BPM);
+        state.set_swing(0.0);
+        state.set_param(ParamId::Glide, ParamId::Glide.default_value());
+        state.set_drum_volume(DrumRow::Kick, 0.0);
+        state.set_drum_tune(DrumRow::Kick, f32::NAN);
+        assert_eq!(state.undo.len(), 1);
+        // begin_edit twice without a change in between records once.
+        let before = state.undo.len();
+        state.begin_edit();
+        state.begin_edit();
+        assert_eq!(state.undo.len(), before + 1);
+    }
+
+    #[test]
+    fn history_is_capped_at_one_hundred_steps() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        for i in 0..130 {
+            state.toggle_drum_step(DrumRow::Kick, i % STEPS, false);
+        }
+        assert_eq!(state.undo.len(), crate::undo::UNDO_CAP);
+        let mut undone = 0;
+        while state.undo() {
+            undone += 1;
+        }
+        assert_eq!(undone, crate::undo::UNDO_CAP);
+        assert_eq!(state.undo.redo_len(), crate::undo::UNDO_CAP);
+    }
+
+    #[test]
+    fn note_entry_and_overdub_are_undoable() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        let demo = Pattern::demo();
+        state.click_synth_step(2, false);
+        assert_eq!(state.undo.len(), 0, "selecting is not an edit");
+        assert!(!state.dirty);
+        state.note_on(67, 0.8);
+        state.note_off(67);
+        assert_eq!(state.pattern.synth[2].note, Some(67));
+        assert_eq!(state.undo.len(), 1);
+        assert!(state.undo());
+        assert_eq!(state.pattern, demo);
+        assert_eq!(state.selected_step, Some(2), "undo keeps the selection");
+
+        state.selected_step = None;
+        state.play();
+        state.toggle_arm();
+        state.playhead = at(5, 0.1);
+        state.note_on(60, 1.0);
+        assert_eq!(state.pattern.synth[5].note, Some(60));
+        assert!(state.undo());
+        assert_eq!(state.pattern, demo);
+        assert!(state.playing, "undo does not touch the transport");
+    }
+
+    #[test]
+    fn shortcuts_drive_transport_and_history_but_never_dialogs_headless() {
+        let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+        app.run_shortcut(Shortcut::PlayStop);
+        assert!(app.state().playing);
+        app.run_shortcut(Shortcut::ToggleArm);
+        assert!(app.state().armed);
+        app.run_shortcut(Shortcut::PlayStop);
+        assert!(!app.state().playing);
+
+        app.state_mut().toggle_drum_step(DrumRow::Kick, 1, false);
+        app.run_shortcut(Shortcut::Undo);
+        assert_eq!(app.state().pattern, Pattern::demo());
+        app.run_shortcut(Shortcut::Redo);
+        assert!(app.state().pattern.drums[DrumRow::Kick.index()][1].on);
+
+        // Dialogs are disabled headless: these return at once and change nothing.
+        let before = app.state().snapshot();
+        app.run_shortcut(Shortcut::Save);
+        app.run_shortcut(Shortcut::SaveAs);
+        app.run_shortcut(Shortcut::Export);
+        assert_eq!(app.state().snapshot(), before);
+        assert!(!app.state().is_exporting());
+        // New / Open while dirty only ask.
+        app.run_shortcut(Shortcut::New);
+        assert_eq!(app.state().pending_action, Some(PendingAction::New));
+        app.run_shortcut(Shortcut::Open);
+        assert_eq!(app.state().pending_action, Some(PendingAction::Open));
+        assert_eq!(app.state().snapshot(), before);
+        app.state_mut().cancel_pending();
+        // Clean: New happens right away.
+        app.state_mut().mark_clean();
+        app.run_shortcut(Shortcut::New);
+        assert_eq!(app.state().pattern, Pattern::empty());
+        assert_eq!(app.state().pending_action, None);
     }
 
     #[test]

@@ -2,8 +2,10 @@
 //! formatters and the small layout helpers the mock's groups need.
 //!
 //! Every control here reads `state.params[id]`, hands a copy to the `neu` widget and, when the
-//! widget moved it, writes it back through [`AppState::set_param`] (which clamps, stores and
-//! sends `Message::SetParam`). Nothing else in the UI touches `params` directly.
+//! widget moved it, writes it back through [`AppState::edit_param`] (which clamps, stores,
+//! sends `Message::SetParam` and records the undo step: one per drag for knobs, dials and
+//! sliders, one per click for the segmented and toggle controls). Nothing else in the UI
+//! touches `params` directly.
 
 use egui::{Response, Ui};
 use engine::ParamId;
@@ -191,10 +193,11 @@ impl Knob {
 }
 
 /// Stores `after` when the widget reported a change or the value moved (double-click resets
-/// write the value without necessarily marking the response changed).
+/// write the value without necessarily marking the response changed). `drag_started` tells
+/// the undo history that a new drag begins even if the previous one ended a moment ago.
 fn commit(state: &mut AppState, id: ParamId, before: f32, after: f32, response: &Response) {
     if response.changed() || after != before {
-        state.set_param(id, after);
+        state.edit_param(id, after, response.drag_started());
     }
 }
 
@@ -212,7 +215,8 @@ pub fn segmented(
     let response = neu::segmented::segmented(ui, theme, &mut selected, items);
     // Compare values rather than trusting `changed()`: the selection only moved if it differs.
     if selected != before {
-        state.set_param(id, selected as f32);
+        // A discrete choice is always its own undo step.
+        state.edit_param(id, selected as f32, true);
     }
     response
 }
@@ -251,7 +255,7 @@ pub fn toggle(
     let on = state.param(id) >= 0.5;
     let response = neu::toggle_button(ui, theme, label, on);
     if response.clicked() {
-        state.set_param(id, if on { 0.0 } else { 1.0 });
+        state.edit_param(id, if on { 0.0 } else { 1.0 }, true);
     }
     response
 }

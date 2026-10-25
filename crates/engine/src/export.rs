@@ -1,5 +1,5 @@
-//! Offline loop export (M3): render a [`Project`] for a whole number of bars into memory or a
-//! 16-bit stereo WAV file.
+//! Offline export (M3/M5): render a [`Project`]'s current pattern a number of times, or its
+//! whole song chain once, into memory or a 16-bit stereo WAV file.
 //!
 //! This is UI-thread code: it builds its own [`Engine`] with [`new_engine`], so it never
 //! touches the live audio stream, and it is free to allocate.
@@ -9,16 +9,21 @@
 //! ```text
 //! samples_per_step = sample_rate * 60 / bpm / 4          (f64, see Transport::samples_per_step)
 //! bar_frames       = round(16 * samples_per_step)
-//! total_frames     = repeats * bar_frames + round(TAIL_SECONDS * sample_rate)
+//! loop:  total     = repeats * bars(current pattern) * bar_frames + tail
+//! song:  total     = sum over chain (repeats * bars(pattern)) * bar_frames + tail
+//! tail             = round(TAIL_SECONDS * sample_rate)
 //! ```
 //!
-//! At 120 BPM / 48 kHz one bar is exactly 96 000 frames, so `render_loop(p, 1, 48_000.0)` is
+//! A pattern of 16/32/64 steps is 1/2/4 bars, so one "repeat" is the pattern's full length.
+//! An empty chain plays the current pattern once. At 120 BPM / 48 kHz one bar is exactly
+//! 96 000 frames, so `render_loop(p, 1, 48_000.0)` of a one-bar pattern is
 //! `(96_000 + 96_000) * 2` interleaved samples.
 
 use std::fmt;
 use std::path::Path;
 
 use crate::engine::{Engine, new_engine};
+use crate::pattern::PlayMode;
 use crate::project::Project;
 use crate::transport::{STEPS_PER_BAR, Transport};
 
@@ -117,10 +122,23 @@ pub fn tail_frames(sample_rate: f32) -> usize {
         .max(0.0) as usize
 }
 
-/// Total frames [`render_loop`] produces: `repeats * bar_frames + tail_frames`.
+/// Bars rendered before the tail: the chain's bars when `song`, else `repeats` times the
+/// current pattern's bars.
 #[must_use]
-pub fn export_frames(project: &Project, repeats: u32, sample_rate: f32) -> usize {
-    repeats as usize * bar_frames(project.bpm, sample_rate) + tail_frames(sample_rate)
+pub fn export_bars(project: &Project, repeats: u32, song: bool) -> usize {
+    if song {
+        project.bank.song_bars()
+    } else {
+        repeats as usize * project.pattern().bars()
+    }
+}
+
+/// Total frames [`render_loop`] (`song == false`) or [`render_song`] (`song == true`)
+/// produce: `export_bars * bar_frames + tail_frames`. `repeats` is ignored for a song.
+#[must_use]
+pub fn export_frames(project: &Project, repeats: u32, song: bool, sample_rate: f32) -> usize {
+    export_bars(project, repeats, song) * bar_frames(project.bpm, sample_rate)
+        + tail_frames(sample_rate)
 }
 
 /// `Ok(())` when `repeats` is in `1..=MAX_REPEATS` and `sample_rate` is finite and positive.
@@ -134,18 +152,34 @@ pub fn validate(repeats: u32, sample_rate: f32) -> Result<(), ExportError> {
     Ok(())
 }
 
-/// Renders `repeats` bars of `project` plus a [`TAIL_SECONDS`] tail into interleaved stereo.
+/// Renders the current pattern `repeats` times (one repeat = its full 1/2/4-bar length) plus
+/// a [`TAIL_SECONDS`] tail into interleaved stereo, in pattern mode.
 ///
 /// A fresh engine is created at `sample_rate`, the project applied, the transport started,
-/// exactly `repeats * bar_frames` frames rendered in [`BLOCK_FRAMES`] blocks (last block
-/// partial), then the transport stopped and the tail rendered. The result has
-/// `export_frames(project, repeats, sample_rate) * 2` samples.
+/// exactly `repeats * bars * bar_frames` frames rendered in [`BLOCK_FRAMES`] blocks (last
+/// block partial), then the transport stopped and the tail rendered. The result has
+/// `export_frames(project, repeats, false, sample_rate) * 2` samples.
 ///
 /// `repeats` is clamped into `1..=MAX_REPEATS` and a non-finite or non-positive sample rate
 /// falls back to 48 kHz; use [`render_loop_wav`] (or [`validate`]) for strict checking.
 #[must_use]
 pub fn render_loop(project: &Project, repeats: u32, sample_rate: f32) -> Vec<f32> {
     let repeats = repeats.clamp(1, MAX_REPEATS);
+    render_project(project, repeats, false, sample_rate)
+}
+
+/// Renders the whole song chain once (every entry, honouring repeats) plus a
+/// [`TAIL_SECONDS`] tail into interleaved stereo, in song mode. An empty chain renders the
+/// current pattern once. The result has `export_frames(project, 1, true, sample_rate) * 2`
+/// samples. A bad sample rate falls back to 48 kHz; see [`render_song_wav`] for strict
+/// checking.
+#[must_use]
+pub fn render_song(project: &Project, sample_rate: f32) -> Vec<f32> {
+    render_project(project, 1, true, sample_rate)
+}
+
+/// Shared body of [`render_loop`] and [`render_song`].
+fn render_project(project: &Project, repeats: u32, song: bool, sample_rate: f32) -> Vec<f32> {
     let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
         sample_rate
     } else {
@@ -153,9 +187,20 @@ pub fn render_loop(project: &Project, repeats: u32, sample_rate: f32) -> Vec<f32
     };
     let (_handle, mut engine) = new_engine(sample_rate);
     project.apply_to(&mut engine);
+    engine.set_play_mode(if song {
+        PlayMode::Song
+    } else {
+        PlayMode::Pattern
+    });
 
-    // Use the engine's own (clamped) tempo so the loop length matches what it plays.
-    let loop_frames = repeats as usize * bar_frames(engine.bpm(), sample_rate);
+    // Use the engine's own (clamped, normalised) tempo and bank so the length matches what
+    // it plays.
+    let bars = if song {
+        engine.bank().song_bars()
+    } else {
+        repeats as usize * engine.bank().current_pattern().bars()
+    };
+    let loop_frames = bars * bar_frames(engine.bpm(), sample_rate);
     let tail = tail_frames(sample_rate);
     let mut out = vec![0.0_f32; (loop_frames + tail) * 2];
     let (loop_buf, tail_buf) = out.split_at_mut(loop_frames * 2);
@@ -187,6 +232,27 @@ pub fn render_loop_wav(
 ) -> Result<ExportStats, ExportError> {
     validate(repeats, sample_rate)?;
     let samples = render_loop(project, repeats, sample_rate);
+    write_wav(&samples, sample_rate, path)
+}
+
+/// Renders like [`render_song`] and writes a 16-bit PCM stereo WAV to `path`.
+/// `sample_rate` must be finite and positive.
+pub fn render_song_wav(
+    project: &Project,
+    sample_rate: f32,
+    path: impl AsRef<Path>,
+) -> Result<ExportStats, ExportError> {
+    validate(1, sample_rate)?;
+    let samples = render_song(project, sample_rate);
+    write_wav(&samples, sample_rate, path)
+}
+
+/// Writes interleaved stereo samples as a 16-bit PCM WAV and summarises them.
+fn write_wav(
+    samples: &[f32],
+    sample_rate: f32,
+    path: impl AsRef<Path>,
+) -> Result<ExportStats, ExportError> {
     let peak = samples
         .iter()
         .map(|s| if s.is_nan() { 0.0 } else { s.abs() })
@@ -199,7 +265,7 @@ pub fn render_loop_wav(
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
-    for &s in &samples {
+    for &s in samples {
         writer.write_sample(to_i16(s))?;
     }
     writer.finalize()?;
@@ -223,19 +289,42 @@ fn to_i16(sample: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pattern::{ChainEntry, PatternLength};
 
     #[test]
     fn length_formula_at_120_bpm_48k() {
         assert_eq!(bar_frames(120.0, 48_000.0), 96_000);
         assert_eq!(tail_frames(48_000.0), 96_000);
         let p = Project::default();
-        assert_eq!(export_frames(&p, 1, 48_000.0), 192_000);
-        assert_eq!(export_frames(&p, 4, 48_000.0), 4 * 96_000 + 96_000);
+        assert_eq!(export_frames(&p, 1, false, 48_000.0), 192_000);
+        assert_eq!(export_frames(&p, 4, false, 48_000.0), 4 * 96_000 + 96_000);
+        // The default chain is [A x1]: the song is one bar.
+        assert_eq!(export_frames(&p, 8, true, 48_000.0), 192_000);
         // Out-of-range tempo is clamped like the engine clamps it (60..=200 BPM).
         assert_eq!(bar_frames(1.0, 48_000.0), bar_frames(60.0, 48_000.0));
         // Non-integer step lengths round the whole bar, not each step.
         // 44_100 * 60 / 130 / 4 = 5088.4615.. per step; 16 steps = 81415.38.. -> 81415.
         assert_eq!(bar_frames(130.0, 44_100.0), 81_415);
+    }
+
+    #[test]
+    fn bars_follow_pattern_lengths_and_the_chain() {
+        let mut p = Project::default();
+        p.bank.set_length(0, PatternLength::Bar2);
+        p.bank.set_length(1, PatternLength::Bar4);
+        assert_eq!(export_bars(&p, 2, false), 4);
+        p.bank.truncate(0);
+        p.bank.push(ChainEntry::new(0, 2));
+        p.bank.push(ChainEntry::new(1, 1));
+        p.bank.push(ChainEntry::new(2, 3));
+        assert_eq!(export_bars(&p, 1, true), 2 * 2 + 4 + 3);
+        p.bank.truncate(0);
+        p.bank.current = 1;
+        assert_eq!(
+            export_bars(&p, 1, true),
+            4,
+            "an empty chain plays the current pattern"
+        );
     }
 
     #[test]

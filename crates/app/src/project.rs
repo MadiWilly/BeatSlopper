@@ -8,6 +8,11 @@
 //! was sent. Exports render a fresh offline engine on a `std::thread` and report back over a
 //! channel that [`AppState::poll_export`] drains every frame, so neither the UI nor the audio
 //! thread ever blocks on disk I/O.
+//!
+//! M4: applying a project is an undo step (so Open and New can be undone, path included);
+//! save / open / new clear [`AppState::dirty`]. New and Open while dirty go through
+//! [`AppState::request_new`] / [`AppState::request_open`], which park a
+//! [`PendingAction`] for the project panel's DISCARD / KEEP confirm instead of acting.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -15,7 +20,7 @@ use std::thread::JoinHandle;
 
 use engine::{ExportStats, ParamId, Project};
 
-use crate::app::{AppState, EXPORT_REPEATS};
+use crate::app::{AppState, EXPORT_REPEATS, PendingAction};
 
 /// Default file name offered by the Save As dialog.
 pub const DEFAULT_PROJECT_FILE: &str = "beat.beatslopper.json";
@@ -95,7 +100,7 @@ impl AppState {
             version: engine::project::FORMAT_VERSION,
             bpm: self.bpm,
             swing: self.swing,
-            pattern: self.pattern.clone(),
+            bank: engine::Bank::from_pattern(self.pattern.clone()),
             params,
             preset_index: self.preset_index,
             octave: self.input.octave,
@@ -104,8 +109,10 @@ impl AppState {
     }
 
     /// Replaces the UI state with `project` and resends everything to the engine. Playback
-    /// state, the audio stream and the theme are untouched.
+    /// state, the audio stream and the theme are untouched. One undo step (the caller decides
+    /// whether the result counts as dirty).
     pub fn apply_project(&mut self, project: &Project) {
+        self.begin_edit();
         self.bpm = if project.bpm.is_finite() {
             project.bpm.clamp(crate::app::MIN_BPM, crate::app::MAX_BPM)
         } else {
@@ -126,28 +133,30 @@ impl AppState {
         }
         self.input.set_octave(project.octave);
         self.input.set_velocity(project.velocity);
-        self.pattern = project.pattern.clone();
+        self.pattern = project.pattern().clone();
         self.selected_step = None;
         self.resend_all();
     }
 
-    /// NEW: an empty pattern with every setting at its default; the file path is forgotten.
+    /// NEW: an empty pattern with every setting at its default; the file path is forgotten and
+    /// the project is clean. Undoable (the previous state and path come back).
     pub fn new_project(&mut self) {
-        let project = Project {
-            pattern: engine::Pattern::empty(),
-            ..Project::default()
-        };
+        let project = Project::from_pattern(engine::Pattern::empty());
         self.apply_project(&project);
         self.project_path = None;
+        self.pending_action = None;
+        self.mark_clean();
         self.set_status("New project");
     }
 
-    /// Saves the current state to `path` and remembers the path. Errors become the status line.
+    /// Saves the current state to `path`, remembers the path and clears the unsaved marker.
+    /// Errors become the status line (and the project stays dirty).
     pub fn save_project_to(&mut self, path: PathBuf) -> bool {
         match self.build_project().save(&path) {
             Ok(()) => {
                 self.set_status(format!("Saved {}", file_label(&path)));
                 self.project_path = Some(path);
+                self.mark_clean();
                 true
             }
             Err(err) => {
@@ -157,13 +166,16 @@ impl AppState {
         }
     }
 
-    /// Loads `path`, applies it and remembers the path. Errors become the status line.
+    /// Loads `path`, applies it (undoably) and remembers the path; the project is clean.
+    /// Errors become the status line and leave the state alone.
     pub fn load_project_from(&mut self, path: PathBuf) -> bool {
         match Project::load(&path) {
             Ok(project) => {
                 self.apply_project(&project);
                 self.set_status(format!("Opened {}", file_label(&path)));
                 self.project_path = Some(path);
+                self.pending_action = None;
+                self.mark_clean();
                 true
             }
             Err(err) => {
@@ -171,6 +183,49 @@ impl AppState {
                 false
             }
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Discard confirm for New / Open.
+
+    /// NEW from a button or Ctrl+N: with unsaved changes this only parks
+    /// [`PendingAction::New`] for the DISCARD / KEEP confirm and returns `false`; otherwise the
+    /// new project is created now and `true` is returned.
+    pub fn request_new(&mut self) -> bool {
+        if self.dirty {
+            self.pending_action = Some(PendingAction::New);
+            false
+        } else {
+            self.new_project();
+            true
+        }
+    }
+
+    /// OPEN from a button or Ctrl+O: with unsaved changes this parks [`PendingAction::Open`]
+    /// and returns `false`; otherwise returns `true` and the caller shows the file dialog.
+    pub fn request_open(&mut self) -> bool {
+        if self.dirty {
+            self.pending_action = Some(PendingAction::Open);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// DISCARD: takes the pending action and performs the state side of it (a New happens
+    /// here; an Open is returned for the caller to show the dialog). `None` when nothing was
+    /// pending.
+    pub fn confirm_pending(&mut self) -> Option<PendingAction> {
+        let action = self.pending_action.take()?;
+        if action == PendingAction::New {
+            self.new_project();
+        }
+        Some(action)
+    }
+
+    /// KEEP (or Escape): forgets the pending action; nothing else changes.
+    pub fn cancel_pending(&mut self) {
+        self.pending_action = None;
     }
 
     /// Starts exporting `export_repeats` bars to `path` on a worker thread. Refused (with a
@@ -298,6 +353,126 @@ mod tests {
         // A failed open leaves the state alone.
         assert_eq!(other.pattern, Pattern::empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dirty_flag_follows_edits_saves_opens_and_new() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(!state.dirty, "fresh state is clean");
+        state.toggle_drum_step(DrumRow::Kick, 1, false);
+        assert!(state.dirty, "an edit dirties");
+
+        let path = temp_path("dirty.beatslopper.json");
+        assert!(state.save_project_to(path.clone()));
+        assert!(!state.dirty, "save cleans");
+        state.set_bpm(100.0);
+        assert!(state.dirty);
+        state.set_bpm(100.0);
+        assert!(state.dirty, "no-op edits do not clean");
+
+        // A failed save keeps the marker.
+        assert!(!state.save_project_to(PathBuf::from("Z:/no/such/dir/x.json")));
+        assert!(state.dirty);
+
+        assert!(state.load_project_from(path.clone()));
+        assert!(!state.dirty, "open cleans");
+        assert_eq!(state.bpm, crate::app::DEFAULT_BPM);
+        state.set_param(ParamId::Glide, 0.5);
+        assert!(state.dirty);
+        assert!(!state.load_project_from(temp_path("missing.json")));
+        assert!(state.dirty, "a failed open changes nothing");
+
+        state.new_project();
+        assert!(!state.dirty, "new cleans");
+        state.mark_dirty();
+        assert!(state.dirty);
+        state.mark_clean();
+        assert!(!state.dirty);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_and_new_are_undoable_with_their_paths() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_bpm(150.0);
+        let saved = temp_path("undoable.beatslopper.json");
+        assert!(state.save_project_to(saved.clone()));
+        let before = state.snapshot();
+        assert_eq!(before.project_path.as_deref(), Some(saved.as_path()));
+
+        // NEW: empty, no path, clean; undo brings the beat and its path back (dirty).
+        state.new_project();
+        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.project_path, None);
+        assert!(!state.dirty);
+        assert!(state.undo());
+        assert_eq!(state.snapshot(), before);
+        assert_eq!(state.project_path.as_deref(), Some(saved.as_path()));
+        assert!(state.dirty);
+        assert!(state.redo());
+        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.project_path, None);
+
+        // OPEN: the loaded file replaces everything; undo returns to the pre-open state.
+        engine.process_messages(); // keep the queue short: every resend is ~140 messages
+        state.clear_all();
+        state.set_bpm(70.0);
+        let pre_open = state.snapshot();
+        assert!(state.load_project_from(saved.clone()));
+        assert_eq!(state.bpm, 150.0);
+        assert!(!state.dirty);
+        assert!(state.undo());
+        assert_eq!(state.snapshot(), pre_open);
+        assert_eq!(state.bpm, 70.0);
+        assert_eq!(state.project_path, None);
+        engine.process_messages();
+        assert_eq!(engine.bpm(), 70.0);
+        assert_eq!(engine.pattern(), &state.pattern);
+        let _ = std::fs::remove_file(saved);
+    }
+
+    #[test]
+    fn new_and_open_ask_before_discarding_unsaved_changes() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        // Clean: New happens at once, Open may proceed.
+        assert!(state.request_new());
+        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.pending_action, None);
+        assert!(state.request_open());
+        assert_eq!(state.pending_action, None);
+
+        // Dirty: both park a pending action and change nothing.
+        state.toggle_drum_step(DrumRow::Snare, 4, false);
+        let edited = state.snapshot();
+        assert!(!state.request_new());
+        assert_eq!(state.pending_action, Some(PendingAction::New));
+        assert_eq!(state.snapshot(), edited);
+        assert!(!state.request_open());
+        assert_eq!(state.pending_action, Some(PendingAction::Open));
+        assert_eq!(state.snapshot(), edited);
+
+        // KEEP cancels; nothing is lost.
+        state.cancel_pending();
+        assert_eq!(state.pending_action, None);
+        assert_eq!(state.snapshot(), edited);
+        assert!(state.dirty);
+        assert_eq!(state.confirm_pending(), None, "nothing pending");
+
+        // DISCARD on Open hands the action back for the dialog; the state is untouched.
+        assert!(!state.request_open());
+        assert_eq!(state.confirm_pending(), Some(PendingAction::Open));
+        assert_eq!(state.pending_action, None);
+        assert_eq!(state.snapshot(), edited);
+
+        // DISCARD on New performs the New right here.
+        assert!(!state.request_new());
+        assert_eq!(state.confirm_pending(), Some(PendingAction::New));
+        assert_eq!(state.pattern, Pattern::empty());
+        assert!(!state.dirty);
+        assert_eq!(state.pending_action, None);
+        // ... and it is undoable.
+        assert!(state.undo());
+        assert_eq!(state.snapshot(), edited);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use std::process::ExitCode;
 
 use app::BeatSlopperApp;
+use app::window::{MIN_INNER_SIZE, REQUESTED_INNER_SIZE};
 
 /// Command-line options understood by the binary.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -25,13 +26,15 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
     parsed
 }
 
+/// Sizes are logical points; `persist_window` restores the previous session's geometry, and
+/// the app corrects an undersized window on its first frame (see `app::window`).
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("BeatSlopper")
+            .with_title(app::window::BASE_TITLE)
             .with_app_id("beatslopper")
-            .with_inner_size([1280.0, 1140.0])
-            .with_min_inner_size([1240.0, 760.0]),
+            .with_inner_size(REQUESTED_INNER_SIZE)
+            .with_min_inner_size(MIN_INNER_SIZE),
         persist_window: true,
         ..Default::default()
     }

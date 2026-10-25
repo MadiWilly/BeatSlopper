@@ -19,7 +19,7 @@ use egui::{Align, Align2, Layout, Response, Role, Sense, Ui, WidgetInfo, vec2};
 use engine::{DrumRow, STEPS};
 use neu::{KnobSize, KnobSpec, STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme};
 
-use crate::app::AppState;
+use crate::app::{AppState, EditKey};
 use crate::ui::controls;
 
 /// Width of the row-name column (`.seq-row .name`).
@@ -195,7 +195,8 @@ fn name_cell(ui: &mut Ui, theme: &Theme, text: &str) {
     response.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
 }
 
-/// A small, unlabelled knob (value shown as a tooltip) for one row setting.
+/// A small, unlabelled knob (value shown as a tooltip) for one row setting. Returns the new
+/// value when it moved, and whether this frame started a drag (a fresh undo step).
 fn row_knob(
     ui: &mut Ui,
     theme: &Theme,
@@ -204,7 +205,7 @@ fn row_knob(
     max: f32,
     bipolar: bool,
     fmt: fn(f32) -> String,
-) -> Option<f32> {
+) -> Option<(f32, bool)> {
     let spec = KnobSpec {
         label: "",
         min,
@@ -217,7 +218,7 @@ fn row_knob(
     };
     let mut v = value;
     let response = neu::knob(ui, theme, &mut v, &spec);
-    (response.changed() || v != value).then_some(v)
+    (response.changed() || v != value).then_some((v, response.drag_started()))
 }
 
 fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
@@ -226,12 +227,21 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
         ui.add_space(COLUMN_GAP);
 
         let volume = state.pattern.drum_volume[row.index()];
-        if let Some(db) = row_knob(ui, theme, volume, -24.0, 6.0, false, fmt_row_db) {
+        if let Some((db, drag_started)) = row_knob(ui, theme, volume, -24.0, 6.0, false, fmt_row_db)
+        {
+            if drag_started {
+                state.begin_continuous_edit(EditKey::DrumVolume(row), true);
+            }
             state.set_drum_volume(row, db);
         }
         ui.add_space(KNOB_GAP);
         let tune = state.pattern.drum_tune[row.index()];
-        if let Some(st) = row_knob(ui, theme, tune, -12.0, 12.0, true, fmt_semitones) {
+        if let Some((st, drag_started)) =
+            row_knob(ui, theme, tune, -12.0, 12.0, true, fmt_semitones)
+        {
+            if drag_started {
+                state.begin_continuous_edit(EditKey::DrumTune(row), true);
+            }
             state.set_drum_tune(row, st);
         }
         ui.add_space(COLUMN_GAP);

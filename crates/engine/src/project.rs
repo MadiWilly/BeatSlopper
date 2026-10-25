@@ -1,17 +1,26 @@
-//! Project file (M3): `*.beatslopper.json` holding BPM, swing, pattern, synth/FX params,
-//! preset and keyboard settings.
+//! Project file (M3/M5): `*.beatslopper.json` holding BPM, swing, the pattern bank (eight
+//! patterns, chain, play mode), synth/FX params, preset and keyboard settings.
 //!
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 2), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 3), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 2,
+//!   "version": 3,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
-//!   "pattern": { "drums": [...], "synth": [...], "drum_volume": [...], "drum_tune": [...] },
+//!   "bank": {
+//!     "patterns": [
+//!       { "length": 16, "drums": [[...], [...], [...], [...], [...]], "synth": [...],
+//!         "drum_volume": [...], "drum_tune": [...] },
+//!       "... 8 patterns in all (A..H)"
+//!     ],
+//!     "chain": [ { "pattern": 0, "repeats": 1 } ],
+//!     "mode": "pattern",
+//!     "current": 0
+//!   },
 //!   "params": { "amp_attack": 0.01, "osc1_wave": 1.0, "...": 0.0 },
 //!   "preset_index": 0,
 //!   "octave": 4,
@@ -19,11 +28,16 @@
 //! }
 //! ```
 //!
-//! Parameters are keyed by [`ParamId::key`] so renaming a UI label never breaks a file.
-//! On load, unknown parameter keys are ignored and missing ones take
-//! [`ParamId::default_value`]; missing top-level fields take their [`Project::default`] value,
-//! which is how version 1 files (just `version`, `bpm`, `swing`, `master_gain`) still open.
-//! Files written by a *newer* format version are refused ([`ProjectError::Version`]).
+//! Each pattern row is a plain array of 16, 32 or 64 step objects (see
+//! [`crate::pattern`] for the exact rules). Parameters are keyed by [`ParamId::key`] so
+//! renaming a UI label never breaks a file. On load, unknown parameter keys are ignored and
+//! missing ones take [`ParamId::default_value`]; missing top-level fields take their
+//! [`Project::default`] value.
+//!
+//! Migration: a version-2 file has a single `pattern`; it becomes pattern A with the chain
+//! `[A x1]`, pattern mode, A selected ([`Bank::from_pattern`]). Version 1 (just `version`,
+//! `bpm`, `swing`, `master_gain`) still opens with the default bank. Files written by a
+//! *newer* format version are refused ([`ProjectError::Version`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::Engine;
 use crate::params::ParamId;
-use crate::pattern::Pattern;
+use crate::pattern::{Bank, Pattern};
 use crate::transport::DEFAULT_BPM;
 
 /// File extension for saved projects (`song.beatslopper.json`).
@@ -44,7 +58,8 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 /// - 1: envelope only (`version`, `bpm`, `swing`, `master_gain`).
 /// - 2: adds `pattern`, `params` (keyed by [`ParamId::key`]), `preset_index`, `octave`,
 ///   `velocity`; `master_gain` moved into `params`.
-pub const FORMAT_VERSION: u32 = 2;
+/// - 3: `pattern` becomes `bank` (eight patterns with lengths, chain, play mode, current).
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -65,8 +80,8 @@ pub struct Project {
     pub bpm: f32,
     /// Swing amount `0.0..=1.0`.
     pub swing: f32,
-    /// The 16-step drum and synth pattern.
-    pub pattern: Pattern,
+    /// The eight patterns, the song chain, the play mode and the selected pattern.
+    pub bank: Bank,
     /// Synth, FX and master parameters keyed by [`ParamId::key`].
     pub params: BTreeMap<String, f32>,
     /// Index of the selected built-in preset.
@@ -78,14 +93,14 @@ pub struct Project {
 }
 
 impl Default for Project {
-    /// The demo beat at 120 BPM with every parameter at its default, preset 0, octave 4,
-    /// velocity 0.8.
+    /// The demo beat (pattern A) at 120 BPM with every parameter at its default, preset 0,
+    /// octave 4, velocity 0.8.
     fn default() -> Self {
         Self {
             version: FORMAT_VERSION,
             bpm: DEFAULT_BPM,
             swing: 0.0,
-            pattern: Pattern::demo(),
+            bank: Bank::default(),
             params: default_params(),
             preset_index: 0,
             octave: DEFAULT_OCTAVE,
@@ -103,7 +118,7 @@ fn default_params() -> BTreeMap<String, f32> {
 }
 
 impl Project {
-    /// Snapshot of the engine's tempo, swing, pattern and parameters plus the UI-side preset
+    /// Snapshot of the engine's tempo, swing, bank and parameters plus the UI-side preset
     /// and keyboard settings.
     #[must_use]
     pub fn from_engine(engine: &Engine, preset_index: usize, octave: i32, velocity: f32) -> Self {
@@ -115,7 +130,7 @@ impl Project {
             version: FORMAT_VERSION,
             bpm: engine.bpm(),
             swing: engine.transport().swing(),
-            pattern: engine.pattern().clone(),
+            bank: engine.bank().clone(),
             params,
             preset_index,
             octave,
@@ -123,18 +138,41 @@ impl Project {
         }
     }
 
-    /// Pushes tempo, swing, every known parameter and the pattern into `engine`.
+    /// A project holding a single pattern (A) with the default chain `[A x1]`, everything
+    /// else as in [`Project::default`].
+    #[must_use]
+    pub fn from_pattern(pattern: Pattern) -> Self {
+        Self {
+            bank: Bank::from_pattern(pattern),
+            ..Self::default()
+        }
+    }
+
+    /// Pushes tempo, swing, every known parameter and the bank into `engine`.
     ///
     /// Unknown parameter keys are ignored; parameters missing from the file are set to their
     /// defaults, so a loaded project never inherits state from the previous one. Call before
-    /// the audio stream starts (or accept a one-off pattern copy on the audio thread).
+    /// the audio stream starts (or accept a one-off bank copy on the audio thread).
     pub fn apply_to(&self, engine: &mut Engine) {
         engine.set_bpm(self.bpm);
         engine.set_swing(self.swing);
         for &id in ParamId::ALL {
             engine.set_param(id, self.param(id));
         }
-        engine.set_pattern(&self.pattern);
+        engine.set_bank(&self.bank);
+    }
+
+    /// The selected (`current`) pattern of the bank: what the grid edits and pattern mode
+    /// plays. Compatibility accessor for code written against the single-pattern (M3)
+    /// `Project.pattern` field.
+    #[must_use]
+    pub fn pattern(&self) -> &Pattern {
+        self.bank.current_pattern()
+    }
+
+    /// The selected pattern, mutably (see [`pattern`](Self::pattern)).
+    pub fn pattern_mut(&mut self) -> &mut Pattern {
+        self.bank.current_pattern_mut()
     }
 
     /// Value of parameter `id`, or its default when the project does not list it.
@@ -153,8 +191,8 @@ impl Project {
 
     /// Pretty-printed JSON (two-space indent, trailing newline).
     ///
-    /// Serializing a `Project` cannot fail (no maps with non-string keys, no custom
-    /// serializers), so this is infallible.
+    /// Serializing a `Project` cannot fail (no maps with non-string keys, and the custom
+    /// pattern/bank serializers only emit plain arrays), so this is infallible.
     #[must_use]
     pub fn to_json_pretty(&self) -> String {
         let mut text = serde_json::to_string_pretty(self)
@@ -163,10 +201,11 @@ impl Project {
         text
     }
 
-    /// Parses a project. Older format versions are accepted (missing fields default); a newer
-    /// version than [`FORMAT_VERSION`] is an error.
+    /// Parses a project. Older format versions are migrated (version 2's single `pattern`
+    /// becomes pattern A; missing fields default); a newer version than [`FORMAT_VERSION`] is
+    /// an error. The bank is normalised (indices, repeats and lengths clamped).
     pub fn from_json(text: &str) -> Result<Project, ProjectError> {
-        let value: serde_json::Value = serde_json::from_str(text)?;
+        let mut value: serde_json::Value = serde_json::from_str(text)?;
         let version = value
             .get("version")
             .and_then(serde_json::Value::as_u64)
@@ -181,6 +220,14 @@ impl Project {
         let legacy_master_gain = (version < 2)
             .then(|| value.get("master_gain").and_then(serde_json::Value::as_f64))
             .flatten();
+        // Versions 1 and 2 had a single `pattern` instead of the `bank`.
+        let legacy_pattern = match value.as_object_mut() {
+            Some(obj) if version < 3 && !obj.contains_key("bank") => obj
+                .remove("pattern")
+                .map(serde_json::from_value::<Pattern>)
+                .transpose()?,
+            _ => None,
+        };
 
         let mut project: Project = serde_json::from_value(value)?;
         project.version = FORMAT_VERSION;
@@ -188,6 +235,10 @@ impl Project {
         if let Some(gain) = legacy_master_gain {
             project.set_param(ParamId::MasterGain, gain as f32);
         }
+        if let Some(pattern) = legacy_pattern {
+            project.bank = Bank::from_pattern(pattern);
+        }
+        project.bank.normalise();
         Ok(project)
     }
 
@@ -284,6 +335,7 @@ impl From<serde_json::Error> for ProjectError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pattern::{ChainEntry, PlayMode};
 
     #[test]
     fn default_project_lists_every_param_once() {
@@ -293,17 +345,19 @@ mod tests {
         for &id in ParamId::ALL {
             assert_eq!(p.param(id), id.default_value(), "{id:?}");
         }
-        assert_eq!(p.pattern, Pattern::demo());
+        assert_eq!(p.bank, Bank::default());
+        assert_eq!(p.pattern(), &Pattern::demo());
     }
 
     #[test]
     fn json_is_pretty_and_sorted() {
         let text = Project::default().to_json_pretty();
-        assert!(text.starts_with("{\n  \"version\": 2,"));
+        assert!(text.starts_with("{\n  \"version\": 3,"));
         assert!(text.ends_with("}\n"));
         let amp = text.find("\"amp_attack\"").unwrap();
         let osc = text.find("\"osc1_wave\"").unwrap();
         assert!(amp < osc, "params must be alphabetically sorted");
+        assert!(text.contains("\"mode\": \"pattern\""));
     }
 
     #[test]
@@ -314,17 +368,43 @@ mod tests {
         assert_eq!(p.bpm, 100.0);
         assert_eq!(p.swing, 0.25);
         assert_eq!(p.param(ParamId::MasterGain), 0.5);
-        assert_eq!(p.pattern, Pattern::demo());
+        assert_eq!(p.bank, Bank::default());
         assert_eq!(p.octave, DEFAULT_OCTAVE);
     }
 
     #[test]
+    fn version_2_pattern_becomes_pattern_a() {
+        let mut pattern = Pattern::empty();
+        pattern.set_drum_step(crate::drums::DrumRow::Kick, 3, true, true);
+        let v2 = serde_json::json!({
+            "version": 2,
+            "bpm": 95.0,
+            "pattern": pattern,
+        });
+        let p = Project::from_json(&v2.to_string()).unwrap();
+        assert_eq!(p.version, 3);
+        assert_eq!(p.bpm, 95.0);
+        assert_eq!(p.bank.patterns[0], pattern);
+        assert!(p.bank.patterns[1..].iter().all(Pattern::is_empty));
+        assert_eq!(p.bank.chain_entries(), &[ChainEntry::new(0, 1)]);
+        assert_eq!(p.bank.mode, PlayMode::Pattern);
+        assert_eq!(p.bank.current, 0);
+        // A version-2 file whose pattern is missing gets the default bank.
+        let p = Project::from_json(r#"{ "version": 2 }"#).unwrap();
+        assert_eq!(p.bank, Bank::default());
+        // A version-3 file ignores a stray legacy `pattern`.
+        let v3 = serde_json::json!({ "version": 3, "pattern": pattern, "bank": Bank::empty() });
+        let p = Project::from_json(&v3.to_string()).unwrap();
+        assert_eq!(p.bank, Bank::empty());
+    }
+
+    #[test]
     fn newer_version_is_refused_and_garbage_is_a_json_error() {
-        let err = Project::from_json(r#"{ "version": 3 }"#).unwrap_err();
+        let err = Project::from_json(r#"{ "version": 4 }"#).unwrap_err();
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 3,
+                found: 4,
                 supported: FORMAT_VERSION
             }
         ));
@@ -332,6 +412,17 @@ mod tests {
         let err = Project::from_json("not json").unwrap_err();
         assert!(matches!(err, ProjectError::Json(_)));
         assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn pattern_accessors_follow_current() {
+        let mut p = Project::default();
+        p.bank.current = 2;
+        p.pattern_mut().set_synth_step(0, Some(50), false);
+        assert_eq!(p.bank.patterns[2].synth[0].note, Some(50));
+        assert_eq!(p.pattern(), &p.bank.patterns[2]);
+        let single = Project::from_pattern(Pattern::empty());
+        assert_eq!(single.bank, Bank::empty());
     }
 
     #[test]

@@ -17,7 +17,9 @@
 //! - [`presets`]: built-in sounds as `(ParamId, value)` data ([`Preset`]).
 //! - [`dsp`]: small numeric helpers (denormal flushing, dB conversion).
 //! - [`fx`]: effects (master [`fx::Limiter`] and the M2 chain).
-//! - [`drums`], [`transport`], [`project`]: skeletons for M3.
+//! - [`pattern`]: patterns, lengths and the [`Bank`] (patterns A..H, song chain, play mode).
+//! - [`drums`], [`transport`], [`project`], [`export`]: drum kit, transport, project file,
+//!   offline WAV export.
 
 #![warn(missing_docs)]
 
@@ -43,5 +45,8 @@ pub use voice::{MAX_VOICES, SynthParams, VoicePool};
 pub use drums::DrumRow;
 pub use engine::{MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
-pub use pattern::{DrumStep, Pattern, STEPS, SynthStep};
+pub use pattern::{
+    BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern,
+    PatternLength, PlayMode, STEPS, SynthStep,
+};
 pub use project::{Project, ProjectError};

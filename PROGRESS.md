@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** M4 (Polish + MIDI input). M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Current milestone:** M5 (Patterns + song mode); M6 engine in parallel. M4 tagged. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -57,25 +57,24 @@
 - [x] Gate green, tag m3, final summary written here
 
 ## Last gate result
-2026-10-24 M3 (after review fixes): all green (fmt, clippy -D warnings, 303 tests, deny licenses ok,
-release build, smoke exit 0).
+2026-10-25 M4 + M5 engine: all green (fmt, clippy -D warnings, 396 tests, deny licenses ok, release
+build, smoke exit 0).
 
 ## Next action
-M4: engine MIDI queue (orchestrator), then subagents: app MIDI (midir thread + port selector) |
-app polish (undo/redo, shortcuts, tooltips, unsaved marker, discard confirm, DPI sizing) |
-neu (brand text kind, tooltip styling). Gate, tag m4.
+M5 app (pattern tabs, length, copy/clear, song/pattern mode, chain editor, export modes) and M6
+engine (mixer channels, sends, meters, v4) run in parallel; then gate, tag m5; then M6 app.
 
 ## M4: Polish + MIDI input
 - [x] engine: second lock-free queue for MIDI (MidiHandle), drained in render
 - [x] app: midir input thread, port selector + lamp, persisted port, note on/off to engine + UI
-- [ ] app: undo/redo (Ctrl+Z/Y) for pattern and params
-- [ ] app: shortcuts (Space, R, Ctrl+S/Shift+S/O/E/N), unsaved marker, discard confirm
-- [ ] app: window opens at requested size at 100/125/150 % scaling
+- [x] app: undo/redo (Ctrl+Z/Y) for pattern and params
+- [x] app: shortcuts (Space, R, Ctrl+S/Shift+S/O/E/N), unsaved marker, discard confirm
+- [x] app: window opens at requested size at 100/125/150 % scaling (stale persisted size was the cause; first-frame resize + work-area clamp)
 - [x] neu: tooltips on knobs/dials/sliders, brand wordmark tracking
-- [ ] Tests per PLAN.md M4; gate green, tag m4
+- [x] Tests per PLAN.md M4; gate green, tag m4
 
 ## M5: Patterns + song mode
-- [ ] engine: 8 patterns, lengths 16/32/64, queued switch at bar, chain with repeats, v3 migration
+- [x] engine: 8 patterns, lengths 16/32/64, queued switch at bar, chain with repeats, v3 migration
 - [ ] app: pattern tabs, copy/paste/clear, length selector, song/pattern mode, chain editor
 - [ ] export: song or pattern x N
 - [ ] Tests per PLAN.md M5; gate green, tag m5

@@ -13,8 +13,7 @@ use common::*;
 use engine::drums::DrumRow;
 use engine::engine::{MAX_MASTER_GAIN, SEQ_GATE};
 use engine::pattern::STEPS;
-use engine::synth::Wave;
-use engine::{Engine, EngineHandle, Message, ParamId, Pattern, new_engine};
+use engine::{Message, Pattern, new_engine};
 
 /// Step length at 120 BPM / 48 kHz.
 const STEP_120: usize = 6000;
@@ -27,77 +26,7 @@ const BAR_90: usize = STEP_90 * STEPS;
 /// MIDI A4, the default lane note in these tests.
 const A4: u8 = 69;
 /// Anything above this counts as sound.
-const EPS: f32 = 1.0e-9;
-
-/// A dry, click-fast sine patch so the synth lane's note boundaries are sharp and every
-/// sample between two notes is exactly zero. Smoothers settle during a stopped warm-up.
-fn seq_engine() -> (EngineHandle, Engine) {
-    let (handle, mut engine) = new_engine(SAMPLE_RATE);
-    dry_fx(&mut engine);
-    engine.set_param(ParamId::Osc1Wave, Wave::Sine.index() as f32);
-    engine.set_param(ParamId::Osc1Detune, 0.0);
-    engine.set_param(ParamId::Osc1Mix, 1.0);
-    engine.set_param(ParamId::Osc2Mix, 0.0);
-    engine.set_param(ParamId::FilterCutoff, 20_000.0);
-    engine.set_param(ParamId::FilterResonance, 0.0);
-    engine.set_param(ParamId::FilterEnvAmount, 0.0);
-    engine.set_param(ParamId::LfoDepth, 0.0);
-    engine.set_param(ParamId::Glide, 0.0);
-    engine.set_param(ParamId::AmpAttack, 0.001);
-    engine.set_param(ParamId::AmpDecay, 0.001);
-    engine.set_param(ParamId::AmpSustain, 1.0);
-    engine.set_param(ParamId::AmpRelease, 0.001);
-    let warmup = render(&mut engine, ms_to_frames(200.0));
-    assert!(is_silent(&warmup), "a stopped engine must be silent");
-    (handle, engine)
-}
-
-/// Puts `note` on every step whose index satisfies `keep`.
-fn lane(engine: &mut Engine, note: u8, keep: impl Fn(usize) -> bool) {
-    for step in 0..STEPS {
-        let n = keep(step).then_some(note);
-        engine.set_synth_step(step as u8, n, false);
-    }
-}
-
-/// Sample indices where the signal becomes audible after at least `QUIET` silent samples
-/// (or from the very first sample).
-fn onsets(mono: &[f32]) -> Vec<usize> {
-    const QUIET: usize = 8;
-    let mut out = Vec::new();
-    let mut silent_run = QUIET; // the signal before the buffer counts as silence
-    for (i, &x) in mono.iter().enumerate() {
-        if x.abs() > EPS {
-            if silent_run >= QUIET {
-                out.push(i);
-            }
-            silent_run = 0;
-        } else {
-            silent_run += 1;
-        }
-    }
-    out
-}
-
-/// Asserts every onset lands within one sample of its expected trigger.
-fn assert_onsets(found: &[usize], expected: &[usize]) {
-    assert_eq!(
-        found.len(),
-        expected.len(),
-        "onsets {found:?}, expected {expected:?}"
-    );
-    for (f, e) in found.iter().zip(expected) {
-        assert!(
-            f.abs_diff(*e) <= 1,
-            "onset at {f}, expected {e} (+-1); all onsets {found:?}"
-        );
-    }
-}
-
-fn play_and_render(engine: &mut Engine, frames: usize) -> Vec<f32> {
-    engine.play();
-    left(&render(engine, frames))
-}
+const EPS: f32 = ONSET_EPS;
 
 // (a) Synth lane: every step at 120 BPM triggers at exactly n * 6000.
 #[test]
