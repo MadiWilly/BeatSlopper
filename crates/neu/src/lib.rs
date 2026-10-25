@@ -15,9 +15,12 @@
 //!   and the row geometry helpers).
 //! * M4 polish: the brand wordmark ([`brand`], [`TextKind::Brand`]) and a `"label: value"`
 //!   tooltip ([`tooltip_text`]) on every knob, dial and slider, styled by [`Theme::apply`].
+//! * M6 mixer: the tall [`fader`], the peak [`meter`] / [`stereo_meter`] (dB curve via
+//!   [`meter_fraction`]) and the square [`toggle_button_sized`] for mute / solo.
 
 pub mod button;
 pub mod knob;
+pub mod meter;
 pub mod panel;
 pub mod piano_keys;
 pub mod segmented;
@@ -29,9 +32,14 @@ pub mod text;
 pub mod theme;
 
 pub use button::{
-    Icon, button, icon_button, paint_icon, stepper_button, theme_toggle, toggle_button,
+    Icon, TOGGLE_SIZED_RADIUS, TOGGLE_SQUARE, button, icon_button, paint_icon, stepper_button,
+    theme_toggle, toggle_button, toggle_button_sized,
 };
 pub use knob::{DialSize, KnobSize, KnobSpec, dial, fmt_plain, knob, paint_arc, tooltip_text};
+pub use meter::{
+    METER_FLOOR_DB, METER_HOT_LEVEL, METER_HOT_TOP, METER_TRACK, STEREO_METER_SIZE,
+    STEREO_METER_TRACK_WIDTH, meter, meter_fraction, stereo_meter,
+};
 pub use panel::panel;
 pub use piano_keys::{
     PianoKey, PianoModel, PianoOutput, key_at, key_layout, keyboard_size, keyboard_width,
@@ -43,8 +51,8 @@ pub use shadow::{
     paint_soft_rect_with_fill, soft_circle_shapes, soft_rect_shapes, soft_rect_shapes_with_fill,
 };
 pub use slider::{
-    SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL, SLIDER_WIDTH, SliderSpec, lamp, vslider,
-    vslider_fraction_at, vslider_thumb_pos,
+    FADER_TRACK, FADER_TRAVEL, SLIDER_THUMB, SLIDER_TRACK, SLIDER_TRAVEL, SLIDER_WIDTH, SliderSpec,
+    fader, lamp, vslider, vslider_fraction_at, vslider_thumb_pos,
 };
 pub use stepper::{stepper, stepper_with};
 pub use text::{TextKind, brand, display, label, title, value};

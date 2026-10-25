@@ -66,7 +66,7 @@ a version in the crate manifest and mention it in the hand-back so it can be pro
 - Theme: on first launch follow the OS (`ctx.system_theme()`, falling back to dark). A manual
   toggle sets an override that is persisted through eframe storage. The OS theme is not
   persisted; only an explicit toggle is (see the bug noted in `design/WINNER.md`).
-- Window: title "BeatSlopper", default inner size 1280x1080, min 1240x760, surface-colour clear.
+- Window: title "BeatSlopper", default inner size 1280x1140, min 1270x760, surface-colour clear.
 - Modules: `main.rs` (args, eframe run), `app.rs` (state + `update`), `audio_io.rs`
   (cpal stream wrapping the `Engine`), `input.rs` (keyboard, M1), `ui/` (panels).
 
@@ -418,3 +418,62 @@ accessor), messages `SetEditPattern`, `SetPatternLength`, `CopyPattern`, `ClearP
   All bound to `AppState.mixer: MixerState` with `set_mixer` sending `SetMixer`; undo-able;
   saved in the project; `resend_all` includes the mixer. Meters polled each frame from
   `engine.meters()` with a 300 ms decay.
+
+## M5 as built (app)
+The right column (260 wide) shows one panel at a time, PROJECT or SONG CHAIN, with a tab in
+both heads; the sequencer shows one bar with a BAR selector and FOLLOW; `AppState::send`
+spills into an outbox drained each frame so a dense bank never drops messages; the minimum
+window is 1270x760.
+
+## M7 additions (piano roll)
+
+### engine: polyphonic notes
+- `Note { start: u8 (step 0..length), length: u8 (1..=64 steps, clipped at the pattern end),
+  pitch: u8 (0..=127), velocity: f32 (0.05..=1) }` (Copy, serde). `MAX_NOTES = 64` per pattern.
+- `Pattern` gains `notes: [Note; MAX_NOTES]` + `note_count: u8` (helpers `notes() -> &[Note]`,
+  `add_note(Note) -> Option<usize>` (rejects when full; sorts by start then pitch), `remove_note
+  (index)`, `set_note(index, Note)`, `note_at(step, pitch) -> Option<usize>`, `clear_notes`).
+  The step grid's bass lane (`synth: [SynthStep; 64]`) becomes a **derived view**: after every
+  note edit `rebuild_lane()` sets `synth[s]` to the lowest-pitched note starting at step `s`
+  (accent = velocity >= 0.95); `set_synth_step(step, note, accent)` upserts a length-1 note at
+  that step (removing other notes that start there) so grid editing keeps working unchanged.
+  Serde: `notes` are written; `synth` is `#[serde(skip)]` and rebuilt on load; version 5 reads
+  v4 files by converting each `synth[s]` with a note into a length-1 `Note`.
+- Scheduler: on each step boundary `s`, every note with `start == s` triggers `voices.note_on
+  (pitch, velocity)` and schedules its note-off at `start + length` steps (exactly at that
+  trigger sample minus 1 sample, so a note that ends where another of the same pitch starts
+  retriggers cleanly); the pool is polyphonic so chords work. `seq_note` becomes a small
+  fixed array of active sequencer notes (`[Option<(u8 pitch, u64 off_sample)>; MAX_VOICES]`).
+  Pattern switches/stop release all active sequencer notes. Keyboard-held pitches are still
+  never released by the sequencer.
+- Messages: `SetNote { pattern: u8, index: u8, note: Note }` (index == note_count appends),
+  `RemoveNote { pattern: u8, index: u8 }`, `ClearNotes(u8)`. `Message` stays `Copy`.
+- `Project` version 5 (`FORMAT_VERSION = 5`), v4 migration as above.
+- Export unchanged (goes through the scheduler).
+
+### neu: piano roll widget
+- `piano_roll(ui, &Theme, &mut PianoRollModel, &[RollNote]) -> PianoRollOutput`.
+  `RollNote { start: u8, length: u8, pitch: u8, velocity: f32, selected: bool }`.
+  `PianoRollModel { steps: usize (16/32/64), low_pitch: u8 (bottom visible), pitches: usize
+  (visible rows, default 36), step_width: f32 (default 24), row_height: f32 (default 14),
+  playhead_step: Option<f32> (fractional), selected: Option<usize> }`.
+  Painting: inset-m panel background, white/black key shading on rows (surface vs a 6 %
+  shadow-dark tint), bar lines (shadow-dark 1 pt) and beat lines (lighter), note names on a
+  48 pt key column at the left (C only labelled, e.g. "C3"), notes as rounded bars (radius 6)
+  in accent (OnGlow when selected, accent_hover when velocity >= 0.95), a 2 pt playhead line
+  in accent. Interaction: drag on empty space draws a note (start = press cell, length = drag
+  extent, min 1, snapped to steps); drag a note body moves it (pitch and start, snapped);
+  drag a note's right 6 pt edge resizes; click selects; Delete/Backspace reported; shift-click
+  toggles accent (velocity 1.0 vs 0.8); scroll wheel scrolls pitch (shift+wheel = horizontal
+  for long patterns); double-click on a note deletes it.
+  `PianoRollOutput { add: Option<RollNote>, moved: Option<(usize, RollNote)>, removed:
+  Option<usize>, selected: Option<usize>, scrolled: bool }` (at most one edit per frame).
+  All geometry helpers (`cell_at(pos)`, `note_rect(note)`) are public and unit-tested.
+
+### app
+- A PIANO ROLL panel toggled from the sequencer head ("GRID | ROLL" segmented): it replaces the
+  sequencer grid area (same panel size) and edits the edit pattern's notes through
+  `SetNote/RemoveNote` (undoable, dirty). The grid's bass lane keeps working via the derived
+  view. Record-arm overdub and click-then-key entry write length-1 notes as before. Playhead
+  from `Position` (bar * 16 + step + frac). Keyboard: Delete removes the selected note, Escape
+  deselects. Persisted: roll/grid choice, `low_pitch`.

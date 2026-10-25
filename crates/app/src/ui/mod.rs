@@ -3,21 +3,28 @@
 //! [`show`] lays them out in the real window.
 //!
 //! Page layout (design/WINNER.md): page padding 12 20 16, page gap 10, panels radius 24.
-//! Top to bottom: transport bar, main area (SYNTH panel | FX rack above SEQUENCER | PROJECT),
-//! KEYS panel. The main area scrolls vertically when the window is at its minimum height.
+//! Top to bottom: transport bar, main area (SYNTH panel | FX rack above SEQUENCER | right
+//! column), KEYS panel. The right column ([`RIGHT_COLUMN_WIDTH`]) shows the PROJECT panel or
+//! the SONG CHAIN panel ([`AppState::right_tab`]: the page is 1140 tall and has no room for
+//! both). The main area scrolls vertically when the window is at its minimum height.
 
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, ScrollArea, Ui, vec2};
 use neu::Theme;
 
-use crate::app::AppState;
+use crate::app::{AppState, RightTab};
 
 pub mod controls;
 pub mod fx_rack;
 pub mod keyboard;
 pub mod project_bar;
 pub mod sequencer;
+pub mod song;
 pub mod synth_panel;
 pub mod transport_bar;
+
+/// Width of the right-hand column (PROJECT / SONG CHAIN panel) including its padding: wide
+/// enough for the A..H `segmented` (214 pt) inside the panel padding.
+pub const RIGHT_COLUMN_WIDTH: f32 = 260.0;
 
 /// Page padding: top 12, sides 20, bottom 16.
 pub const PAGE_PAD_TOP: i8 = 12;
@@ -64,7 +71,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 }
 
 /// The main area: SYNTH panel (flexible width) | FX rack ([`fx_rack::WIDTH`]) on top, then
-/// SEQUENCER (flexible width) | PROJECT ([`project_bar::WIDTH`]). The top row takes whatever
+/// SEQUENCER (flexible width) | PROJECT or SONG CHAIN ([`RIGHT_COLUMN_WIDTH`]). The top row takes whatever
 /// height the sequencer row ([`sequencer::panel_height`], known up front) leaves, but never
 /// less than [`TOP_ROW_MIN_HEIGHT`]; when the panels need more height than there is (minimum
 /// window size) the area scrolls vertically.
@@ -93,16 +100,19 @@ pub fn main_area(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             });
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                let seq_width = (ui.available_width() - project_bar::WIDTH - gap).max(0.0);
+                let seq_width = (ui.available_width() - RIGHT_COLUMN_WIDTH - gap).max(0.0);
                 ui.allocate_ui_with_layout(
                     vec2(seq_width, bottom_height),
                     Layout::top_down(Align::Min),
                     |ui| sequencer::show(ui, state, theme),
                 );
                 ui.allocate_ui_with_layout(
-                    vec2(project_bar::WIDTH, bottom_height),
+                    vec2(RIGHT_COLUMN_WIDTH, bottom_height),
                     Layout::top_down(Align::Min),
-                    |ui| project_bar::show(ui, state, theme),
+                    |ui| match state.right_tab {
+                        RightTab::Project => project_bar::show(ui, state, theme),
+                        RightTab::Chain => song::show(ui, state, theme),
+                    },
                 );
             });
         });

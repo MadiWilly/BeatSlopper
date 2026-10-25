@@ -34,7 +34,7 @@ use egui::Vec2;
 pub const REQUESTED_INNER_SIZE: Vec2 = Vec2::new(1280.0, 1140.0);
 
 /// Smallest inner size the window can be resized to (the panels stack with a scroll area).
-pub const MIN_INNER_SIZE: Vec2 = Vec2::new(1240.0, 760.0);
+pub const MIN_INNER_SIZE: Vec2 = Vec2::new(1270.0, 760.0);
 
 /// Points kept free of the monitor's size for the taskbar, title bar and borders.
 pub const WORK_AREA_MARGIN: f32 = 60.0;

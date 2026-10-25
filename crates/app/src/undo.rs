@@ -1,10 +1,10 @@
 //! Undo / redo (M4): a snapshot stack over everything a project edit can change.
 //!
-//! A [`Snapshot`] is the UI's own mirror of the engine's musical state (pattern, parameters,
-//! tempo, swing, preset) plus the project path, so undoing a project *open* also brings the
-//! previous file path back and a following Save writes to the right file. Snapshots are
-//! cheap (a few hundred bytes) so the stack simply stores whole copies: [`UNDO_CAP`] of them,
-//! the oldest dropped first.
+//! A [`Snapshot`] is the UI's own mirror of the engine's musical state (the whole pattern
+//! bank, parameters, tempo, swing, preset) plus the project path, so undoing a project *open*
+//! also brings the previous file path back and a following Save writes to the right file.
+//! Snapshots are cheap (a few kilobytes) so the stack simply stores whole copies:
+//! [`UNDO_CAP`] of them, the oldest dropped first.
 //!
 //! The stack stores the state *before* each edit: `AppState::begin_edit` pushes the current
 //! snapshot, then the edit mutates the state. [`UndoStack::undo`] hands that snapshot back and
@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use engine::{ParamId, Pattern};
+use engine::{Bank, ParamId};
 
 /// Most undo steps remembered; older ones are dropped.
 pub const UNDO_CAP: usize = 100;
@@ -29,7 +29,8 @@ pub const UNDO_CAP: usize = 100;
 /// Everything an undo step restores.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
-    pub pattern: Pattern,
+    /// All eight patterns, the chain, the play mode and the selected pattern (M5).
+    pub bank: Bank,
     pub params: [f32; ParamId::COUNT],
     pub bpm: f32,
     pub swing: f32,
@@ -132,7 +133,7 @@ mod tests {
 
     fn snap(bpm: f32) -> Snapshot {
         Snapshot {
-            pattern: Pattern::demo(),
+            bank: Bank::default(),
             params: default_params(),
             bpm,
             swing: 0.0,

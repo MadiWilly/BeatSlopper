@@ -1,8 +1,11 @@
-//! egui_kittest: the M0-M4 screens render in both themes without a window or an audio device,
+//! egui_kittest: the M0-M5 screens render in both themes without a window or an audio device,
 //! the computer keyboard plays the on-screen piano, the SYNTH / FX panels leave every
 //! parameter untouched until a control is used, clicking a sequencer cell toggles it, the
-//! MIDI lamp / selector render without opening a port, and the M4 polish works end to end:
-//! Space / R / Ctrl+Z shortcuts, the "Unsaved changes" marker, the DISCARD / KEEP confirm.
+//! MIDI lamp / selector render without opening a port, the M4 polish works end to end (Space /
+//! R / Ctrl+Z shortcuts, the "Unsaved changes" marker, the DISCARD / KEEP confirm) and the M5
+//! pattern UI does too: the A..H tabs switch the grid, LENGTH shows the BAR selector, the
+//! queued letter appears while a switch is pending, MODE flips the right-hand column to the
+//! SONG CHAIN panel, whose ADD / REMOVE edit the chain.
 
 use app::ui;
 use app::{AppState, BeatSlopperApp, default_params};
@@ -157,16 +160,19 @@ fn full_layout_renders_in_both_themes_and_counts_frames() {
 }
 
 fn app_harness() -> Harness<'static, BeatSlopperApp> {
+    app_harness_sized(egui::Vec2::new(1280.0, 1080.0))
+}
+
+/// The whole app at `size` (the design size is 1280 x 1140; see `app::window`).
+fn app_harness_sized(size: egui::Vec2) -> Harness<'static, BeatSlopperApp> {
     let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
-    Harness::builder()
-        .with_size(egui::Vec2::new(1280.0, 1080.0))
-        .build_ui_state(
-            |ui, app: &mut BeatSlopperApp| {
-                app.tick(ui.ctx());
-                app.show(ui);
-            },
-            app,
-        )
+    Harness::builder().with_size(size).build_ui_state(
+        |ui, app: &mut BeatSlopperApp| {
+            app.tick(ui.ctx());
+            app.show(ui);
+        },
+        app,
+    )
 }
 
 fn repeat_event(key: Key) -> Event {
@@ -263,7 +269,7 @@ fn sequencer_panel_renders_in_both_themes_without_touching_the_pattern() {
         let state = render_one(mode, egui::Vec2::new(1000.0, 440.0), ui::sequencer::show);
         assert_eq!(state.mode, mode);
         assert_eq!(
-            state.pattern,
+            state.pattern().clone(),
             Pattern::demo(),
             "rendering must not edit the pattern"
         );
@@ -304,37 +310,37 @@ fn clicking_a_step_cell_toggles_it() {
     let mut harness = sequencer_harness();
     let kick = DrumRow::Kick.index();
     assert!(
-        !harness.state().pattern.drums[kick][1].on,
+        !harness.state().pattern().drums[kick][1].on,
         "demo: kick step 2 is off"
     );
 
     harness.get_by_label("Kick step 2").click();
     harness.step();
-    let cell = harness.state().pattern.drums[kick][1];
+    let cell = harness.state().pattern().drums[kick][1];
     assert!(cell.on && !cell.accent, "{cell:?}");
 
     harness.get_by_label("Kick step 2").click();
     harness.step();
-    assert!(!harness.state().pattern.drums[kick][1].on);
+    assert!(!harness.state().pattern().drums[kick][1].on);
 
     // Shift-click: on with the accent; again: accent off.
     harness
         .get_by_label("Snare step 3")
         .click_modifiers(Modifiers::SHIFT);
     harness.step();
-    let cell = harness.state().pattern.drums[DrumRow::Snare.index()][2];
+    let cell = harness.state().pattern().drums[DrumRow::Snare.index()][2];
     assert!(cell.on && cell.accent, "{cell:?}");
     harness
         .get_by_label("Snare step 3")
         .click_modifiers(Modifiers::SHIFT);
     harness.step();
-    let cell = harness.state().pattern.drums[DrumRow::Snare.index()][2];
+    let cell = harness.state().pattern().drums[DrumRow::Snare.index()][2];
     assert!(cell.on && !cell.accent, "{cell:?}");
 
     // Only the clicked cells changed.
     let mut expected = Pattern::demo();
     expected.drums[DrumRow::Snare.index()][2].on = true;
-    assert_eq!(harness.state().pattern, expected);
+    assert_eq!(harness.state().pattern().clone(), expected);
 }
 
 #[test]
@@ -345,7 +351,7 @@ fn clear_pills_clear_a_row_and_everything() {
     assert_eq!(clears, 6);
     harness.get_all_by_label("Clear").nth(3).unwrap().click();
     harness.step();
-    let pattern = &harness.state().pattern;
+    let pattern = harness.state().pattern();
     assert!(
         pattern.drums[DrumRow::ClosedHat.index()]
             .iter()
@@ -353,9 +359,11 @@ fn clear_pills_clear_a_row_and_everything() {
     );
     assert!(pattern.drums[DrumRow::Kick.index()].iter().any(|s| s.on));
 
-    harness.get_by_label("Clear all").click();
+    harness
+        .get_by_label(ui::sequencer::CLEAR_PATTERN_LABEL)
+        .click();
     harness.step();
-    assert!(harness.state().pattern.is_empty());
+    assert!(harness.state().pattern().is_empty());
 }
 
 #[test]
@@ -370,7 +378,7 @@ fn a_bass_cell_selects_the_step_and_the_keyboard_sets_its_note() {
     harness.step();
     let state = harness.state().state();
     assert_eq!(
-        state.pattern.synth[1],
+        state.pattern().synth[1],
         SynthStep {
             note: Some(60),
             accent: false
@@ -385,7 +393,7 @@ fn a_bass_cell_selects_the_step_and_the_keyboard_sets_its_note() {
     harness.key_up(Key::Delete);
     harness.step();
     assert_eq!(
-        harness.state().state().pattern.synth[1],
+        harness.state().state().pattern().synth[1],
         SynthStep::default()
     );
     assert_eq!(harness.state().state().selected_step, Some(1));
@@ -573,37 +581,37 @@ fn ctrl_z_after_a_step_click_restores_it_and_ctrl_y_redoes() {
     let kick = DrumRow::Kick.index();
     harness.get_by_label("Kick step 2").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert!(harness.state().state().pattern.drums[kick][1].on);
+    assert!(harness.state().state().pattern().drums[kick][1].on);
     assert!(harness.state().state().dirty);
 
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert!(
-        !harness.state().state().pattern.drums[kick][1].on,
+        !harness.state().state().pattern().drums[kick][1].on,
         "Ctrl+Z undid"
     );
-    assert_eq!(harness.state().state().pattern, Pattern::demo());
+    assert_eq!(harness.state().state().pattern().clone(), Pattern::demo());
 
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Y);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert!(
-        harness.state().state().pattern.drums[kick][1].on,
+        harness.state().state().pattern().drums[kick][1].on,
         "Ctrl+Y redid"
     );
 
     harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert!(
-        harness.state().state().pattern.drums[kick][1].on,
+        harness.state().state().pattern().drums[kick][1].on,
         "Ctrl+Shift+Z: nothing to redo"
     );
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert!(!harness.state().state().pattern.drums[kick][1].on);
+    assert!(!harness.state().state().pattern().drums[kick][1].on);
     harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert!(
-        harness.state().state().pattern.drums[kick][1].on,
+        harness.state().state().pattern().drums[kick][1].on,
         "Ctrl+Shift+Z redoes"
     );
     // Ctrl+Z is not a piano key: `Z` alone would shift the octave.
@@ -620,15 +628,15 @@ fn undo_and_redo_pills_work_and_grey_out() {
 
     harness.get_by_label("Snare step 1").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert!(harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+    assert!(harness.state().state().pattern().drums[DrumRow::Snare.index()][0].on);
     assert!(!harness.get_by_label("Undo").accesskit_node().is_disabled());
     harness.get_by_label("Undo").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert!(!harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+    assert!(!harness.state().state().pattern().drums[DrumRow::Snare.index()][0].on);
     assert!(!harness.get_by_label("Redo").accesskit_node().is_disabled());
     harness.get_by_label("Redo").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert!(harness.state().state().pattern.drums[DrumRow::Snare.index()][0].on);
+    assert!(harness.state().state().pattern().drums[DrumRow::Snare.index()][0].on);
 }
 
 #[test]
@@ -682,7 +690,7 @@ fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
     let mut harness = app_harness();
     harness.get_by_label("Kick step 2").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    let edited = harness.state().state().pattern.clone();
+    let edited = harness.state().state().pattern().clone();
 
     harness.get_by_label("New").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
@@ -692,7 +700,7 @@ fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
     );
     harness.get_by_label(ui::project_bar::DISCARD_QUESTION);
     assert_eq!(
-        harness.state().state().pattern,
+        harness.state().state().pattern().clone(),
         edited,
         "nothing discarded yet"
     );
@@ -705,7 +713,7 @@ fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
             .query_by_label(ui::project_bar::DISCARD_QUESTION)
             .is_none()
     );
-    assert_eq!(harness.state().state().pattern, edited);
+    assert_eq!(harness.state().state().pattern().clone(), edited);
     assert!(harness.state().state().dirty);
 
     // Ctrl+N asks too; Escape cancels.
@@ -718,14 +726,14 @@ fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
     harness.key_press(Key::Escape);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert_eq!(harness.state().state().pending_action, None);
-    assert_eq!(harness.state().state().pattern, edited);
+    assert_eq!(harness.state().state().pattern().clone(), edited);
 
     // DISCARD creates the new project; undo brings the edit back.
     harness.get_by_label("New").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     harness.get_by_label("Discard").click();
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert_eq!(harness.state().state().pattern, Pattern::empty());
+    assert_eq!(harness.state().state().pattern().clone(), Pattern::empty());
     assert!(!harness.state().state().dirty);
     assert!(
         harness
@@ -734,7 +742,7 @@ fn new_while_dirty_asks_and_keep_or_escape_cancels_discard_proceeds() {
     );
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
-    assert_eq!(harness.state().state().pattern, edited);
+    assert_eq!(harness.state().state().pattern().clone(), edited);
 }
 
 /// Open while dirty asks as well; headless there is no dialog, so DISCARD just clears the
@@ -754,4 +762,259 @@ fn open_while_dirty_asks_and_never_opens_a_dialog_headless() {
     harness.run_steps(2); // the frame that handles the input, then the one that redraws
     assert_eq!(harness.state().state().pending_action, None);
     assert!(harness.state().state().dirty, "no file was opened");
+}
+
+// -------------------------------------------------------------------------------------------
+// M5: pattern tabs, length / bar selector, queued letter, MODE, SONG CHAIN panel.
+
+/// A `RadioButton` (segmented item) named `label`, skipping plain labels with the same text
+/// (the beat numbers are "1".."4" too).
+fn radio<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kittest::Node<'h> {
+    harness
+        .get_all_by_label(label)
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::RadioButton)
+        .unwrap_or_else(|| panic!("no segmented item {label:?}"))
+}
+
+#[test]
+fn pattern_tabs_switch_the_grid_and_edits_land_in_the_selected_pattern() {
+    let mut harness = sequencer_harness();
+    harness.run_steps(2);
+    for tab in ui::sequencer::PATTERN_TABS {
+        radio(&harness, tab);
+    }
+    assert_eq!(harness.state().current(), 0);
+    // The demo kick plays on step 1: the grid shows A.
+    assert!(harness.state().pattern().drums[DrumRow::Kick.index()][0].on);
+
+    radio(&harness, "B").click();
+    harness.step();
+    assert_eq!(harness.state().current(), 1);
+    assert!(harness.state().pattern().is_empty(), "B is empty");
+    assert!(!harness.state().dirty, "selecting a tab is not an edit");
+
+    harness.get_by_label("Kick step 1").click();
+    harness.step();
+    let state = harness.state();
+    assert!(state.bank.patterns[1].drums[DrumRow::Kick.index()][0].on);
+    assert_eq!(state.bank.patterns[0], Pattern::demo(), "A is unchanged");
+    assert!(state.dirty);
+
+    radio(&harness, "A").click();
+    harness.step();
+    assert_eq!(harness.state().current(), 0);
+    assert_eq!(harness.state().pattern(), &Pattern::demo());
+}
+
+#[test]
+fn length_two_bars_shows_the_bar_selector_and_bar_two_edits_absolute_steps() {
+    let mut harness = sequencer_harness();
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label(ui::sequencer::BAR_LABEL).is_none(),
+        "one bar: no selector"
+    );
+    radio(&harness, "2 bars").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().pattern().len(), 32);
+    harness.get_by_label(ui::sequencer::BAR_LABEL);
+    radio(&harness, "1");
+    radio(&harness, "2").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().shown_bar, 1);
+    assert!(!harness.state().follow, "picking a bar switches FOLLOW off");
+    // Bar 2: beat numbers 5..8 and absolute cell names.
+    harness.get_by_label("5");
+    harness.get_by_label("8");
+    harness.get_by_label("Kick step 17").click();
+    harness.run_steps(2);
+    let pattern = harness.state().pattern();
+    assert!(pattern.drums[DrumRow::Kick.index()][16].on);
+    assert_eq!(
+        pattern.drums[DrumRow::Kick.index()][0],
+        Pattern::demo().drums[0][0]
+    );
+    assert!(harness.query_by_label("Kick step 1").is_none());
+
+    harness.get_by_label("Follow").click();
+    harness.run_steps(2);
+    assert!(harness.state().follow);
+
+    radio(&harness, "1 bar").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().pattern().len(), 16);
+    assert_eq!(harness.state().shown_bar, 0, "clamped to the new length");
+    assert!(harness.query_by_label(ui::sequencer::BAR_LABEL).is_none());
+    harness.get_by_label("Kick step 1");
+}
+
+#[test]
+fn copy_paste_and_clear_pills_work_from_the_head() {
+    let mut harness = sequencer_harness();
+    harness.run_steps(2);
+    assert!(
+        harness.get_by_label("Paste").accesskit_node().is_disabled(),
+        "nothing to paste yet"
+    );
+    harness.get_by_label("Copy").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().clipboard.as_ref(), Some(&Pattern::demo()));
+    radio(&harness, "C").click();
+    harness.run_steps(2);
+    harness.get_by_label("Paste").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().bank.patterns[2], Pattern::demo());
+    harness
+        .get_by_label(ui::sequencer::CLEAR_PATTERN_LABEL)
+        .click();
+    harness.run_steps(2);
+    assert!(harness.state().bank.patterns[2].is_empty());
+    assert_eq!(harness.state().bank.patterns[0], Pattern::demo());
+    assert!(harness.state_mut().undo());
+    assert_eq!(harness.state().bank.patterns[2], Pattern::demo());
+}
+
+/// While playing in pattern mode, clicking another tab queues it: the engine reports the
+/// queue once it renders, and the blinking letter ("Queued B") shows beside the tabs until the
+/// switch happens at the bar boundary.
+#[test]
+fn queued_pattern_letter_shows_until_the_bar_boundary() {
+    let (app, mut engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1000.0, 440.0))
+        .build_ui_state(
+            |ui, app: &mut BeatSlopperApp| {
+                app.tick(ui.ctx());
+                let theme = app.theme().clone();
+                ui::sequencer::show(ui, app.state_mut(), &theme);
+            },
+            app,
+        );
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Queued B").is_none());
+    harness.state_mut().state_mut().play();
+    let mut out = vec![0.0f32; 512 * 2];
+    engine.render(&mut out, 512);
+    harness.step();
+    radio(&harness, "B").click();
+    harness.step();
+    assert_eq!(harness.state().state().current(), 1, "editing B at once");
+    engine.render(&mut out, 512);
+    harness.step();
+    assert_eq!(harness.state().state().playhead.queued, Some(1));
+    assert_eq!(harness.state().state().playhead.pattern, 0, "A still plays");
+    harness.get_by_label("Queued B");
+
+    // Render to the bar boundary: B plays, the letter is gone.
+    let bar = engine::export::bar_frames(app::app::DEFAULT_BPM, 48_000.0);
+    let mut rendered = 1024;
+    while rendered < bar + 512 {
+        engine.render(&mut out, 512);
+        rendered += 512;
+    }
+    harness.step();
+    assert_eq!(harness.state().state().playhead.queued, None);
+    assert_eq!(harness.state().state().playhead.pattern, 1);
+    assert!(harness.query_by_label("Queued B").is_none());
+}
+
+#[test]
+fn mode_switch_shows_the_song_chain_panel_and_add_remove_edit_the_chain() {
+    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
+    harness.run_steps(2);
+    radio(&harness, "Project");
+    assert!(harness.query_by_label("Song chain").is_none());
+    harness.get_by_label("A · bar 1/1");
+    harness.get_by_label(ui::project_bar::EXPORT_LOOP_LABEL);
+
+    radio(&harness, "Song").click();
+    harness.run_steps(2);
+    let state = harness.state().state();
+    assert_eq!(state.bank.mode, engine::PlayMode::Song);
+    assert_eq!(state.right_tab, app::app::RightTab::Chain);
+    assert!(!state.dirty, "the mode is not a project edit");
+    harness.get_by_label("Song chain");
+    harness.get_by_label("SONG 1/1 · A");
+    harness.get_by_label("Entry 1: A x1");
+
+    // ADD appends the edit pattern; the new entry is selected and REMOVE takes it away.
+    harness.get_by_label("Add").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().chain().len(), 2);
+    assert_eq!(harness.state().state().song_selected, Some(1));
+    harness.get_by_label("Entry 2: A x1");
+    harness.get_by_label("SONG 1/2 · A");
+    // The pattern selector changes the selected entry (the sequencer tabs are "A".."H" too,
+    // so pick the right column's item by position).
+    harness
+        .get_all_by_label("B")
+        .filter(|n| n.accesskit_node().role() == egui::accesskit::Role::RadioButton)
+        .max_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().chain()[1],
+        engine::ChainEntry::new(1, 1)
+    );
+    harness.get_by_label("Entry 2: B x1");
+    harness.get_by_label("Remove").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().chain().len(), 1);
+    assert!(harness.query_by_label("Entry 2: B x1").is_none());
+    assert!(harness.state().state().dirty, "chain edits are edits");
+    // Undo brings the entry back.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().chain().len(), 2);
+
+    // The tab goes back to PROJECT without leaving song mode; EXPORT reads EXPORT SONG.
+    radio(&harness, "Project").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state().right_tab,
+        app::app::RightTab::Project
+    );
+    assert_eq!(harness.state().state().bank.mode, engine::PlayMode::Song);
+    harness.get_by_label(ui::project_bar::EXPORT_SONG_LABEL);
+    assert!(harness.query_by_label("Bars").is_none());
+    // The status line (what an export reports) fits under the export row, inside the panel.
+    harness
+        .state_mut()
+        .state_mut()
+        .set_status("Exported song (8.0 s) to song.wav");
+    harness.run_steps(2);
+    let status = harness
+        .get_by_label("Exported song (8.0 s) to song.wav")
+        .rect();
+    let export = harness
+        .get_by_label(ui::project_bar::EXPORT_SONG_LABEL)
+        .rect();
+    let octave = harness.get_by_label("Octave").rect();
+    assert!(status.min.y >= export.max.y, "{status:?} under {export:?}");
+    assert!(
+        status.max.y + 20.0 <= octave.min.y - 30.0,
+        "status {status:?} is inside the panel above the KEYS panel at {octave:?}"
+    );
+
+    radio(&harness, "Pattern").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().state().bank.mode, engine::PlayMode::Pattern);
+    harness.get_by_label(ui::project_bar::EXPORT_LOOP_LABEL);
+    harness.get_by_label("A · bar 1/1");
+}
+
+/// The SONG CHAIN panel renders on its own in both themes without touching the chain.
+#[test]
+fn song_panel_renders_in_both_themes_without_editing() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let state = render_one(
+            mode,
+            egui::Vec2::new(ui::RIGHT_COLUMN_WIDTH + 40.0, 400.0),
+            ui::song::show,
+        );
+        assert_eq!(state.chain(), &[engine::ChainEntry::new(0, 1)]);
+        assert_eq!(state.song_selected, Some(0));
+        assert!(!state.dirty);
+    }
 }

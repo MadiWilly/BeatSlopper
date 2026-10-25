@@ -3,7 +3,7 @@
 //! thread.
 //!
 //! The UI thread never holds an `Engine`, so a project is built from [`AppState`]'s own
-//! mirrors (bpm, swing, pattern, params, preset, octave, velocity) rather than with
+//! mirrors (bpm, swing, bank, params, preset, octave, velocity) rather than with
 //! `Project::from_engine`; both produce the same file because the mirrors are what the engine
 //! was sent. Exports render a fresh offline engine on a `std::thread` and report back over a
 //! channel that [`AppState::poll_export`] drains every frame, so neither the UI nor the audio
@@ -27,35 +27,76 @@ pub const DEFAULT_PROJECT_FILE: &str = "beat.beatslopper.json";
 /// Default file name offered by the Export dialog.
 pub const DEFAULT_WAV_FILE: &str = "beat.wav";
 
+/// What an export renders: the current pattern a number of times, or the whole song chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    /// The edit pattern, `repeats` times (one repeat = its full 1/2/4-bar length).
+    Loop {
+        /// One of [`EXPORT_REPEATS`].
+        repeats: u32,
+    },
+    /// The whole chain once (`render_song_wav`).
+    Song,
+}
+
+impl ExportKind {
+    /// Short description for the status line: `"loop x2"` or `"song"`.
+    #[must_use]
+    pub fn describe(self) -> String {
+        match self {
+            ExportKind::Loop { repeats } => format!("loop x{repeats}"),
+            ExportKind::Song => "song".to_owned(),
+        }
+    }
+}
+
 /// A WAV export running on a worker thread.
 pub struct ExportJob {
     rx: Receiver<Result<ExportStats, String>>,
     handle: Option<JoinHandle<()>>,
     path: PathBuf,
+    kind: ExportKind,
 }
 
 impl ExportJob {
-    /// Spawns the worker: renders `repeats` bars of `project` at `sample_rate` to `path`.
-    pub fn spawn(project: Project, repeats: u32, sample_rate: f32, path: PathBuf) -> Self {
+    /// Spawns the worker: renders `kind` of `project` at `sample_rate` to `path`.
+    pub fn spawn(project: Project, kind: ExportKind, sample_rate: f32, path: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let target = path.clone();
         let handle = std::thread::Builder::new()
             .name("beatslopper-export".into())
             .spawn(move || {
-                let result =
-                    engine::export::render_loop_wav(&project, repeats, sample_rate, &target)
-                        .map_err(|e| e.to_string());
+                let result = match kind {
+                    ExportKind::Loop { repeats } => {
+                        engine::export::render_loop_wav(&project, repeats, sample_rate, &target)
+                    }
+                    ExportKind::Song => {
+                        engine::export::render_song_wav(&project, sample_rate, &target)
+                    }
+                }
+                .map_err(|e| e.to_string());
                 // The receiver is gone only if the app already dropped the job.
                 let _ = tx.send(result);
             })
             .ok();
-        Self { rx, handle, path }
+        Self {
+            rx,
+            handle,
+            path,
+            kind,
+        }
     }
 
     /// Where the WAV is being written.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// What is being rendered.
+    #[must_use]
+    pub fn kind(&self) -> ExportKind {
+        self.kind
     }
 
     /// `Some` once the worker reported; `None` while it is still rendering.
@@ -100,11 +141,12 @@ impl AppState {
             version: engine::project::FORMAT_VERSION,
             bpm: self.bpm,
             swing: self.swing,
-            bank: engine::Bank::from_pattern(self.pattern.clone()),
+            bank: self.bank.clone(),
             params,
             preset_index: self.preset_index,
             octave: self.input.octave,
             velocity: self.input.velocity,
+            ..Project::default()
         }
     }
 
@@ -133,13 +175,21 @@ impl AppState {
         }
         self.input.set_octave(project.octave);
         self.input.set_velocity(project.velocity);
-        self.pattern = project.pattern().clone();
+        self.bank = project.bank.clone();
+        self.bank.normalise();
         self.selected_step = None;
+        self.shown_bar = 0;
+        self.song_selected = (self.bank.chain_len > 0).then_some(0);
+        self.right_tab = match self.bank.mode {
+            engine::PlayMode::Song => crate::app::RightTab::Chain,
+            engine::PlayMode::Pattern => crate::app::RightTab::Project,
+        };
         self.resend_all();
     }
 
-    /// NEW: an empty pattern with every setting at its default; the file path is forgotten and
-    /// the project is clean. Undoable (the previous state and path come back).
+    /// NEW: an empty bank (every pattern blank, chain `[A x1]`, pattern mode) with every
+    /// setting at its default; the file path is forgotten and the project is clean. Undoable
+    /// (the previous state and path come back).
     pub fn new_project(&mut self) {
         let project = Project::from_pattern(engine::Pattern::empty());
         self.apply_project(&project);
@@ -228,25 +278,40 @@ impl AppState {
         self.pending_action = None;
     }
 
-    /// Starts exporting `export_repeats` bars to `path` on a worker thread. Refused (with a
-    /// status line) while another export runs.
+    /// What EXPORT renders right now: the whole song in song mode, else the edit pattern
+    /// `export_repeats` times.
+    #[must_use]
+    pub fn export_kind(&self) -> ExportKind {
+        match self.bank.mode {
+            engine::PlayMode::Song => ExportKind::Song,
+            engine::PlayMode::Pattern => ExportKind::Loop {
+                repeats: if EXPORT_REPEATS.contains(&self.export_repeats) {
+                    self.export_repeats
+                } else {
+                    EXPORT_REPEATS[0]
+                },
+            },
+        }
+    }
+
+    /// Starts exporting ([`export_kind`](Self::export_kind)) to `path` on a worker thread.
+    /// Refused (with a status line) while another export runs.
     pub fn start_export(&mut self, path: PathBuf) -> bool {
         if self.is_exporting() {
             self.set_status("Already exporting");
             return false;
         }
-        let repeats = if EXPORT_REPEATS.contains(&self.export_repeats) {
-            self.export_repeats
-        } else {
-            EXPORT_REPEATS[0]
-        };
-        self.export_repeats = repeats;
-        let job = ExportJob::spawn(self.build_project(), repeats, self.sample_rate(), path);
+        let kind = self.export_kind();
+        if let ExportKind::Loop { repeats } = kind {
+            self.export_repeats = repeats;
+        }
+        let job = ExportJob::spawn(self.build_project(), kind, self.sample_rate(), path);
         self.export_job = Some(job);
         true
     }
 
-    /// Picks up a finished export: the result becomes the status line.
+    /// Picks up a finished export: the result becomes the status line, which says what was
+    /// exported (`"Exported song (12.0 s) to beat.wav"`, `"Exported loop x2 (6.0 s) to ..."`).
     pub fn poll_export(&mut self) {
         let Some(job) = self.export_job.as_mut() else {
             return;
@@ -255,10 +320,11 @@ impl AppState {
             return;
         };
         let name = file_label(job.path());
+        let what = job.kind().describe();
         self.export_job = None;
         match result {
             Ok(stats) => self.set_status(format!(
-                "Exported {:.1} s to {name}",
+                "Exported {what} ({:.1} s) to {name}",
                 stats.duration_seconds
             )),
             Err(err) => self.set_status(format!("Export failed: {err}")),
@@ -301,11 +367,31 @@ mod tests {
         state.set_drum_tune(DrumRow::Kick, -2.0);
         state.input.set_octave(3);
         state.input.set_velocity(0.6);
+        // M5: a second pattern of two bars with a step in bar 2, a four-bar pattern C, a
+        // chain and song mode.
+        state.select_pattern(1);
+        state.set_pattern_length(engine::PatternLength::Bar2);
+        state.set_drum_step(DrumRow::Kick, 20, true, false);
+        state.set_synth_step(31, Some(48), true);
+        state.select_pattern(2);
+        state.set_pattern_length(engine::PatternLength::Bar4);
+        state.set_drum_step(DrumRow::Snare, 63, true, true);
+        state.add_chain_entry();
+        state.set_chain_repeats(3);
+        state.select_pattern(1);
+        state.add_chain_entry();
+        state.set_play_mode(engine::PlayMode::Song);
 
         let project = state.build_project();
+        assert_eq!(project.version, 3.max(engine::project::FORMAT_VERSION));
         assert_eq!(project.bpm, 133.0);
         assert_eq!(project.param(ParamId::FilterCutoff), 1234.0);
+        assert_eq!(project.bank, state.bank);
+        assert_eq!(project.bank.chain_entries().len(), 3);
+        assert_eq!(project.bank.mode, engine::PlayMode::Song);
+        assert_eq!(project.bank.current, 1);
         let json = project.to_json_pretty();
+        assert!(json.contains("\"mode\": \"song\""));
         let back = Project::from_json(&json).unwrap();
         assert_eq!(back, project);
 
@@ -315,16 +401,29 @@ mod tests {
         assert_eq!(loaded.swing, 0.3);
         assert_eq!(loaded.preset_index, 3);
         assert_eq!(loaded.params, state.params);
-        assert_eq!(loaded.pattern, state.pattern);
+        assert_eq!(loaded.bank, state.bank);
+        assert_eq!(loaded.current(), 1);
+        assert_eq!(loaded.pattern().len(), 32);
+        assert_eq!(loaded.bank.patterns[2].len(), 64);
+        assert!(loaded.bank.patterns[2].drums[DrumRow::Snare.index()][63].on);
+        assert_eq!(loaded.right_tab, crate::app::RightTab::Chain, "song mode");
+        assert_eq!(loaded.song_selected, Some(0));
         assert_eq!(loaded.input.octave, 3);
         assert_eq!(loaded.input.velocity, 0.6);
         assert_eq!(loaded.build_project(), project);
-        // The load resent everything: the offline engine mirrors the loaded state.
+        // The load resent everything: the offline engine mirrors the loaded state, the mode
+        // included (the engine started in pattern mode).
+        while !loaded.outbox.is_empty() {
+            engine.process_messages();
+            loaded.flush_outbox();
+        }
         engine.process_messages();
         assert_eq!(engine.bpm(), 133.0);
         assert_eq!(engine.transport().swing(), 0.3);
         assert_eq!(engine.param(ParamId::FilterCutoff), 1234.0);
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.play_mode(), engine::PlayMode::Song);
+        assert_eq!(engine.edit_pattern(), 1);
     }
 
     #[test]
@@ -340,18 +439,18 @@ mod tests {
         let (mut other, _engine) = AppState::headless(ThemeMode::Dark);
         assert!(other.load_project_from(path.clone()));
         assert_eq!(other.bpm, 99.0);
-        assert_eq!(other.pattern, state.pattern);
+        assert_eq!(other.bank, state.bank);
         assert_eq!(other.project_path.as_deref(), Some(path.as_path()));
 
         other.new_project();
         assert_eq!(other.bpm, crate::app::DEFAULT_BPM);
-        assert_eq!(other.pattern, Pattern::empty());
+        assert_eq!(other.pattern().clone(), Pattern::empty());
         assert_eq!(other.project_path, None);
 
         assert!(!other.load_project_from(temp_path("missing.beatslopper.json")));
         assert!(other.status_text().unwrap().starts_with("Open failed"));
         // A failed open leaves the state alone.
-        assert_eq!(other.pattern, Pattern::empty());
+        assert_eq!(other.pattern().clone(), Pattern::empty());
         let _ = std::fs::remove_file(path);
     }
 
@@ -402,7 +501,7 @@ mod tests {
 
         // NEW: empty, no path, clean; undo brings the beat and its path back (dirty).
         state.new_project();
-        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.pattern().clone(), Pattern::empty());
         assert_eq!(state.project_path, None);
         assert!(!state.dirty);
         assert!(state.undo());
@@ -410,7 +509,7 @@ mod tests {
         assert_eq!(state.project_path.as_deref(), Some(saved.as_path()));
         assert!(state.dirty);
         assert!(state.redo());
-        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.pattern().clone(), Pattern::empty());
         assert_eq!(state.project_path, None);
 
         // OPEN: the loaded file replaces everything; undo returns to the pre-open state.
@@ -427,7 +526,7 @@ mod tests {
         assert_eq!(state.project_path, None);
         engine.process_messages();
         assert_eq!(engine.bpm(), 70.0);
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
         let _ = std::fs::remove_file(saved);
     }
 
@@ -436,7 +535,7 @@ mod tests {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
         // Clean: New happens at once, Open may proceed.
         assert!(state.request_new());
-        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.pattern().clone(), Pattern::empty());
         assert_eq!(state.pending_action, None);
         assert!(state.request_open());
         assert_eq!(state.pending_action, None);
@@ -467,7 +566,7 @@ mod tests {
         // DISCARD on New performs the New right here.
         assert!(!state.request_new());
         assert_eq!(state.confirm_pending(), Some(PendingAction::New));
-        assert_eq!(state.pattern, Pattern::empty());
+        assert_eq!(state.pattern().clone(), Pattern::empty());
         assert!(!state.dirty);
         assert_eq!(state.pending_action, None);
         // ... and it is undoable.
@@ -487,7 +586,7 @@ mod tests {
         assert!(!state.is_exporting());
         let status = state.status_text().unwrap().to_owned();
         // 2 bars at 120 BPM = 4 s, plus the 2 s tail.
-        assert_eq!(status, "Exported 6.0 s to export.wav", "{status}");
+        assert_eq!(status, "Exported loop x2 (6.0 s) to export.wav", "{status}");
         let bytes = std::fs::metadata(&path).unwrap().len();
         assert!(bytes > 44, "WAV has data: {bytes} bytes");
         let _ = std::fs::remove_file(path);
@@ -497,6 +596,29 @@ mod tests {
         assert!(state.start_export(bad));
         state.finish_export();
         assert!(state.status_text().unwrap().starts_with("Export failed"));
+
+        // Song mode renders the whole chain (A A B = 3 bars = 6 s, plus the tail), whatever
+        // the BARS choice, and the status says so.
+        state.bank = engine::Bank::demo();
+        state.bank.truncate(0);
+        for p in [0, 0, 1] {
+            state.bank.push(engine::ChainEntry::new(p, 1));
+        }
+        state.set_play_mode(engine::PlayMode::Song);
+        assert_eq!(state.export_kind(), ExportKind::Song);
+        let song = temp_path("song.wav");
+        assert!(state.start_export(song.clone()));
+        state.finish_export();
+        let status = state.status_text().unwrap().to_owned();
+        assert_eq!(status, "Exported song (8.0 s) to song.wav", "{status}");
+        let bytes = std::fs::metadata(&song).unwrap().len();
+        assert_eq!(
+            bytes,
+            44 + 8 * 48_000 * 4,
+            "3 bars + 2 s tail, 16-bit stereo"
+        );
+        let _ = std::fs::remove_file(song);
+        assert_eq!(ExportKind::Loop { repeats: 4 }.describe(), "loop x4");
     }
 
     #[test]

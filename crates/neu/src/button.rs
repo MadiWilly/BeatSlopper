@@ -34,6 +34,10 @@ pub enum Icon {
 
 /// Height of pill buttons (`.pill` in the mock).
 pub const PILL_HEIGHT: f32 = 30.0;
+/// Size of the square mixer toggles ("M" / "S") drawn with [`toggle_button_sized`].
+pub const TOGGLE_SQUARE: egui::Vec2 = egui::Vec2::new(28.0, 28.0);
+/// Corner radius of [`toggle_button_sized`] (clamped to a pill for small sizes).
+pub const TOGGLE_SIZED_RADIUS: f32 = 8.0;
 /// Line width of icon glyphs.
 pub const ICON_STROKE: f32 = 1.5;
 /// Size of the theme-toggle track.
@@ -55,9 +59,36 @@ pub fn toggle_button(ui: &mut Ui, theme: &Theme, label: &str, on: bool) -> Respo
     pill(ui, theme, label, Some(on))
 }
 
+/// Toggle button of an explicit `size` (e.g. [`TOGGLE_SQUARE`], 28x28, for the mixer's "M" /
+/// "S"): a [`TOGGLE_SIZED_RADIUS`] rounded rect with the same raised-m / inset-m (pressed) /
+/// OnGlow (`on`) treatment as [`toggle_button`] and the 12 pt medium caps label centred.
+pub fn toggle_button_sized(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    on: bool,
+    size: egui::Vec2,
+) -> Response {
+    toggle_rect(ui, theme, label, Some(on), size, TOGGLE_SIZED_RADIUS)
+}
+
 fn pill(ui: &mut Ui, theme: &Theme, label: &str, on: Option<bool>) -> Response {
     let galley = text::layout(ui.painter(), label, TextKind::Button, Color32::PLACEHOLDER);
     let size = vec2(galley.size().x + 2.0 * theme.space_4, PILL_HEIGHT);
+    toggle_rect(ui, theme, label, on, size, theme.radius_pill)
+}
+
+/// The shared body of [`button`], [`toggle_button`] and [`toggle_button_sized`]: a `size`
+/// rounded rect of `radius` with the raised / inset / on-glow treatment and a centred label.
+fn toggle_rect(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    on: Option<bool>,
+    size: egui::Vec2,
+    radius: f32,
+) -> Response {
+    let galley = text::layout(ui.painter(), label, TextKind::Button, Color32::PLACEHOLDER);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -70,7 +101,7 @@ fn pill(ui: &mut Ui, theme: &Theme, label: &str, on: Option<bool>) -> Response {
             } else {
                 theme.accent
             };
-            paint_soft_rect_with_fill(painter, rect, theme.radius_pill, Depth::OnGlow, fill, theme);
+            paint_soft_rect_with_fill(painter, rect, radius, Depth::OnGlow, fill, theme);
             theme.on_accent
         } else {
             let depth = if pressed {
@@ -78,7 +109,7 @@ fn pill(ui: &mut Ui, theme: &Theme, label: &str, on: Option<bool>) -> Response {
             } else {
                 Depth::RaisedM
             };
-            paint_soft_rect(painter, rect, theme.radius_pill, depth, theme);
+            paint_soft_rect(painter, rect, radius, depth, theme);
             if hovered {
                 theme.text_primary
             } else {

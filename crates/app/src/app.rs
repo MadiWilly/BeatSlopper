@@ -17,14 +17,28 @@
 //! once so the engine matches the UI. The chosen preset index is persisted next to the theme
 //! override and re-applied on the next launch.
 //!
-//! Sequencer (M3): [`AppState::pattern`] is the UI's source of truth for the 16-step pattern.
-//! Every edit goes through a `set_*` / `toggle_*` / `clear_*` method that updates the mirror
-//! and sends the matching `Message` (one step per message; a whole-pattern resend is 16 * 6
-//! step messages plus the per-row volumes and tunes, see [`AppState::send_pattern`]). The
-//! playhead is read from `EngineHandle::position()` every frame while the transport runs.
-//! Note entry: a selected bass step takes the next note-on; with the transport playing and
-//! record armed, note-ons are quantised to the nearest step ([`quantise_step`]) and written to
-//! the bass lane. Save / load / export live in [`crate::project`].
+//! Sequencer (M3/M5): [`AppState::bank`] is the UI's source of truth for the eight patterns,
+//! the song chain, the play mode and the selected (edit) pattern; [`AppState::pattern`] is
+//! the edit pattern. Every edit goes through a `set_*` / `toggle_*` / `clear_*` method that
+//! updates the mirror and sends the matching `Message`. Step indices are absolute within the
+//! pattern (`bar * 16 + column`, see [`AppState::shown_bar`]). The playhead is read from
+//! `EngineHandle::position()` every frame while the transport runs. Note entry: a selected
+//! bass step takes the next note-on; with the transport playing and record armed, note-ons are
+//! quantised to the nearest step ([`quantise_step`]) and written to the bass lane. Save / load
+//! / export live in [`crate::project`].
+//!
+//! Patterns and song mode (M5): the whole bank is resent with [`AppState::send_bank`]
+//! (startup, project load, undo). It is built by [`bank_messages`]: per pattern a
+//! `SetEditPattern`, a `ClearPattern`, only the *non-empty* steps (within the pattern's
+//! [`Pattern::used_steps`], temporarily lengthening the pattern so hidden steps survive), the
+//! length and the row volumes / tunes; then the chain, the play mode (only when it differs
+//! from what the engine already has, so a resend never restarts a running song) and
+//! `SelectPattern(current)`. A dense bank is more than the 1024-slot queue holds, so every
+//! message goes through [`AppState::send`]: straight onto the queue while it has room, else
+//! into [`AppState::outbox`], which [`AppState::flush_outbox`] drains on every frame, in order.
+//! Selecting a pattern tab sends `SelectPattern` (the engine queues the switch to the next bar
+//! while playing; [`Position::queued`] drives the blinking letter); copy / paste / clear and
+//! the chain edits are undo steps like any other edit.
 //!
 //! MIDI (M4): the `// ---- MIDI ----` section. The MIDI thread ([`crate::midi`]) sends notes to
 //! the engine itself over the engine's second queue ([`MidiHandle`]) and mirrors them to the
@@ -43,13 +57,17 @@
 //! The window title follows [`crate::window::window_title`] and the first frame fixes an
 //! undersized window ([`crate::window`]).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::{App, CreationContext, Frame, Storage};
-use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE};
-use engine::{DrumRow, EngineHandle, Message, MidiHandle, ParamId, Pattern, Position, STEPS};
+use engine::pattern::{DRUM_TUNE_RANGE, DRUM_VOLUME_RANGE, MAX_REPEATS, pattern_letter};
+use engine::{
+    Bank, ChainEntry, DrumRow, DrumStep, EngineHandle, MAX_CHAIN, Message, MidiHandle,
+    PATTERN_COUNT, ParamId, Pattern, PatternLength, PlayMode, Position, SynthStep,
+};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
@@ -111,6 +129,24 @@ pub enum PendingAction {
     Open,
 }
 
+/// Which panel the right-hand column shows (M5): the PROJECT panel or the SONG CHAIN panel.
+/// The column has room for one at a time; switching the play mode switches the tab too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RightTab {
+    #[default]
+    Project,
+    Chain,
+}
+
+/// Blink period of the queued-pattern letter: visible for half of it (2 Hz toggling).
+pub const QUEUED_BLINK_SECONDS: f64 = 0.5;
+
+/// Whether the queued-pattern letter is visible at `time` (seconds, `egui::InputState::time`).
+#[must_use]
+pub fn queued_blink_visible(time: f64) -> bool {
+    (time / (QUEUED_BLINK_SECONDS * 0.5)).floor() as i64 % 2 == 0
+}
+
 /// Identifies a continuous control for undo coalescing (see [`AppState::begin_continuous_edit`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditKey {
@@ -133,15 +169,17 @@ pub fn default_params() -> [f32; ParamId::COUNT] {
 /// Frames to render before `--smoke-test` closes the window.
 pub const SMOKE_TEST_FRAMES: u32 = 60;
 
-/// The step a note played at `position` is recorded to: the current step while less than half
-/// of it has elapsed, otherwise the next one (wrapping 15 -> 0).
+/// The step a note played at `position` is recorded to, as an absolute index into a pattern of
+/// `length` steps: the current step (`bar * 16 + step`) while less than half of it has
+/// elapsed, otherwise the next one, wrapping at `length` (so 15 -> 0 in a one-bar pattern).
 #[must_use]
-pub fn quantise_step(position: Position) -> usize {
-    let step = usize::from(position.step) % STEPS;
+pub fn quantise_step(position: Position, length: usize) -> usize {
+    let length = length.max(1);
+    let step = position.pattern_step();
     if position.frac >= 0.5 {
-        (step + 1) % STEPS
+        (step + 1) % length
     } else {
-        step
+        step % length
     }
 }
 
@@ -211,14 +249,31 @@ pub struct AppState {
     pub bpm: f32,
     /// Swing amount (`MIN_SWING..=MAX_SWING`).
     pub swing: f32,
-    /// UI-side mirror of the engine's pattern (source of truth for the grid).
-    pub pattern: Pattern,
+    /// UI-side mirror of the engine's bank: patterns A..H, the chain, the play mode and the
+    /// selected (edit) pattern. Source of truth for the grid and the SONG CHAIN panel.
+    pub bank: Bank,
+    /// The pattern COPY took; PASTE writes it into the edit pattern.
+    pub clipboard: Option<Pattern>,
+    /// The 16-step bar of the edit pattern the grid shows (`0..pattern().bars()`).
+    pub shown_bar: usize,
+    /// While playing the edit pattern, the grid follows the playing bar.
+    pub follow: bool,
+    /// Which panel the right-hand column shows.
+    pub right_tab: RightTab,
+    /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
+    pub song_selected: Option<usize>,
+    /// Messages that did not fit the engine queue yet, sent in order by
+    /// [`AppState::flush_outbox`] every frame.
+    pub outbox: VecDeque<Message>,
+    /// The play mode last sent to the engine (so a bank resend only sends `SetPlayMode` when
+    /// it changed: setting song mode while playing restarts the chain).
+    pub engine_mode: PlayMode,
     /// Whether the UI asked the transport to run (the button state; `playhead.playing` is what
     /// the audio thread reports).
     pub playing: bool,
     /// Record arm: while playing, note-ons are written to the bass lane.
     pub armed: bool,
-    /// Bass-lane step selected for note entry.
+    /// Bass-lane step selected for note entry (absolute index into the edit pattern).
     pub selected_step: Option<usize>,
     /// Playhead as last read from the engine (updated every frame by `tick`).
     pub playhead: Position,
@@ -316,7 +371,14 @@ impl AppState {
             preset_index: 0,
             bpm: DEFAULT_BPM,
             swing: 0.0,
-            pattern: Pattern::demo(),
+            bank: Bank::default(),
+            clipboard: None,
+            shown_bar: 0,
+            follow: true,
+            right_tab: RightTab::Project,
+            song_selected: Some(0),
+            outbox: VecDeque::new(),
+            engine_mode: PlayMode::Pattern,
             playing: false,
             armed: false,
             selected_step: None,
@@ -351,7 +413,7 @@ impl AppState {
     }
 
     /// Tries to open the default audio device. On failure the app keeps running silently.
-    /// With a stream running, every parameter, the tempo, the swing and the whole pattern are
+    /// With a stream running, every parameter, the tempo, the swing and the whole bank are
     /// sent so the engine matches the UI from the first buffer.
     pub fn with_audio(mode: ThemeMode) -> Self {
         match AudioOutput::start(engine::new_engine) {
@@ -378,6 +440,30 @@ impl AppState {
             .map_or(48_000.0, AudioOutput::sample_rate)
     }
 
+    /// Sends `msg` to the engine, keeping order: straight onto the queue while the outbox is
+    /// empty and the queue has room, otherwise onto the back of [`AppState::outbox`] for
+    /// [`AppState::flush_outbox`]. Nothing is ever dropped.
+    pub fn send(&mut self, msg: Message) {
+        if self.outbox.is_empty() && self.engine.send(msg) {
+            return;
+        }
+        self.outbox.push_back(msg);
+    }
+
+    /// Moves as many queued-up messages as fit from the outbox onto the engine queue (called
+    /// every frame). Returns how many were sent.
+    pub fn flush_outbox(&mut self) -> usize {
+        let mut sent = 0;
+        while let Some(&msg) = self.outbox.front() {
+            if !self.engine.send(msg) {
+                break;
+            }
+            self.outbox.pop_front();
+            sent += 1;
+        }
+        sent
+    }
+
     /// Flips the test tone and tells the engine.
     pub fn toggle_test_tone(&mut self) {
         self.set_test_tone(!self.test_tone);
@@ -386,7 +472,7 @@ impl AppState {
     /// Sets the test tone and tells the engine.
     pub fn set_test_tone(&mut self, on: bool) {
         self.test_tone = on;
-        self.engine.send(Message::TestTone(on));
+        self.send(Message::TestTone(on));
     }
 
     /// Current UI value of parameter `id` (always within [`ParamId::range`]).
@@ -416,7 +502,7 @@ impl AppState {
             self.begin_continuous_edit(EditKey::Param(id), false);
         }
         self.params[id.index()] = value;
-        self.engine.send(Message::SetParam(id, value));
+        self.send(Message::SetParam(id, value));
         value
     }
 
@@ -432,18 +518,17 @@ impl AppState {
     /// Sends every parameter to the engine (startup, or after the UI state was rebuilt).
     pub fn resend_all_params(&mut self) {
         for id in ParamId::ALL {
-            self.engine
-                .send(Message::SetParam(*id, self.params[id.index()]));
+            self.send(Message::SetParam(*id, self.params[id.index()]));
         }
     }
 
-    /// Sends everything the engine mirrors: parameters, tempo, swing and the whole pattern
-    /// (startup and project load).
+    /// Sends everything the engine mirrors: parameters, tempo, swing and the whole bank
+    /// (startup, project load, undo).
     pub fn resend_all(&mut self) {
         self.resend_all_params();
-        self.engine.send(Message::SetBpm(self.bpm));
-        self.engine.send(Message::SetSwing(self.swing));
-        self.send_pattern();
+        self.send(Message::SetBpm(self.bpm));
+        self.send(Message::SetSwing(self.swing));
+        self.send_bank();
     }
 
     /// Stores the tempo (clamped to [`MIN_BPM`]`..=`[`MAX_BPM`]) and tells the engine. A change
@@ -458,7 +543,7 @@ impl AppState {
             self.begin_edit();
         }
         self.bpm = bpm;
-        self.engine.send(Message::SetBpm(bpm));
+        self.send(Message::SetBpm(bpm));
     }
 
     /// Stores the swing (clamped to [`MIN_SWING`]`..=`[`MAX_SWING`]) and tells the engine. A
@@ -473,7 +558,7 @@ impl AppState {
             self.begin_continuous_edit(EditKey::Swing, false);
         }
         self.swing = swing;
-        self.engine.send(Message::SetSwing(swing));
+        self.send(Message::SetSwing(swing));
     }
 
     /// Selects preset `index` (clamped to the list): every parameter goes back to its default,
@@ -506,13 +591,13 @@ impl AppState {
     /// Starts the loop from step 0.
     pub fn play(&mut self) {
         self.playing = true;
-        self.engine.send(Message::Play);
+        self.send(Message::Play);
     }
 
     /// Stops the loop (the engine releases the sequencer's notes and rewinds).
     pub fn stop(&mut self) {
         self.playing = false;
-        self.engine.send(Message::Stop);
+        self.send(Message::Stop);
     }
 
     /// Play / Stop from one button.
@@ -535,22 +620,176 @@ impl AppState {
         self.playing && self.armed
     }
 
-    /// Reads the playhead the audio thread last published.
+    /// Reads the playhead the audio thread last published and, while following, moves the
+    /// shown bar along with it when the edit pattern is the one playing.
     pub fn update_playhead(&mut self) {
         self.playhead = self.engine.position();
+        if self.follow && self.playhead.playing && self.playhead.pattern == self.bank.current {
+            self.shown_bar = usize::from(self.playhead.bar).min(self.pattern().bars() - 1);
+        }
+    }
+
+    /// Switches between pattern and song mode: the bank mirror, the engine (`SetPlayMode`) and
+    /// the right-hand column's tab (SONG CHAIN in song mode, PROJECT in pattern mode). Not an
+    /// undo step, like the transport.
+    pub fn set_play_mode(&mut self, mode: PlayMode) {
+        self.bank.mode = mode;
+        self.engine_mode = mode;
+        self.send(Message::SetPlayMode(mode));
+        self.right_tab = match mode {
+            PlayMode::Song => RightTab::Chain,
+            PlayMode::Pattern => RightTab::Project,
+        };
+    }
+
+    /// The transport's position read-out: `"A · bar 2/4"` in pattern mode, `"SONG 3/5 · B"`
+    /// in song mode (chain entry, chain length, playing pattern).
+    #[must_use]
+    pub fn position_text(&self) -> String {
+        let pos = self.playhead;
+        let letter = pattern_letter(pos.pattern);
+        match self.bank.mode {
+            PlayMode::Song => format!(
+                "SONG {}/{} · {}",
+                usize::from(pos.song_index) + 1,
+                usize::from(self.bank.chain_len).max(1),
+                letter
+            ),
+            PlayMode::Pattern => format!(
+                "{letter} · bar {}/{}",
+                usize::from(pos.bar) + 1,
+                self.bank.pattern(pos.pattern).bars()
+            ),
+        }
     }
 
     // -----------------------------------------------------------------------------------------
-    // Pattern edits (mirror first, then the matching message).
+    // Patterns (M5): the edit pattern, tabs, length, copy / paste / clear.
 
-    /// Sets one drum step (step index wraps into `0..16`).
+    /// The edit pattern (the bank's `current`): what the grid shows and the step edits change.
+    #[must_use]
+    pub fn pattern(&self) -> &Pattern {
+        self.bank.current_pattern()
+    }
+
+    /// The edit pattern, mutably. Prefer the `set_*` methods, which also tell the engine.
+    pub fn pattern_mut(&mut self) -> &mut Pattern {
+        self.bank.current_pattern_mut()
+    }
+
+    /// Index of the edit pattern (`0..PATTERN_COUNT`).
+    #[must_use]
+    pub fn current(&self) -> u8 {
+        self.bank.current
+    }
+
+    /// Letter of the edit pattern (`A`..`H`).
+    #[must_use]
+    pub fn current_letter(&self) -> char {
+        pattern_letter(self.bank.current)
+    }
+
+    /// Makes pattern `index` the edit pattern and tells the engine (`SelectPattern`: while
+    /// playing in pattern mode the *playing* pattern switches at the next bar boundary and the
+    /// letter blinks until then; when stopped the switch is immediate). The bass selection is
+    /// dropped and the shown bar clamped. Not an undo step and not an edit.
+    pub fn select_pattern(&mut self, index: u8) {
+        let index = index % PATTERN_COUNT as u8;
+        self.bank.current = index;
+        self.selected_step = None;
+        self.clamp_shown_bar();
+        self.send(Message::SelectPattern(index));
+    }
+
+    /// Sets the edit pattern's length (1, 2 or 4 bars). Steps beyond the new length are kept
+    /// (hidden). One undo step when it changes.
+    pub fn set_pattern_length(&mut self, length: PatternLength) {
+        if self.pattern().pattern_length() == length {
+            return;
+        }
+        self.begin_edit();
+        self.pattern_mut().set_length(length);
+        self.clamp_shown_bar();
+        self.send(Message::SetPatternLength {
+            pattern: self.bank.current,
+            steps: length.steps(),
+        });
+    }
+
+    /// Shows bar `bar` (clamped) of the edit pattern and stops following the playhead, so the
+    /// choice sticks.
+    pub fn show_bar(&mut self, bar: usize) {
+        self.shown_bar = bar.min(self.pattern().bars() - 1);
+        self.follow = false;
+    }
+
+    /// Flips FOLLOW (the grid follows the playing bar of the edit pattern).
+    pub fn toggle_follow(&mut self) {
+        self.follow = !self.follow;
+    }
+
+    fn clamp_shown_bar(&mut self) {
+        self.shown_bar = self.shown_bar.min(self.pattern().bars() - 1);
+        if let Some(step) = self.selected_step
+            && step >= self.pattern().len()
+        {
+            self.selected_step = None;
+        }
+    }
+
+    /// COPY: takes a copy of the edit pattern into the clipboard.
+    pub fn copy_pattern(&mut self) {
+        self.clipboard = Some(self.pattern().clone());
+        self.set_status(format!("Copied pattern {}", self.current_letter()));
+    }
+
+    /// PASTE: writes the clipboard into the edit pattern (length, steps, volumes and tunes) and
+    /// sends it. One undo step; `false` when there is nothing to paste.
+    pub fn paste_pattern(&mut self) -> bool {
+        let Some(pattern) = self.clipboard.clone() else {
+            self.set_status("Nothing to paste: copy a pattern first");
+            return false;
+        };
+        if pattern != *self.pattern() {
+            self.begin_edit();
+            *self.pattern_mut() = pattern;
+            self.selected_step = None;
+            self.clamp_shown_bar();
+            self.send_pattern();
+        }
+        self.set_status(format!("Pasted into pattern {}", self.current_letter()));
+        true
+    }
+
+    /// CLEAR: clears every step of the edit pattern (length, volume and tune stay). An undo
+    /// step only if there was something to clear.
+    pub fn clear_pattern(&mut self) {
+        if !self.pattern().is_empty() {
+            self.begin_edit();
+        }
+        self.pattern_mut().clear_all();
+        self.send(Message::ClearPattern(self.bank.current));
+    }
+
+    /// Clears every row and the bass lane of the edit pattern (same as
+    /// [`clear_pattern`](Self::clear_pattern)).
+    pub fn clear_all(&mut self) {
+        self.clear_pattern();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Pattern edits (mirror first, then the matching message). Step indices are absolute
+    // within the edit pattern (`bar * 16 + column`) and wrap into its length.
+
+    /// Sets one drum step (step index wraps into `0..length`).
     pub fn set_drum_step(&mut self, row: DrumRow, step: usize, on: bool, accent: bool) {
-        let step = step % STEPS;
+        let step = step % self.pattern().len();
         // An off step carries no accent.
         let accent = accent && on;
         self.begin_edit();
-        self.pattern.set_drum_step(row, step as u8, on, accent);
-        self.engine.send(Message::SetDrumStep {
+        self.pattern_mut()
+            .set_drum_step(row, step as u8, on, accent);
+        self.send(Message::SetDrumStep {
             row,
             step: step as u8,
             on,
@@ -560,8 +799,8 @@ impl AppState {
 
     /// A click on a drum cell: toggles the step; with shift, turns it on and flips the accent.
     pub fn toggle_drum_step(&mut self, row: DrumRow, step: usize, shift: bool) {
-        let step = step % STEPS;
-        let current = self.pattern.drums[row.index()][step];
+        let step = step % self.pattern().len();
+        let current = self.pattern().drums[row.index()][step];
         if shift {
             self.set_drum_step(row, step, true, !(current.on && current.accent));
         } else {
@@ -569,14 +808,14 @@ impl AppState {
         }
     }
 
-    /// Sets one bass-lane step (step index wraps into `0..16`).
+    /// Sets one bass-lane step (step index wraps into `0..length`).
     pub fn set_synth_step(&mut self, step: usize, note: Option<u8>, accent: bool) {
-        let step = step % STEPS;
+        let step = step % self.pattern().len();
         let note = note.map(|n| n.min(127));
         let accent = accent && note.is_some();
         self.begin_edit();
-        self.pattern.set_synth_step(step as u8, note, accent);
-        self.engine.send(Message::SetSynthStep {
+        self.pattern_mut().set_synth_step(step as u8, note, accent);
+        self.send(Message::SetSynthStep {
             step: step as u8,
             note,
             accent,
@@ -587,9 +826,9 @@ impl AppState {
     /// With shift: flips the accent of a step that has a note, or gives an empty step the C
     /// of the current keyboard octave.
     pub fn click_synth_step(&mut self, step: usize, shift: bool) {
-        let step = step % STEPS;
+        let step = step % self.pattern().len();
         if shift {
-            let current = self.pattern.synth[step];
+            let current = self.pattern().synth[step];
             match current.note {
                 Some(note) => self.set_synth_step(step, Some(note), !current.accent),
                 None => self.set_synth_step(step, Some(self.input.base_note()), false),
@@ -610,34 +849,25 @@ impl AppState {
 
     /// Clears one drum row (volume and tune stay). An undo step only if the row had steps.
     pub fn clear_row(&mut self, row: DrumRow) {
-        if self.pattern.drums[row.index()].iter().any(|s| s.on) {
+        if self.pattern().drums[row.index()].iter().any(|s| s.on) {
             self.begin_edit();
         }
-        self.pattern.clear_row(row);
-        self.engine.send(Message::ClearRow(row));
+        self.pattern_mut().clear_row(row);
+        self.send(Message::ClearRow(row));
     }
 
     /// Clears the bass lane. An undo step only if the lane had notes.
     pub fn clear_synth(&mut self) {
-        if self.pattern.synth.iter().any(|s| s.note.is_some()) {
+        if self.pattern().synth.iter().any(|s| s.note.is_some()) {
             self.begin_edit();
         }
-        self.pattern.clear_synth();
-        self.engine.send(Message::ClearSynth);
-    }
-
-    /// Clears every row and the bass lane. An undo step only if there was something to clear.
-    pub fn clear_all(&mut self) {
-        if !self.pattern.is_empty() {
-            self.begin_edit();
-        }
-        self.pattern.clear_all();
-        self.engine.send(Message::ClearAll);
+        self.pattern_mut().clear_synth();
+        self.send(Message::ClearSynth);
     }
 
     /// Per-row drum volume in dB (clamped by the pattern); undo coalesces per knob drag.
     pub fn set_drum_volume(&mut self, row: DrumRow, db: f32) {
-        let before = self.pattern.drum_volume[row.index()];
+        let before = self.pattern().drum_volume[row.index()];
         let db = if db.is_finite() {
             db.clamp(*DRUM_VOLUME_RANGE.start(), *DRUM_VOLUME_RANGE.end())
         } else {
@@ -646,13 +876,13 @@ impl AppState {
         if db != before {
             self.begin_continuous_edit(EditKey::DrumVolume(row), false);
         }
-        self.pattern.set_drum_volume(row, db);
-        self.engine.send(Message::SetDrumVolume { row, db });
+        self.pattern_mut().set_drum_volume(row, db);
+        self.send(Message::SetDrumVolume { row, db });
     }
 
     /// Per-row drum tune in semitones (clamped by the pattern); undo coalesces per knob drag.
     pub fn set_drum_tune(&mut self, row: DrumRow, semitones: f32) {
-        let before = self.pattern.drum_tune[row.index()];
+        let before = self.pattern().drum_tune[row.index()];
         let semitones = if semitones.is_finite() {
             semitones.clamp(*DRUM_TUNE_RANGE.start(), *DRUM_TUNE_RANGE.end())
         } else {
@@ -661,54 +891,163 @@ impl AppState {
         if semitones != before {
             self.begin_continuous_edit(EditKey::DrumTune(row), false);
         }
-        self.pattern.set_drum_tune(row, semitones);
-        self.engine.send(Message::SetDrumTune { row, semitones });
+        self.pattern_mut().set_drum_tune(row, semitones);
+        self.send(Message::SetDrumTune { row, semitones });
     }
 
-    /// Sends the whole pattern as step messages (16 per drum row and 16 for the bass lane: the
-    /// one-bar grid this UI edits; the engine wraps step indices into the pattern length, so the
-    /// 64-step storage beyond it is never sent) plus every row's volume and tune:
-    /// [`PATTERN_MESSAGES`] messages in total.
+    /// Sends the edit pattern to the engine ([`pattern_messages`]: clear, then only its
+    /// non-empty steps, the length and the row volumes / tunes) and reselects it so the
+    /// engine's edit pattern is the mirror's.
     pub fn send_pattern(&mut self) {
-        for row in DrumRow::ALL {
-            for (step, cell) in self.pattern.drums[row.index()]
-                .iter()
-                .take(STEPS)
-                .enumerate()
-            {
-                self.engine.send(Message::SetDrumStep {
-                    row,
-                    step: step as u8,
-                    on: cell.on,
-                    accent: cell.accent,
-                });
-            }
+        let index = self.bank.current;
+        for msg in pattern_messages(self.pattern(), index) {
+            self.send(msg);
         }
-        for (step, cell) in self.pattern.synth.iter().take(STEPS).enumerate() {
-            self.engine.send(Message::SetSynthStep {
-                step: step as u8,
-                note: cell.note,
-                accent: cell.accent,
-            });
-        }
-        for row in DrumRow::ALL {
-            self.engine.send(Message::SetDrumVolume {
-                row,
-                db: self.pattern.drum_volume[row.index()],
-            });
-            self.engine.send(Message::SetDrumTune {
-                row,
-                semitones: self.pattern.drum_tune[row.index()],
-            });
+        self.send(Message::SelectPattern(index));
+    }
+
+    /// Sends the whole bank ([`bank_messages`]): every pattern, the chain, the play mode when
+    /// it differs from the engine's, and `SelectPattern(current)`. Messages beyond the queue's
+    /// free slots wait in the outbox.
+    pub fn send_bank(&mut self) {
+        let mode = (self.bank.mode != self.engine_mode).then_some(self.bank.mode);
+        self.engine_mode = self.bank.mode;
+        for msg in bank_messages(&self.bank, mode) {
+            self.send(msg);
         }
     }
 
-    /// Replaces the pattern and sends it to the engine (one undo step).
+    /// Sends the chain (length, then every entry).
+    pub fn send_chain(&mut self) {
+        for msg in chain_messages(&self.bank) {
+            self.send(msg);
+        }
+    }
+
+    /// Replaces the edit pattern and sends it to the engine (one undo step).
     pub fn set_pattern(&mut self, pattern: Pattern) {
         self.begin_edit();
-        self.pattern = pattern;
+        *self.pattern_mut() = pattern;
+        self.pattern_mut().normalise();
         self.selected_step = None;
+        self.clamp_shown_bar();
         self.send_pattern();
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Song chain (M5). Every change is one undo step; the engine gets `SetChainEntry` /
+    // `SetChainLen`.
+
+    /// The valid chain entries.
+    #[must_use]
+    pub fn chain(&self) -> &[ChainEntry] {
+        self.bank.chain_entries()
+    }
+
+    /// The selected chain entry (index and value), if the chain has one.
+    #[must_use]
+    pub fn selected_entry(&self) -> Option<(usize, ChainEntry)> {
+        let index = self.song_selected?;
+        self.chain().get(index).map(|entry| (index, *entry))
+    }
+
+    /// Selects chain entry `index` (ignored when out of range).
+    pub fn select_chain_entry(&mut self, index: usize) {
+        if index < self.chain().len() {
+            self.song_selected = Some(index);
+        }
+    }
+
+    fn clamp_song_selected(&mut self) {
+        let len = self.chain().len();
+        self.song_selected = if len == 0 {
+            None
+        } else {
+            Some(self.song_selected.unwrap_or(0).min(len - 1))
+        };
+    }
+
+    /// ADD: appends the edit pattern once to the chain and selects the new entry. `false`
+    /// when the chain is full.
+    pub fn add_chain_entry(&mut self) -> bool {
+        if self.chain().len() >= MAX_CHAIN {
+            self.set_status(format!("Chain is full ({MAX_CHAIN} entries)"));
+            return false;
+        }
+        self.begin_edit();
+        let entry = ChainEntry::new(self.bank.current, 1);
+        self.bank.push(entry);
+        let index = self.chain().len() - 1;
+        self.song_selected = Some(index);
+        self.send(Message::SetChainEntry {
+            index: index as u8,
+            pattern: entry.pattern,
+            repeats: entry.repeats,
+        });
+        true
+    }
+
+    /// REMOVE: deletes the selected entry; the selection moves to the next one (or the last).
+    /// `false` when nothing is selected.
+    pub fn remove_chain_entry(&mut self) -> bool {
+        let Some((index, _)) = self.selected_entry() else {
+            return false;
+        };
+        self.begin_edit();
+        self.bank.remove_entry(index as u8);
+        self.clamp_song_selected();
+        self.send_chain();
+        true
+    }
+
+    /// Sets the selected entry's pattern.
+    pub fn set_chain_pattern(&mut self, pattern: u8) {
+        if let Some((index, entry)) = self.selected_entry() {
+            self.set_chain_entry(index, ChainEntry::new(pattern, entry.repeats));
+        }
+    }
+
+    /// Sets the selected entry's repeat count (clamped to `1..=8`).
+    pub fn set_chain_repeats(&mut self, repeats: u8) {
+        if let Some((index, entry)) = self.selected_entry() {
+            self.set_chain_entry(index, ChainEntry::new(entry.pattern, repeats));
+        }
+    }
+
+    /// Replaces chain entry `index` (must be within the chain). One undo step when it changes.
+    pub fn set_chain_entry(&mut self, index: usize, entry: ChainEntry) {
+        if self.chain().get(index).is_none_or(|e| *e == entry) {
+            return;
+        }
+        self.begin_edit();
+        self.bank.set_entry(index as u8, entry);
+        let entry = self.bank.chain[index];
+        self.send(Message::SetChainEntry {
+            index: index as u8,
+            pattern: entry.pattern,
+            repeats: entry.repeats,
+        });
+    }
+
+    /// Moves the selected entry one place earlier (`-1`) or later (`+1`) in the chain; the
+    /// selection follows it. `false` when it cannot move.
+    pub fn move_chain_entry(&mut self, delta: i32) -> bool {
+        let Some((index, _)) = self.selected_entry() else {
+            return false;
+        };
+        let len = self.chain().len();
+        let Some(target) = index.checked_add_signed(delta as isize) else {
+            return false;
+        };
+        if target >= len || target == index {
+            return false;
+        }
+        self.begin_edit();
+        self.bank.chain.swap(index, target);
+        self.song_selected = Some(target);
+        // Resend the whole chain: at most MAX_CHAIN + 1 messages.
+        self.send_chain();
+        true
     }
 
     // -----------------------------------------------------------------------------------------
@@ -718,7 +1057,7 @@ impl AppState {
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            pattern: self.pattern.clone(),
+            bank: self.bank.clone(),
             params: self.params,
             bpm: self.bpm,
             swing: self.swing,
@@ -795,14 +1134,14 @@ impl AppState {
     /// afterwards (the file no longer matches), and a running knob drag is cut.
     fn restore(&mut self, snapshot: Snapshot) {
         let Snapshot {
-            pattern,
+            bank,
             params,
             bpm,
             swing,
             preset_index,
             project_path,
         } = snapshot;
-        self.pattern = pattern;
+        self.bank = bank;
         self.params = params;
         self.bpm = bpm;
         self.swing = swing;
@@ -810,6 +1149,8 @@ impl AppState {
         self.project_path = project_path;
         self.last_continuous_edit = None;
         self.dirty = true;
+        self.clamp_shown_bar();
+        self.clamp_song_selected();
         self.resend_all();
     }
 
@@ -868,17 +1209,17 @@ impl AppState {
         let note = note.min(127);
         let velocity = velocity.clamp(0.0, 1.0);
         if let Some(step) = self.selected_step {
-            let accent = self.pattern.synth[step % STEPS].accent;
+            let accent = self.pattern().synth[step % self.pattern().len()].accent;
             self.set_synth_step(step, Some(note), accent);
         } else if self.is_recording() {
-            let step = quantise_step(self.playhead);
+            let step = quantise_step(self.playhead, self.pattern().len());
             self.set_synth_step(step, Some(note), velocity >= ACCENT_VELOCITY);
         }
         self.held_notes[usize::from(note)] = true;
         match source {
             NoteSource::Local => {
                 self.note_on_count += 1;
-                self.engine.send(Message::NoteOn { note, velocity });
+                self.send(Message::NoteOn { note, velocity });
             }
             NoteSource::Midi => self.midi_note_on_count += 1,
         }
@@ -891,7 +1232,7 @@ impl AppState {
         match source {
             NoteSource::Local => {
                 self.note_off_count += 1;
-                self.engine.send(Message::NoteOff { note });
+                self.send(Message::NoteOff { note });
             }
             NoteSource::Midi => self.midi_note_off_count += 1,
         }
@@ -901,7 +1242,7 @@ impl AppState {
     pub fn all_notes_off(&mut self) {
         self.input.release_all();
         self.held_notes = [false; 128];
-        self.engine.send(Message::AllNotesOff);
+        self.send(Message::AllNotesOff);
     }
 
     /// Applies note events from the keyboard (or the on-screen piano).
@@ -1112,9 +1453,100 @@ pub fn truncate_name(name: &str, max: usize) -> String {
     out
 }
 
-/// Messages one [`AppState::send_pattern`] produces: 16 steps for each of the 5 drum rows and
-/// the bass lane, plus a volume and a tune per drum row.
-pub const PATTERN_MESSAGES: usize = STEPS * (DrumRow::COUNT + 1) + 2 * DrumRow::COUNT;
+/// The messages that put `pattern` into the engine's slot `index`, in order: `SetEditPattern`,
+/// `ClearPattern` (so steps the engine had and the mirror has not are gone), the length
+/// (widened to [`Pattern::used_steps`] when data lives beyond the length, because step
+/// messages wrap into the engine pattern's length), every non-empty drum / synth step, the
+/// real length when it was widened, and each row's volume and tune. Only non-empty steps are
+/// sent, so a sparse pattern costs a few dozen messages and a dense 64-step one at most
+/// `64 * 6 + 14`.
+#[must_use]
+pub fn pattern_messages(pattern: &Pattern, index: u8) -> Vec<Message> {
+    let mut out = Vec::new();
+    out.push(Message::SetEditPattern(index));
+    out.push(Message::ClearPattern(index));
+    let len = pattern.len() as u8;
+    let used = pattern.used_steps();
+    // Step messages wrap into the engine pattern's *current* length, so the length (widened
+    // to the used steps) always goes first.
+    out.push(Message::SetPatternLength {
+        pattern: index,
+        steps: used as u8,
+    });
+    for row in DrumRow::ALL {
+        for (step, cell) in pattern.drums[row.index()].iter().take(used).enumerate() {
+            if *cell != DrumStep::default() {
+                out.push(Message::SetDrumStep {
+                    row,
+                    step: step as u8,
+                    on: cell.on,
+                    accent: cell.accent,
+                });
+            }
+        }
+    }
+    for (step, cell) in pattern.synth.iter().take(used).enumerate() {
+        if *cell != SynthStep::default() {
+            out.push(Message::SetSynthStep {
+                step: step as u8,
+                note: cell.note,
+                accent: cell.accent,
+            });
+        }
+    }
+    if used != usize::from(len) {
+        out.push(Message::SetPatternLength {
+            pattern: index,
+            steps: len,
+        });
+    }
+    for row in DrumRow::ALL {
+        out.push(Message::SetDrumVolume {
+            row,
+            db: pattern.drum_volume[row.index()],
+        });
+        out.push(Message::SetDrumTune {
+            row,
+            semitones: pattern.drum_tune[row.index()],
+        });
+    }
+    out
+}
+
+/// The messages that put `bank`'s chain into the engine: `SetChainLen` then one
+/// `SetChainEntry` per entry (at most `MAX_CHAIN + 1`).
+#[must_use]
+pub fn chain_messages(bank: &Bank) -> Vec<Message> {
+    let entries = bank.chain_entries();
+    let mut out = Vec::with_capacity(entries.len() + 1);
+    out.push(Message::SetChainLen(entries.len() as u8));
+    for (index, entry) in entries.iter().enumerate() {
+        out.push(Message::SetChainEntry {
+            index: index as u8,
+            pattern: entry.pattern,
+            repeats: entry.repeats.clamp(1, MAX_REPEATS),
+        });
+    }
+    out
+}
+
+/// The messages that put the whole `bank` into the engine: [`pattern_messages`] for every
+/// pattern, [`chain_messages`], `SetPlayMode(mode)` when `mode` is `Some` (the caller passes
+/// it only when the engine's mode differs) and finally `SelectPattern(current)`, which makes
+/// the engine's edit pattern the mirror's and, when stopped, rewinds to it.
+#[must_use]
+pub fn bank_messages(bank: &Bank, mode: Option<PlayMode>) -> Vec<Message> {
+    let mut out = Vec::new();
+    for (index, pattern) in bank.patterns.iter().enumerate() {
+        out.extend(pattern_messages(pattern, index as u8));
+    }
+    out.extend(chain_messages(bank));
+    if let Some(mode) = mode {
+        out.push(Message::SetPlayMode(mode));
+    }
+    out.push(Message::SelectPattern(bank.current));
+    out
+}
 
 /// The eframe application.
 pub struct BeatSlopperApp {
@@ -1265,6 +1697,7 @@ impl BeatSlopperApp {
         {
             self.state.audio_error = Some("audio stream error".to_owned());
         }
+        self.state.flush_outbox();
         self.state.update_playhead();
         self.state.poll_export();
         self.state.expire_status();
@@ -1280,8 +1713,13 @@ impl BeatSlopperApp {
         // ---- MIDI ----
         let midi_events = self.state.poll_midi();
 
-        if self.state.playing || self.state.playhead.playing || midi_events > 0 {
-            // The playhead moves between frames; keep drawing while the loop runs.
+        if self.state.playing
+            || self.state.playhead.playing
+            || midi_events > 0
+            || !self.state.outbox.is_empty()
+        {
+            // The playhead moves between frames; keep drawing while the loop runs (and keep
+            // flushing while the outbox has messages waiting).
             ctx.request_repaint();
         } else if self.state.is_exporting() || self.state.status.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -1525,7 +1963,7 @@ mod tests {
         assert_eq!(state.preset_index, 0);
         assert_eq!(state.bpm, DEFAULT_BPM);
         assert_eq!(state.swing, 0.0);
-        assert_eq!(state.pattern, Pattern::demo());
+        assert_eq!(state.pattern().clone(), Pattern::demo());
         assert!(!state.playing && !state.armed);
         assert_eq!(state.selected_step, None);
         assert_eq!(state.export_repeats, 1);
@@ -1681,13 +2119,13 @@ mod tests {
 
     #[test]
     fn quantisation_rounds_to_the_nearest_step_and_wraps() {
-        assert_eq!(quantise_step(at(3, 0.0)), 3);
-        assert_eq!(quantise_step(at(3, 0.49)), 3);
-        assert_eq!(quantise_step(at(3, 0.5)), 4);
-        assert_eq!(quantise_step(at(3, 0.99)), 4);
-        assert_eq!(quantise_step(at(15, 0.2)), 15);
-        assert_eq!(quantise_step(at(15, 0.5)), 0);
-        assert_eq!(quantise_step(at(15, 0.99)), 0);
+        assert_eq!(quantise_step(at(3, 0.0), 16), 3);
+        assert_eq!(quantise_step(at(3, 0.49), 16), 3);
+        assert_eq!(quantise_step(at(3, 0.5), 16), 4);
+        assert_eq!(quantise_step(at(3, 0.99), 16), 4);
+        assert_eq!(quantise_step(at(15, 0.2), 16), 15);
+        assert_eq!(quantise_step(at(15, 0.5), 16), 0);
+        assert_eq!(quantise_step(at(15, 0.99), 16), 0);
     }
 
     #[test]
@@ -1714,19 +2152,62 @@ mod tests {
         assert!(!state.is_recording());
     }
 
+    /// Drains the outbox into the engine until both are empty (a resend that exceeds the
+    /// queue takes several frames; this plays the frames).
+    fn sync(state: &mut AppState, engine: &mut engine::Engine) -> usize {
+        let mut frames = 0;
+        loop {
+            engine.process_messages();
+            frames += 1;
+            if state.flush_outbox() == 0 && state.outbox.is_empty() {
+                break;
+            }
+        }
+        frames
+    }
+
     #[test]
-    fn send_pattern_sends_every_step_volume_and_tune() {
+    fn send_pattern_sends_only_the_used_steps_plus_volume_and_tune() {
         let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
-        assert_eq!(PATTERN_MESSAGES, 16 * 6 + 10);
-        state.pattern.drum_volume[DrumRow::Snare.index()] = -6.0;
-        state.pattern.drum_tune[DrumRow::Kick.index()] = 3.0;
-        assert_ne!(engine.pattern(), &state.pattern);
+        state.pattern_mut().drum_volume[DrumRow::Snare.index()] = -6.0;
+        state.pattern_mut().drum_tune[DrumRow::Kick.index()] = 3.0;
+        assert_ne!(engine.pattern(), state.pattern());
+
+        let messages = pattern_messages(state.pattern(), 0);
+        let used_steps = state
+            .pattern()
+            .drums
+            .iter()
+            .flatten()
+            .filter(|s| **s != DrumStep::default())
+            .count()
+            + state
+                .pattern()
+                .synth
+                .iter()
+                .filter(|s| **s != SynthStep::default())
+                .count();
+        // SetEditPattern, ClearPattern, the length, the non-empty steps, 5 volumes, 5 tunes.
+        assert_eq!(messages.len(), 3 + used_steps + 2 * DrumRow::COUNT);
+        assert_eq!(messages[0], Message::SetEditPattern(0));
+        assert_eq!(messages[1], Message::ClearPattern(0));
+        assert_eq!(
+            messages[2],
+            Message::SetPatternLength {
+                pattern: 0,
+                steps: 16
+            }
+        );
 
         let free_before = state.engine.free_slots();
         state.send_pattern();
-        assert_eq!(free_before - state.engine.free_slots(), PATTERN_MESSAGES);
+        assert_eq!(
+            free_before - state.engine.free_slots(),
+            messages.len() + 1,
+            "plus SelectPattern"
+        );
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
         assert_eq!(engine.pattern().drum_volume[DrumRow::Snare.index()], -6.0);
         assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 3.0);
     }
@@ -1738,14 +2219,446 @@ mod tests {
         state.set_swing(0.25);
         let free_before = state.engine.free_slots();
         state.resend_all();
-        assert_eq!(
-            free_before - state.engine.free_slots(),
-            ParamId::COUNT + 2 + PATTERN_MESSAGES
-        );
+        let expected = ParamId::COUNT + 2 + bank_messages(&state.bank, None).len();
+        assert!(expected < engine::QUEUE_CAPACITY, "{expected}");
+        assert_eq!(free_before - state.engine.free_slots(), expected);
+        assert!(state.outbox.is_empty(), "the default bank fits in one go");
         engine.process_messages();
         assert_eq!(engine.bpm(), 140.0);
         assert_eq!(engine.transport().swing(), 0.25);
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M5: bank mirror, patterns, chain.
+
+    /// Three non-empty patterns of 16 / 32 / 64 steps (with hidden data beyond a length), a
+    /// four-entry chain and pattern C selected.
+    fn m5_bank() -> Bank {
+        let mut bank = Bank::default();
+        bank.patterns[1] = Pattern::demo_variation();
+        bank.set_length(1, PatternLength::Bar2);
+        bank.patterns[1].set_drum_step(DrumRow::Kick, 20, true, true);
+        bank.patterns[1].set_synth_step(31, Some(48), false);
+        bank.patterns[1].drum_volume[2] = -4.0;
+        bank.patterns[2] = Pattern::demo();
+        bank.set_length(2, PatternLength::Bar4);
+        bank.patterns[2].set_drum_step(DrumRow::Snare, 63, true, false);
+        bank.patterns[2].set_synth_step(40, Some(50), true);
+        bank.patterns[2].drum_tune[4] = 5.0;
+        // Hidden data beyond the length survives a resend.
+        bank.patterns[0].drums[DrumRow::Clap.index()][30].on = true;
+        bank.truncate(0);
+        for (p, r) in [(0, 2), (1, 1), (2, 3), (1, 8)] {
+            bank.push(ChainEntry::new(p, r));
+        }
+        bank.current = 2;
+        bank
+    }
+
+    #[test]
+    fn send_bank_puts_the_whole_mirror_into_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.bank = m5_bank();
+        assert_ne!(engine.bank(), &state.bank);
+        let messages = bank_messages(&state.bank, None);
+        assert!(
+            messages.len() < engine::QUEUE_CAPACITY,
+            "{}",
+            messages.len()
+        );
+        assert_eq!(*messages.last().unwrap(), Message::SelectPattern(2));
+        assert!(messages.contains(&Message::SetChainLen(4)));
+        assert!(messages.contains(&Message::SetChainEntry {
+            index: 3,
+            pattern: 1,
+            repeats: 8
+        }));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, Message::SetPlayMode(_))),
+            "the mode is unchanged: not resent"
+        );
+        // Pattern A has hidden data at step 30: it is sent at a widened length, then the real
+        // length is restored.
+        assert!(messages.contains(&Message::SetPatternLength {
+            pattern: 0,
+            steps: 32
+        }));
+        assert!(messages.contains(&Message::SetPatternLength {
+            pattern: 0,
+            steps: 16
+        }));
+
+        state.send_bank();
+        assert!(state.outbox.is_empty());
+        engine.process_messages();
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(engine.edit_pattern(), 2);
+        assert_eq!(engine.pattern(), &state.bank.patterns[2]);
+        assert_eq!(engine.bank().pattern(1).len(), 32);
+        assert_eq!(engine.bank().pattern(2).len(), 64);
+        assert!(engine.bank().pattern(0).drums[DrumRow::Clap.index()][30].on);
+
+        // Resending over an engine that already holds data converges too (ClearPattern first).
+        state.pattern_mut().clear_all();
+        state.bank.truncate(1);
+        state.send_bank();
+        engine.process_messages();
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    #[test]
+    fn a_dense_bank_overflows_the_queue_and_drains_through_the_outbox() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        for (i, pattern) in state.bank.patterns.iter_mut().enumerate() {
+            pattern.set_length(PatternLength::Bar4);
+            for row in DrumRow::ALL {
+                for step in 0..64 {
+                    pattern.set_drum_step(row, step as u8, true, step % 3 == 0);
+                }
+            }
+            for step in 0..64u8 {
+                pattern.set_synth_step(step, Some(36 + i as u8 + step % 12), step % 2 == 0);
+            }
+        }
+        let messages = bank_messages(&state.bank, None);
+        assert!(
+            messages.len() > engine::QUEUE_CAPACITY,
+            "{} messages",
+            messages.len()
+        );
+        state.resend_all();
+        assert!(!state.outbox.is_empty(), "the rest waits in the outbox");
+        assert_eq!(
+            state.engine.free_slots(),
+            0,
+            "the queue is full, nothing dropped"
+        );
+        let frames = sync(&mut state, &mut engine);
+        assert!(frames > 1, "took {frames} frames");
+        assert_eq!(engine.bank(), &state.bank);
+        // Messages sent while the outbox drains stay in order behind it.
+        state.resend_all();
+        state.set_bpm(99.0);
+        assert!(state.outbox.contains(&Message::SetBpm(99.0)));
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bpm(), 99.0);
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    #[test]
+    fn selecting_a_tab_while_stopped_switches_the_edit_pattern_immediately() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_bank();
+        engine.process_messages();
+        state.click_synth_step(3, false);
+        state.shown_bar = 0;
+        state.select_pattern(1);
+        assert_eq!(state.current(), 1);
+        assert_eq!(state.current_letter(), 'B');
+        assert!(state.pattern().is_empty(), "B is empty");
+        assert_eq!(state.selected_step, None, "selection is dropped");
+        assert!(
+            !state.dirty && state.undo.is_empty(),
+            "selecting is not an edit"
+        );
+        engine.process_messages();
+        assert_eq!(engine.edit_pattern(), 1);
+        assert_eq!(engine.bank().current, 1);
+        assert_eq!(
+            engine.playing_pattern(),
+            1,
+            "stopped: the switch is immediate"
+        );
+        assert_eq!(engine.queued_pattern(), None);
+
+        // Edits now land in B; A is untouched.
+        state.toggle_drum_step(DrumRow::Kick, 0, false);
+        assert!(state.bank.patterns[1].drums[0][0].on);
+        assert_eq!(state.bank.patterns[0], Pattern::demo());
+        engine.process_messages();
+        assert_eq!(engine.bank(), &state.bank);
+
+        // Playing in pattern mode: the switch is queued to the bar boundary.
+        state.play();
+        engine.process_messages();
+        state.select_pattern(0);
+        engine.process_messages();
+        assert_eq!(engine.playing_pattern(), 1);
+        assert_eq!(engine.queued_pattern(), Some(0));
+        // The position (queued letter included) is published per rendered block.
+        let mut out = vec![0.0f32; 64 * 2];
+        engine.render(&mut out, 64);
+        state.update_playhead();
+        assert_eq!(state.playhead.queued, Some(0));
+        assert_eq!(state.playhead.pattern, 1);
+        assert_eq!(state.current(), 0, "editing A already");
+        // Selecting the playing pattern again cancels the queue.
+        state.select_pattern(1);
+        engine.process_messages();
+        assert_eq!(engine.queued_pattern(), None);
+        assert!(queued_blink_visible(0.0));
+        assert!(!queued_blink_visible(0.3));
+        assert!(queued_blink_visible(0.55));
+    }
+
+    #[test]
+    fn copy_paste_and_clear_are_undoable() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_bank();
+        engine.process_messages();
+        assert!(!state.paste_pattern(), "nothing copied yet");
+        assert!(state.undo.is_empty());
+
+        state.copy_pattern();
+        assert_eq!(state.clipboard.as_ref(), Some(&Pattern::demo()));
+        assert!(!state.dirty, "copying is not an edit");
+        state.select_pattern(3);
+        assert!(state.paste_pattern());
+        assert_eq!(state.bank.patterns[3], Pattern::demo());
+        assert_eq!(state.undo.len(), 1);
+        assert!(state.dirty);
+        engine.process_messages();
+        assert_eq!(engine.bank(), &state.bank);
+        assert!(
+            state.paste_pattern(),
+            "pasting the same again is a no-op edit"
+        );
+        assert_eq!(state.undo.len(), 1);
+
+        state.clear_pattern();
+        assert!(state.bank.patterns[3].is_empty());
+        assert_eq!(state.undo.len(), 2);
+        state.clear_pattern();
+        assert_eq!(
+            state.undo.len(),
+            2,
+            "clearing an empty pattern is not an edit"
+        );
+        engine.process_messages();
+        assert_eq!(engine.bank(), &state.bank);
+
+        assert!(state.undo());
+        assert_eq!(state.bank.patterns[3], Pattern::demo());
+        assert!(state.undo());
+        assert!(state.bank.patterns[3].is_empty());
+        assert_eq!(state.current(), 3, "the snapshot keeps the selection");
+        assert!(state.redo());
+        assert_eq!(state.bank.patterns[3], Pattern::demo());
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    #[test]
+    fn pattern_length_and_absolute_steps_for_bar_two() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_bank();
+        engine.process_messages();
+        // A one-bar pattern wraps step 17 to step 1.
+        state.toggle_drum_step(DrumRow::Clap, 17, false);
+        assert!(state.pattern().drums[DrumRow::Clap.index()][1].on);
+        state.toggle_drum_step(DrumRow::Clap, 17, false);
+
+        state.set_pattern_length(PatternLength::Bar2);
+        assert_eq!(state.pattern().len(), 32);
+        assert_eq!(state.pattern().bars(), 2);
+        assert_eq!(state.undo.len(), 3, "two toggles and the length");
+        state.set_pattern_length(PatternLength::Bar2);
+        assert_eq!(state.undo.len(), 3, "same length: no edit");
+        engine.process_messages();
+        assert_eq!(engine.pattern().len(), 32);
+
+        // Bar 2, column 1 = absolute step 17.
+        state.show_bar(1);
+        assert_eq!(state.shown_bar, 1);
+        assert!(!state.follow, "picking a bar stops following");
+        state.toggle_drum_step(DrumRow::Clap, 17, false);
+        assert!(state.pattern().drums[DrumRow::Clap.index()][17].on);
+        assert!(!state.pattern().drums[DrumRow::Clap.index()][1].on);
+        state.click_synth_step(20, false);
+        assert_eq!(state.selected_step, Some(20));
+        state.note_on(60, 0.8);
+        state.note_off(60);
+        assert_eq!(state.pattern().synth[20].note, Some(60));
+        engine.process_messages();
+        assert_eq!(engine.pattern(), state.pattern());
+        assert!(engine.pattern().drums[DrumRow::Clap.index()][17].on);
+
+        // Recording quantises into bar 2 as well.
+        state.selected_step = None;
+        state.play();
+        state.toggle_arm();
+        state.playhead = Position {
+            bar: 1,
+            ..at(5, 0.6)
+        };
+        state.note_on(62, 1.0);
+        assert_eq!(state.pattern().synth[22].note, Some(62));
+        state.playhead = Position {
+            bar: 1,
+            ..at(15, 0.7)
+        };
+        state.note_on(64, 0.5);
+        assert_eq!(
+            state.pattern().synth[0].note,
+            Some(64),
+            "wraps at the length"
+        );
+
+        // Shortening hides bar 2 (data kept) and clamps the shown bar and the selection.
+        state.selected_step = Some(20);
+        state.set_pattern_length(PatternLength::Bar1);
+        assert_eq!(state.shown_bar, 0);
+        assert_eq!(state.selected_step, None);
+        assert!(state.pattern().drums[DrumRow::Clap.index()][17].on);
+        assert_eq!(state.pattern().used_steps(), 32);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+        assert_eq!(quantise_step(at(15, 0.5), 16), 0);
+        assert_eq!(
+            quantise_step(
+                Position {
+                    bar: 1,
+                    ..at(15, 0.5)
+                },
+                32
+            ),
+            0
+        );
+        assert_eq!(
+            quantise_step(
+                Position {
+                    bar: 1,
+                    ..at(2, 0.1)
+                },
+                32
+            ),
+            18
+        );
+    }
+
+    #[test]
+    fn follow_moves_the_shown_bar_with_the_playing_pattern_only() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.set_pattern_length(PatternLength::Bar4);
+        state.send_bank();
+        engine.process_messages();
+        assert!(state.follow);
+        // Play one full bar: the engine is in bar 1.
+        state.play();
+        engine.process_messages();
+        let mut out = vec![0.0f32; 1024 * 2];
+        let bar = engine::export::bar_frames(DEFAULT_BPM, 48_000.0);
+        let mut rendered = 0;
+        while rendered < bar + 512 {
+            engine.render(&mut out, 1024);
+            rendered += 1024;
+        }
+        state.update_playhead();
+        assert_eq!(state.playhead.bar, 1);
+        assert_eq!(state.shown_bar, 1, "following");
+        // Another pattern is being edited: the grid stays put.
+        state.select_pattern(1);
+        state.show_bar(0);
+        state.follow = true;
+        state.update_playhead();
+        assert_eq!(state.shown_bar, 0);
+        assert_eq!(state.position_text(), "A · bar 2/4");
+        state.stop();
+    }
+
+    #[test]
+    fn chain_edits_reach_the_engine_and_undo() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.send_bank();
+        engine.process_messages();
+        assert_eq!(state.chain(), &[ChainEntry::new(0, 1)]);
+        assert_eq!(state.selected_entry(), Some((0, ChainEntry::new(0, 1))));
+
+        state.select_pattern(1);
+        assert!(state.add_chain_entry());
+        assert_eq!(state.chain().len(), 2);
+        assert_eq!(state.song_selected, Some(1));
+        assert_eq!(state.chain()[1], ChainEntry::new(1, 1));
+        state.set_chain_repeats(3);
+        state.set_chain_repeats(3);
+        state.set_chain_pattern(2);
+        assert_eq!(state.chain()[1], ChainEntry::new(2, 3));
+        assert_eq!(state.undo.len(), 3, "add, repeats, pattern");
+        engine.process_messages();
+        assert_eq!(engine.bank().chain_entries(), state.chain());
+
+        assert!(state.move_chain_entry(-1));
+        assert_eq!(state.chain()[0], ChainEntry::new(2, 3));
+        assert_eq!(state.song_selected, Some(0));
+        assert!(!state.move_chain_entry(-1), "already first");
+        assert!(state.move_chain_entry(1));
+        assert!(!state.move_chain_entry(1), "already last");
+        engine.process_messages();
+        assert_eq!(engine.bank().chain_entries(), state.chain());
+
+        assert!(state.remove_chain_entry());
+        assert_eq!(state.chain(), &[ChainEntry::new(0, 1)]);
+        assert_eq!(state.song_selected, Some(0));
+        assert!(state.remove_chain_entry());
+        assert!(state.chain().is_empty());
+        assert_eq!(state.song_selected, None);
+        assert!(!state.remove_chain_entry());
+        engine.process_messages();
+        assert_eq!(engine.bank().chain_len, 0);
+
+        assert!(state.undo());
+        assert_eq!(state.chain(), &[ChainEntry::new(0, 1)]);
+        assert_eq!(state.song_selected, Some(0), "selection comes back");
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+
+        // A full chain refuses another entry.
+        for _ in 0..70 {
+            state.add_chain_entry();
+        }
+        assert_eq!(state.chain().len(), MAX_CHAIN);
+        assert!(!state.add_chain_entry());
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.bank(), &state.bank);
+    }
+
+    #[test]
+    fn play_mode_switches_the_engine_the_tab_and_the_position_text() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        state.bank = Bank::demo();
+        state.send_bank();
+        engine.process_messages();
+        assert_eq!(state.right_tab, RightTab::Project);
+        assert_eq!(state.position_text(), "A · bar 1/1");
+
+        state.set_play_mode(PlayMode::Song);
+        assert_eq!(state.bank.mode, PlayMode::Song);
+        assert_eq!(state.right_tab, RightTab::Chain);
+        assert!(!state.dirty, "the mode is transport state");
+        engine.process_messages();
+        assert_eq!(engine.play_mode(), PlayMode::Song);
+        state.update_playhead();
+        assert_eq!(state.position_text(), "SONG 1/4 · A");
+
+        // A resend does not send the mode again (it would restart a running song).
+        let messages = bank_messages(&state.bank, None);
+        let free_before = state.engine.free_slots();
+        state.send_bank();
+        assert_eq!(free_before - state.engine.free_slots(), messages.len());
+        // ... unless the mirror's mode differs from the engine's (undo of a project load).
+        state.bank.mode = PlayMode::Pattern;
+        let free_before = state.engine.free_slots();
+        state.send_bank();
+        assert_eq!(free_before - state.engine.free_slots(), messages.len() + 1);
+        engine.process_messages();
+        assert_eq!(engine.play_mode(), PlayMode::Pattern);
+        assert_eq!(state.engine_mode, PlayMode::Pattern);
+
+        state.set_play_mode(PlayMode::Pattern);
+        assert_eq!(state.right_tab, RightTab::Project);
     }
 
     #[test]
@@ -1754,10 +2667,10 @@ mod tests {
         state.send_pattern();
         let kick = DrumRow::Kick.index();
         // Demo: kick step 1 is off.
-        assert!(!state.pattern.drums[kick][1].on);
+        assert!(!state.pattern().drums[kick][1].on);
         state.toggle_drum_step(DrumRow::Kick, 1, false);
         assert_eq!(
-            state.pattern.drums[kick][1],
+            state.pattern().drums[kick][1],
             DrumStep {
                 on: true,
                 accent: false
@@ -1766,7 +2679,7 @@ mod tests {
         // Shift on an unaccented step: stays on, gains the accent.
         state.toggle_drum_step(DrumRow::Kick, 1, true);
         assert_eq!(
-            state.pattern.drums[kick][1],
+            state.pattern().drums[kick][1],
             DrumStep {
                 on: true,
                 accent: true
@@ -1775,7 +2688,7 @@ mod tests {
         // Shift again: still on, accent off.
         state.toggle_drum_step(DrumRow::Kick, 1, true);
         assert_eq!(
-            state.pattern.drums[kick][1],
+            state.pattern().drums[kick][1],
             DrumStep {
                 on: true,
                 accent: false
@@ -1784,7 +2697,7 @@ mod tests {
         // Shift on an off step turns it on, accented.
         state.toggle_drum_step(DrumRow::Snare, 2, true);
         assert_eq!(
-            state.pattern.drums[DrumRow::Snare.index()][2],
+            state.pattern().drums[DrumRow::Snare.index()][2],
             DrumStep {
                 on: true,
                 accent: true
@@ -1793,15 +2706,15 @@ mod tests {
         // A plain click on an accented step turns it off and drops the accent.
         state.toggle_drum_step(DrumRow::Snare, 2, false);
         assert_eq!(
-            state.pattern.drums[DrumRow::Snare.index()][2],
+            state.pattern().drums[DrumRow::Snare.index()][2],
             DrumStep::default()
         );
         // Step indices wrap like the engine's.
         state.toggle_drum_step(DrumRow::Clap, 17, false);
-        assert!(state.pattern.drums[DrumRow::Clap.index()][1].on);
+        assert!(state.pattern().drums[DrumRow::Clap.index()][1].on);
 
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
     }
 
     #[test]
@@ -1816,24 +2729,24 @@ mod tests {
         assert_eq!(state.selected_step, None);
 
         // Demo step 0 has C2; shift flips its accent and leaves the selection alone.
-        assert_eq!(state.pattern.synth[0].note, Some(36));
+        assert_eq!(state.pattern().synth[0].note, Some(36));
         state.click_synth_step(0, true);
         assert_eq!(
-            state.pattern.synth[0],
+            state.pattern().synth[0],
             SynthStep {
                 note: Some(36),
                 accent: true
             }
         );
         state.click_synth_step(0, true);
-        assert!(!state.pattern.synth[0].accent);
+        assert!(!state.pattern().synth[0].accent);
         assert_eq!(state.selected_step, None);
 
         // Demo step 1 is a rest; shift gives it the keyboard's C (octave 4 = 60).
-        assert_eq!(state.pattern.synth[1].note, None);
+        assert_eq!(state.pattern().synth[1].note, None);
         state.click_synth_step(1, true);
         assert_eq!(
-            state.pattern.synth[1],
+            state.pattern().synth[1],
             SynthStep {
                 note: Some(60),
                 accent: false
@@ -1841,7 +2754,7 @@ mod tests {
         );
 
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
     }
 
     #[test]
@@ -1853,8 +2766,8 @@ mod tests {
         // The note sounds live and lands in the step; the selection stays put.
         assert!(state.held_notes[67]);
         assert_eq!(state.note_on_count, 1);
-        assert_eq!(state.pattern.synth[3].note, Some(67));
-        assert!(!state.pattern.synth[3].accent);
+        assert_eq!(state.pattern().synth[3].note, Some(67));
+        assert!(!state.pattern().synth[3].accent);
         assert_eq!(state.selected_step, Some(3));
         state.note_off(67);
 
@@ -1862,7 +2775,7 @@ mod tests {
         state.set_synth_step(3, Some(67), true);
         state.note_on(69, 1.0);
         assert_eq!(
-            state.pattern.synth[3],
+            state.pattern().synth[3],
             SynthStep {
                 note: Some(69),
                 accent: true
@@ -1870,11 +2783,11 @@ mod tests {
         );
 
         state.clear_selected_step();
-        assert_eq!(state.pattern.synth[3], SynthStep::default());
+        assert_eq!(state.pattern().synth[3], SynthStep::default());
         assert_eq!(state.selected_step, Some(3));
 
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
     }
 
     #[test]
@@ -1885,14 +2798,14 @@ mod tests {
         state.toggle_arm();
         state.playhead = at(2, 0.1);
         state.note_on(60, 0.8);
-        assert!(state.pattern.synth.iter().all(|s| s.note.is_none()));
+        assert!(state.pattern().synth.iter().all(|s| s.note.is_none()));
         state.note_off(60);
 
         state.play();
         state.playhead = at(2, 0.1);
         state.note_on(60, 0.8);
         assert_eq!(
-            state.pattern.synth[2],
+            state.pattern().synth[2],
             SynthStep {
                 note: Some(60),
                 accent: false
@@ -1904,7 +2817,7 @@ mod tests {
         state.playhead = at(2, 0.6);
         state.note_on(62, 1.0);
         assert_eq!(
-            state.pattern.synth[3],
+            state.pattern().synth[3],
             SynthStep {
                 note: Some(62),
                 accent: true
@@ -1916,7 +2829,7 @@ mod tests {
         state.playhead = at(15, 0.75);
         state.note_on(64, 0.95);
         assert_eq!(
-            state.pattern.synth[0],
+            state.pattern().synth[0],
             SynthStep {
                 note: Some(64),
                 accent: true
@@ -1929,7 +2842,7 @@ mod tests {
         state.toggle_arm();
         state.playhead = at(8, 0.0);
         state.note_on(65, 0.8);
-        assert_eq!(state.pattern.synth[8].note, None);
+        assert_eq!(state.pattern().synth[8].note, None);
     }
 
     #[test]
@@ -1937,31 +2850,31 @@ mod tests {
         let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
         state.set_drum_volume(DrumRow::Kick, -3.0);
         state.set_drum_tune(DrumRow::Kick, 99.0);
-        assert_eq!(state.pattern.drum_tune[DrumRow::Kick.index()], 12.0);
+        assert_eq!(state.pattern().drum_tune[DrumRow::Kick.index()], 12.0);
 
         state.clear_row(DrumRow::Kick);
         assert!(
-            state.pattern.drums[DrumRow::Kick.index()]
+            state.pattern().drums[DrumRow::Kick.index()]
                 .iter()
                 .all(|s| !s.on)
         );
         assert!(
-            state.pattern.drums[DrumRow::Snare.index()]
+            state.pattern().drums[DrumRow::Snare.index()]
                 .iter()
                 .any(|s| s.on)
         );
         // Volume and tune survive a row clear.
-        assert_eq!(state.pattern.drum_volume[DrumRow::Kick.index()], -3.0);
+        assert_eq!(state.pattern().drum_volume[DrumRow::Kick.index()], -3.0);
 
         state.clear_synth();
-        assert!(state.pattern.synth.iter().all(|s| s.note.is_none()));
-        assert!(!state.pattern.is_empty());
+        assert!(state.pattern().synth.iter().all(|s| s.note.is_none()));
+        assert!(!state.pattern().is_empty());
 
         state.clear_all();
-        assert!(state.pattern.is_empty());
+        assert!(state.pattern().is_empty());
 
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
         assert_eq!(engine.pattern().drum_volume[DrumRow::Kick.index()], -3.0);
         assert_eq!(engine.pattern().drum_tune[DrumRow::Kick.index()], 12.0);
     }
@@ -2057,7 +2970,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(state.poll_midi(), 1);
-        assert_eq!(state.pattern.synth[3].note, Some(67));
+        assert_eq!(state.pattern().synth[3].note, Some(67));
         assert_eq!(state.selected_step, Some(3));
         assert!(state.held_notes[67]);
         // Exactly one message went to the engine: the step edit, not a NoteOn.
@@ -2082,7 +2995,7 @@ mod tests {
         tx.try_send(NoteEvent::Off { note: 62 }).unwrap();
         assert_eq!(state.poll_midi(), 2);
         assert_eq!(
-            state.pattern.synth[3],
+            state.pattern().synth[3],
             SynthStep {
                 note: Some(62),
                 accent: true
@@ -2218,28 +3131,32 @@ mod tests {
         let kick = DrumRow::Kick.index();
 
         state.toggle_drum_step(DrumRow::Kick, 1, false);
-        assert!(state.pattern.drums[kick][1].on);
+        assert!(state.pattern().drums[kick][1].on);
         assert!(state.dirty);
         assert_eq!(state.undo.len(), 1);
         assert!(state.undo.can_undo() && !state.undo.can_redo());
 
         assert!(state.undo());
-        assert_eq!(state.pattern, demo);
+        assert_eq!(state.pattern().clone(), demo);
         assert!(!state.undo.can_undo() && state.undo.can_redo());
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern, "undo resends the pattern");
+        assert_eq!(
+            engine.pattern(),
+            state.pattern(),
+            "undo resends the pattern"
+        );
 
         assert!(state.redo());
-        assert!(state.pattern.drums[kick][1].on);
+        assert!(state.pattern().drums[kick][1].on);
         assert!(state.undo.can_undo() && !state.undo.can_redo());
         engine.process_messages();
-        assert_eq!(engine.pattern(), &state.pattern);
+        assert_eq!(engine.pattern(), state.pattern());
 
         // Nothing more to redo / a second undo then exhausts the history.
         assert!(!state.redo());
         assert!(state.undo());
         assert!(!state.undo());
-        assert_eq!(state.pattern, demo);
+        assert_eq!(state.pattern().clone(), demo);
     }
 
     #[test]
@@ -2372,7 +3289,7 @@ mod tests {
         for _ in 0..7 {
             assert!(state.undo());
         }
-        assert_eq!(state.pattern.drum_volume[DrumRow::Kick.index()], 0.0);
+        assert_eq!(state.pattern().drum_volume[DrumRow::Kick.index()], 0.0);
         assert_eq!(state.swing, 0.5);
     }
 
@@ -2406,7 +3323,7 @@ mod tests {
     fn history_is_capped_at_one_hundred_steps() {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
         for i in 0..130 {
-            state.toggle_drum_step(DrumRow::Kick, i % STEPS, false);
+            state.toggle_drum_step(DrumRow::Kick, i % engine::STEPS, false);
         }
         assert_eq!(state.undo.len(), crate::undo::UNDO_CAP);
         let mut undone = 0;
@@ -2426,10 +3343,10 @@ mod tests {
         assert!(!state.dirty);
         state.note_on(67, 0.8);
         state.note_off(67);
-        assert_eq!(state.pattern.synth[2].note, Some(67));
+        assert_eq!(state.pattern().synth[2].note, Some(67));
         assert_eq!(state.undo.len(), 1);
         assert!(state.undo());
-        assert_eq!(state.pattern, demo);
+        assert_eq!(state.pattern().clone(), demo);
         assert_eq!(state.selected_step, Some(2), "undo keeps the selection");
 
         state.selected_step = None;
@@ -2437,9 +3354,9 @@ mod tests {
         state.toggle_arm();
         state.playhead = at(5, 0.1);
         state.note_on(60, 1.0);
-        assert_eq!(state.pattern.synth[5].note, Some(60));
+        assert_eq!(state.pattern().synth[5].note, Some(60));
         assert!(state.undo());
-        assert_eq!(state.pattern, demo);
+        assert_eq!(state.pattern().clone(), demo);
         assert!(state.playing, "undo does not touch the transport");
     }
 
@@ -2455,9 +3372,9 @@ mod tests {
 
         app.state_mut().toggle_drum_step(DrumRow::Kick, 1, false);
         app.run_shortcut(Shortcut::Undo);
-        assert_eq!(app.state().pattern, Pattern::demo());
+        assert_eq!(app.state().pattern().clone(), Pattern::demo());
         app.run_shortcut(Shortcut::Redo);
-        assert!(app.state().pattern.drums[DrumRow::Kick.index()][1].on);
+        assert!(app.state().pattern().drums[DrumRow::Kick.index()][1].on);
 
         // Dialogs are disabled headless: these return at once and change nothing.
         let before = app.state().snapshot();
@@ -2476,7 +3393,7 @@ mod tests {
         // Clean: New happens right away.
         app.state_mut().mark_clean();
         app.run_shortcut(Shortcut::New);
-        assert_eq!(app.state().pattern, Pattern::empty());
+        assert_eq!(app.state().pattern().clone(), Pattern::empty());
         assert_eq!(app.state().pending_action, None);
     }
 

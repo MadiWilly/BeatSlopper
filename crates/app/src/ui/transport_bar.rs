@@ -1,10 +1,12 @@
 //! Transport bar: wordmark, Play / Stop / Record, BPM stepper, SWING knob, the MASTER dial,
-//! the test-tone toggle and the theme toggle.
+//! the MODE selector with the position read-out, the test-tone toggle and the theme toggle.
 //!
 //! Layout follows `design/preview-a.html` `<header class="transport">`: brand on the left
 //! (name 15/300 caps, sub-label 11 secondary), the three 48 pt icon buttons, the BPM
 //! `stepper` (60..=200, bound to `SetBpm`), the SWING small knob (0..=75 %, bound to
 //! `SetSwing`), the large concentric dial (`neu::dial` Lg bound to `MasterGain`, shown in %),
+//! the MODE group (M5: `Pattern | Song` `segmented` bound to `SetPlayMode` over the position
+//! text `"A · bar 2/4"` / `"SONG 3/5 · B"` from `Position`),
 //! then flush right: a small Test tone toggle, the MIDI group (M4: a "MIDI" lamp lit while a
 //! port is open, the connected port's name, and a port selector with a "None" entry) and the
 //! theme toggle (sun, switch, moon).
@@ -20,7 +22,7 @@
 //! right-to-left layouts misplace nested vertical groups such as the MIDI block).
 
 use egui::{Align, Layout, Rect, Response, RichText, Role, Sense, Stroke, Ui, WidgetInfo, vec2};
-use engine::ParamId;
+use engine::{ParamId, PlayMode};
 use neu::button::ICON_STROKE;
 use neu::shadow::Depth;
 use neu::{DialSize, Icon, KnobSize, KnobSpec, Theme};
@@ -43,6 +45,8 @@ pub const MIDI_NONE: &str = "None";
 const MIDI_ITEM_CHARS: usize = 12;
 /// Longest port name shown in the connected-port label.
 const MIDI_LABEL_CHARS: usize = 18;
+/// The MODE selector's items, in `PlayMode` order (Pattern, Song).
+pub const MODE_ITEMS: [&str; 2] = ["Pattern", "Song"];
 
 /// Renders the transport bar into `ui` and applies any control changes to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
@@ -65,6 +69,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             swing_group(ui, state, theme);
             let dial = master_dial(ui, state, theme);
             ui.data_mut(|d| d.insert_temp(height_id, dial.rect.height()));
+            mode_group(ui, state, theme);
 
             // Right-align the remaining groups using the width they measured last frame.
             let width_id = ui.scope_id().with("transport_right_width");
@@ -99,7 +104,7 @@ fn brand(ui: &mut Ui, theme: &Theme, audio_error: Option<&str>) {
         ui.spacing_mut().item_spacing.y = theme.space_1;
         neu::brand(ui, theme, "BeatSlopper");
         match audio_error {
-            None => label(ui, theme, "M4 · SOFT CONSOLE"),
+            None => label(ui, theme, "M5 · SOFT CONSOLE"),
             Some(err) if err.contains("stream error") => label(ui, theme, "AUDIO STREAM ERROR"),
             Some(_) => label(ui, theme, "NO AUDIO DEVICE"),
         };
@@ -215,6 +220,39 @@ fn master_dial(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> egui::Respon
     Knob::new(ParamId::MasterGain, fmt_percent)
         .label("Master")
         .show_dial(ui, state, theme, DialSize::Lg)
+}
+
+/// MODE: `Pattern | Song` (`SetPlayMode`) over the position read-out (`"A · bar 2/4"` or
+/// `"SONG 3/5 · B"`), as a column centred on the row like the MIDI group.
+fn mode_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let height_id = ui.scope_id().with("transport_mode_height");
+    let known_height: f32 = ui.data(|d| d.get_temp(height_id)).unwrap_or(0.0);
+    let column = ui.allocate_ui_with_layout(
+        vec2(0.0, known_height),
+        Layout::top_down(Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = theme.space_2;
+            neu::label(ui, theme, "Mode");
+            let before = match state.bank.mode {
+                PlayMode::Pattern => 0,
+                PlayMode::Song => 1,
+            };
+            let mut selected = before;
+            neu::segmented(ui, theme, &mut selected, &MODE_ITEMS)
+                .on_hover_text("Pattern: loop the selected pattern. Song: play the chain.");
+            if selected != before {
+                state.set_play_mode(if selected == 0 {
+                    PlayMode::Pattern
+                } else {
+                    PlayMode::Song
+                });
+            }
+            let text = state.position_text();
+            ui.label(RichText::new(&text).size(12.0).color(theme.text_primary))
+                .widget_info(|| WidgetInfo::labeled(Role::Label, ui.is_enabled(), &text));
+        },
+    );
+    ui.data_mut(|d| d.insert_temp(height_id, column.response.rect.height()));
 }
 
 fn theme_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {

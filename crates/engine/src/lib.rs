@@ -20,6 +20,8 @@
 //! - [`pattern`]: patterns, lengths and the [`Bank`] (patterns A..H, song chain, play mode).
 //! - [`drums`], [`transport`], [`project`], [`export`]: drum kit, transport, project file,
 //!   offline WAV export.
+//! - [`mixer`]: the six channel strips (level, pan, mute, solo, delay/reverb sends) and the
+//!   pan law; [`engine::Meters`] carries the per-block peaks to the UI.
 
 #![warn(missing_docs)]
 
@@ -28,6 +30,7 @@ pub mod dsp;
 pub mod engine;
 pub mod export;
 pub mod fx;
+pub mod mixer;
 pub mod params;
 pub mod pattern;
 pub mod presets;
@@ -43,8 +46,9 @@ pub use synth::{LfoTarget, Wave};
 pub use voice::{MAX_VOICES, SynthParams, VoicePool};
 
 pub use drums::DrumRow;
-pub use engine::{MidiHandle, Position};
+pub use engine::{Meters, MidiHandle, Position};
 pub use export::{ExportError, ExportStats};
+pub use mixer::{Channel, ChannelParam, MixerState, Strip};
 pub use pattern::{
     BAR_STEPS, Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern,
     PatternLength, PlayMode, STEPS, SynthStep,

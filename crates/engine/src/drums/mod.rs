@@ -181,15 +181,24 @@ impl DrumKit {
         self.tune[row.index()]
     }
 
-    /// Next mono sample of the whole kit.
+    /// Next mono sample of the whole kit (the sum of [`tick_rows`](Self::tick_rows)).
     #[inline]
     pub fn tick(&mut self) -> f32 {
+        let mut rows = [0.0_f32; DrumRow::COUNT];
+        self.tick_rows(&mut rows);
+        rows.iter().sum()
+    }
+
+    /// Advances every voice one sample and writes each row's output (after its volume) into
+    /// `rows`, indexed by [`DrumRow::index`]. The mixer feeds these into separate channels.
+    #[inline]
+    pub fn tick_rows(&mut self, rows: &mut [f32; DrumRow::COUNT]) {
         let [vk, vs, vc, vch, voh] = &mut self.volume;
-        self.kick.tick() * vk.tick()
-            + self.snare.tick() * vs.tick()
-            + self.clap.tick() * vc.tick()
-            + self.closed_hat.tick() * vch.tick()
-            + self.open_hat.tick() * voh.tick()
+        rows[DrumRow::Kick.index()] = self.kick.tick() * vk.tick();
+        rows[DrumRow::Snare.index()] = self.snare.tick() * vs.tick();
+        rows[DrumRow::Clap.index()] = self.clap.tick() * vc.tick();
+        rows[DrumRow::ClosedHat.index()] = self.closed_hat.tick() * vch.tick();
+        rows[DrumRow::OpenHat.index()] = self.open_hat.tick() * voh.tick();
     }
 
     /// `true` while any drum voice is still sounding.
@@ -241,6 +250,29 @@ mod tests {
         assert_eq!(kit.tune(DrumRow::Snare), -12.0);
         kit.set_tune(DrumRow::Snare, f32::INFINITY);
         assert_eq!(kit.tune(DrumRow::Snare), -12.0);
+    }
+
+    #[test]
+    fn tick_rows_matches_tick_and_isolates_rows() {
+        let mut summed = DrumKit::new(48_000.0);
+        let mut split = summed.clone();
+        summed.trigger(DrumRow::Kick, 1.0);
+        split.trigger(DrumRow::Kick, 1.0);
+        summed.trigger(DrumRow::OpenHat, 0.5);
+        split.trigger(DrumRow::OpenHat, 0.5);
+        let mut rows = [0.0_f32; DrumRow::COUNT];
+        let mut kick_energy = 0.0_f32;
+        for _ in 0..4_800 {
+            let sum = summed.tick();
+            split.tick_rows(&mut rows);
+            let rows_sum: f32 = rows.iter().sum();
+            assert_eq!(sum, rows_sum);
+            assert_eq!(rows[DrumRow::Snare.index()], 0.0);
+            assert_eq!(rows[DrumRow::Clap.index()], 0.0);
+            assert_eq!(rows[DrumRow::ClosedHat.index()], 0.0);
+            kick_energy += rows[DrumRow::Kick.index()].abs();
+        }
+        assert!(kick_energy > 0.0);
     }
 
     #[test]

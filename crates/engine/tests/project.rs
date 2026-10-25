@@ -10,8 +10,8 @@ use engine::export::{
 };
 use engine::project::{FORMAT_VERSION, is_project_path};
 use engine::{
-    Bank, ChainEntry, DrumRow, ExportError, ParamId, Pattern, PatternLength, PlayMode, Project,
-    ProjectError, new_engine,
+    Bank, ChainEntry, Channel, ChannelParam, DrumRow, ExportError, MixerState, ParamId, Pattern,
+    PatternLength, PlayMode, Project, ProjectError, new_engine,
 };
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -77,6 +77,13 @@ fn custom_project() -> Project {
     p.set_param(ParamId::DelayFeedback, 0.6);
     p.set_param(ParamId::MasterGain, 0.75);
     p.set_param(ParamId::LimiterOn, 0.0);
+    // M6: a non-default mix on every strip.
+    p.mixer.set(Channel::Kick, ChannelParam::Level, -4.5);
+    p.mixer.set(Channel::Snare, ChannelParam::Pan, 0.35);
+    p.mixer.set(Channel::Clap, ChannelParam::Mute, 1.0);
+    p.mixer.set(Channel::ClosedHat, ChannelParam::Solo, 1.0);
+    p.mixer.set(Channel::OpenHat, ChannelParam::DelaySend, 0.6);
+    p.mixer.set(Channel::Synth, ChannelParam::ReverbSend, 0.15);
     p
 }
 
@@ -101,7 +108,10 @@ fn custom_project_round_trips_through_json() {
 fn json_layout_is_as_documented() {
     let json = Project::default().to_json_pretty();
     for field in [
-        "\"version\": 3",
+        "\"version\": 4",
+        "\"mixer\"",
+        "\"strips\"",
+        "\"delay_send\": 1.0",
         "\"bpm\": 120.0",
         "\"swing\": 0.0",
         "\"bank\"",
@@ -210,6 +220,8 @@ fn apply_to_then_from_engine_reproduces_the_project() {
     );
     assert_eq!(engine.param(ParamId::FilterCutoff), 812.5);
     assert!(!engine.limiter_on());
+    assert_eq!(engine.mixer(), &original.mixer);
+    assert_eq!(engine.mixer().get(Channel::Kick, ChannelParam::Level), -4.5);
 
     let back = Project::from_engine(
         &engine,
@@ -232,6 +244,11 @@ fn apply_to_overwrites_previous_state() {
     }
     assert_eq!(engine.bpm(), 120.0);
     assert_eq!(engine.pattern(), &Pattern::demo());
+    assert_eq!(
+        engine.mixer(),
+        &MixerState::default(),
+        "a file without a mixer resets the mix"
+    );
 }
 
 #[test]
@@ -411,10 +428,10 @@ fn v2_json() -> String {
 }
 
 #[test]
-fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v3() {
+fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v4() {
     let p = Project::from_json(&v2_json()).expect("v2 file loads");
-    assert_eq!(p.version, 3);
-    assert_eq!(FORMAT_VERSION, 3);
+    assert_eq!(p.version, FORMAT_VERSION);
+    assert_eq!(FORMAT_VERSION, 4);
     assert_eq!(p.bpm, 101.0);
     assert_eq!(p.swing, 0.1);
     assert_eq!(p.preset_index, 2);
@@ -442,14 +459,17 @@ fn version_2_file_migrates_to_pattern_a_and_round_trips_as_v3() {
     assert_eq!(p.bank.current, 0);
     assert_eq!(p.pattern(), a);
 
-    // Re-saving writes version 3 with a bank and no legacy field; that file round-trips.
-    let v3 = p.to_json_pretty();
-    assert!(v3.starts_with("{\n  \"version\": 3,"));
-    assert!(v3.contains("\"bank\""));
-    assert!(!v3.contains("\n  \"pattern\""));
-    let back = Project::from_json(&v3).unwrap();
+    // Re-saving writes version 4 with a bank, a default mixer and no legacy field; that file
+    // round-trips.
+    assert_eq!(p.mixer, MixerState::default());
+    let v4 = p.to_json_pretty();
+    assert!(v4.starts_with("{\n  \"version\": 4,"));
+    assert!(v4.contains("\"bank\""));
+    assert!(v4.contains("\"mixer\""));
+    assert!(!v4.contains("\n  \"pattern\""));
+    let back = Project::from_json(&v4).unwrap();
     assert_eq!(back, p);
-    assert_eq!(back.to_json_pretty(), v3);
+    assert_eq!(back.to_json_pretty(), v4);
 }
 
 #[test]

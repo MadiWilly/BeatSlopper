@@ -73,3 +73,13 @@ recorded in `design/WINNER.md` "As-built tweaks".
 - Undo snapshots include the project path so undoing an Open does not retarget Ctrl+S.
 - The UI->engine MIDI path uses a bounded `sync_channel` for the UI mirror because the
   unbounded std channel allocates per send inside the MIDI callback.
+
+## 2026-10-25: Mixer (M6 engine)
+- Pan law: equal-power sin/cos normalised to unity at centre (centre 1.0/1.0, hard pan
+  sqrt 2 in one speaker), so existing absolute-level tests and the default sound stay intact;
+  centre sits -3 dB relative to hard pan. Hard-panning is therefore +3 dB in that speaker.
+- Delay and reverb became parallel send buses with return levels (DelayMix/ReverbMix) instead
+  of the M2 serial dry/wet chain: drums no longer pass through the drive, delay no longer feeds
+  the reverb, and the dry synth is no longer attenuated by the old crossfades (about +4.4 dB
+  at default settings). Wet levels are unchanged.
+- Meters are block peaks published per render through atomics; the UI applies the decay.

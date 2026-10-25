@@ -12,7 +12,7 @@ use engine::ParamId;
 use neu::slider::SliderSpec;
 use neu::{DialSize, KnobSize, KnobSpec, Theme};
 
-use crate::app::AppState;
+use crate::app::{AppState, RightTab};
 
 /// Height of a group head row (`.ghead`, `.col > .lbl`): the segmented control's height.
 pub const ROW_HEIGHT: f32 = 30.0;
@@ -303,6 +303,34 @@ pub fn group_head<R>(
         right(ui)
     })
     .inner
+}
+
+/// Items of the right-hand column's tab selector, in [`RightTab`] order.
+pub const RIGHT_TABS: [&str; 2] = ["Project", "Chain"];
+
+/// The head row shared by the PROJECT and SONG CHAIN panels: the title on the left and the
+/// `Project | Chain` tab (`neu::segmented`) flush right. A click switches
+/// [`AppState::right_tab`].
+pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(ROW_HEIGHT);
+        neu::title(ui, theme, title);
+        right_aligned(ui, "right_column_tabs", |ui| {
+            let before = match state.right_tab {
+                RightTab::Project => 0,
+                RightTab::Chain => 1,
+            };
+            let mut selected = before;
+            neu::segmented(ui, theme, &mut selected, &RIGHT_TABS);
+            if selected != before {
+                state.right_tab = if selected == 0 {
+                    RightTab::Project
+                } else {
+                    RightTab::Chain
+                };
+            }
+        });
+    });
 }
 
 /// Pushes `add`'s contents to the right edge of a horizontal `ui`, using the width they had

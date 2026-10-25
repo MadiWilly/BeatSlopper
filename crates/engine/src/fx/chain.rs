@@ -6,7 +6,18 @@
 //! [`StereoDelay`] crossfades between the old and new time itself.
 //!
 //! The master gain and the limiter are *not* part of the chain; the engine applies them after
-//! [`FxChain::process`].
+//! [`FxChain::process`] / [`FxChain::process_bus`].
+//!
+//! Two entry points share the same delay and reverb:
+//!
+//! - [`FxChain::process`] (M2): the serial insert, `drive -> delay -> reverb`, each with its
+//!   dry/wet mix (`x + (wet - x) * mix`). Equivalent to sending one signal through the whole
+//!   chain, the way the pre-mixer engine did.
+//! - [`FxChain::process_bus`] (M6): the mixer topology. The engine applies the drive to the
+//!   synth channel itself (via [`FxChain::drive`]) and sums per-channel post-fader sends into
+//!   a stereo delay bus and a stereo reverb bus; `process_bus` returns
+//!   `dry + delay(delay_in) * DelayMix + reverb(reverb_in) * ReverbMix`, so the two mix
+//!   parameters act as *return levels* and the dry signal passes untouched.
 //!
 //! Real-time safe after [`FxChain::new`]: nothing here allocates, locks, logs or panics.
 
@@ -214,10 +225,9 @@ impl FxChain {
         self.reverb.set_mix(self.reverb_mix.current());
     }
 
-    /// Processes one stereo frame through drive, delay and reverb. Non-finite inputs are
-    /// treated as `0.0`; the output is always finite.
+    /// Advances every parameter smoother one sample and pushes the values into the effects.
     #[inline]
-    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+    fn tick_smoothers(&mut self) {
         self.drive_amount.tick();
         self.drive_mix.tick();
         self.delay_feedback.tick();
@@ -226,12 +236,60 @@ impl FxChain {
         self.reverb_damping.tick();
         self.reverb_mix.tick();
         self.apply_smoothed();
+    }
 
+    /// The drive stage with its current (smoothed) amount and mix, for use as a channel
+    /// insert: the engine applies it to the synth channel before the mixer. It reflects the
+    /// smoother state as of the last `process` / `process_bus` call.
+    #[must_use]
+    pub fn drive(&self) -> &Drive {
+        &self.drive
+    }
+
+    /// Processes one stereo frame through drive, delay and reverb in series, each with its
+    /// dry/wet mix (the M2 insert topology). Non-finite inputs are treated as `0.0`; the
+    /// output is always finite.
+    #[inline]
+    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.tick_smoothers();
         let l = if l.is_finite() { l } else { 0.0 };
         let r = if r.is_finite() { r } else { 0.0 };
         let (l, r) = (self.drive.process(l), self.drive.process(r));
         let (l, r) = self.delay.process(l, r);
         self.reverb.process(l, r)
+    }
+
+    /// Processes one frame of the mixer buses: returns
+    /// `dry + delay(delay_in) * DelayMix + reverb(reverb_in) * ReverbMix`.
+    ///
+    /// `dry` is the summed post-fader, panned mix; `delay_in` / `reverb_in` are the summed
+    /// post-fader sends. The drive is **not** applied here (see [`drive`](Self::drive)); the
+    /// delay feedback, reverb size and damping work as in [`process`](Self::process). With a
+    /// return level of `0.0` an effect contributes nothing; with silent sends the effects stay
+    /// exactly silent. Non-finite inputs are treated as `0.0`; the output is always finite.
+    #[inline]
+    pub fn process_bus(
+        &mut self,
+        dry: (f32, f32),
+        delay_in: (f32, f32),
+        reverb_in: (f32, f32),
+    ) -> (f32, f32) {
+        #[inline]
+        fn clean(x: f32) -> f32 {
+            if x.is_finite() { x } else { 0.0 }
+        }
+        self.tick_smoothers();
+        // The buses want the pure wet signal; the return level is applied below.
+        self.delay.set_mix(1.0);
+        self.reverb.set_mix(1.0);
+        let (dl, dr) = self.delay.process(clean(delay_in.0), clean(delay_in.1));
+        let (rl, rr) = self.reverb.process(clean(reverb_in.0), clean(reverb_in.1));
+        let delay_level = self.delay_mix.current();
+        let reverb_level = self.reverb_mix.current();
+        (
+            clean(dry.0) + dl * delay_level + rl * reverb_level,
+            clean(dry.1) + dr * delay_level + rr * reverb_level,
+        )
     }
 
     /// Processes an interleaved stereo buffer in place. A trailing odd sample (an incomplete
@@ -310,6 +368,78 @@ mod tests {
         fx.set_param(ParamId::MasterGain, 0.1);
         fx.set_param(ParamId::FilterCutoff, 100.0);
         assert_eq!(fx, before);
+    }
+
+    #[test]
+    fn process_bus_sums_dry_and_wet_returns() {
+        // Return levels: dry passes untouched, a silent send contributes nothing.
+        let mut fx = FxChain::new(SR);
+        fx.set_param(ParamId::DelayMix, 1.0);
+        fx.set_param(ParamId::ReverbMix, 1.0);
+        fx.set_param(ParamId::DelayFeedback, 0.0);
+        fx.reset();
+        for i in 0..24_000 {
+            let x = (i as f32 * 0.01).sin() * 0.5;
+            let (l, r) = fx.process_bus((x, -x), (0.0, 0.0), (0.0, 0.0));
+            assert_eq!((l, r), (x, -x), "sample {i}");
+        }
+        // A delay-bus impulse comes back once, at the delay time, at the return level.
+        fx.set_param(ParamId::DelayMix, 0.5);
+        fx.reset();
+        let n = fx.delay_samples();
+        let mut out = Vec::with_capacity(n + 10);
+        for i in 0..n + 10 {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            out.push(fx.process_bus((0.0, 0.0), (x, x), (0.0, 0.0)).0);
+        }
+        assert_eq!(out[0], 0.0, "no dry leak from the delay bus");
+        assert!((out[n] - 0.5).abs() < 1e-5, "echo {}", out[n]);
+        assert!(out[1..n].iter().all(|&v| v.abs() < 1e-6));
+        // A reverb-bus impulse produces a tail; mix 0 silences the return entirely.
+        fx.set_param(ParamId::ReverbMix, 1.0);
+        fx.reset();
+        let tail: Vec<f32> = (0..24_000)
+            .map(|i| {
+                let x = if i == 0 { 1.0 } else { 0.0 };
+                fx.process_bus((0.0, 0.0), (0.0, 0.0), (x, x)).0
+            })
+            .collect();
+        assert!(tail.iter().any(|&v| v.abs() > 1e-3));
+        assert!(tail.iter().all(|v| v.is_finite()));
+        fx.set_param(ParamId::ReverbMix, 0.0);
+        fx.reset();
+        for i in 0..24_000 {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            assert_eq!(
+                fx.process_bus((0.0, 0.0), (0.0, 0.0), (x, x)),
+                (0.0, 0.0),
+                "{i}"
+            );
+        }
+        // Non-finite input never escapes.
+        let (l, r) = fx.process_bus((f32::NAN, 0.0), (f32::INFINITY, 0.0), (0.0, f32::NAN));
+        assert!(l.is_finite() && r.is_finite());
+    }
+
+    #[test]
+    fn process_and_process_bus_share_parameters() {
+        let mut fx = FxChain::new(SR);
+        fx.set_param(ParamId::DriveAmount, 1.0);
+        fx.set_param(ParamId::DriveMix, 1.0);
+        fx.reset();
+        // `drive()` reflects the smoothed state after a tick.
+        let _ = fx.process_bus((0.0, 0.0), (0.0, 0.0), (0.0, 0.0));
+        assert_eq!(fx.drive().amount(), 1.0);
+        assert_eq!(fx.drive().mix(), 1.0);
+        assert!(fx.drive().process(0.5) > 0.9);
+        // The serial path still mixes dry/wet the M2 way after a bus call set the mixes to 1.
+        fx.set_param(ParamId::DriveMix, 0.0);
+        fx.set_param(ParamId::DelayMix, 0.0);
+        fx.set_param(ParamId::ReverbMix, 0.0);
+        fx.set_param(ParamId::DelayFeedback, 0.0);
+        fx.reset();
+        let _ = fx.process_bus((0.0, 0.0), (0.0, 0.0), (0.0, 0.0));
+        assert_eq!(fx.process(0.25, -0.25), (0.25, -0.25));
     }
 
     #[test]

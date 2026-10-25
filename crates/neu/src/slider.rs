@@ -1,4 +1,5 @@
-//! Thin vertical slider and the indicator lamp (`.vslider` / `.lamp` in `design/preview-a.html`).
+//! Thin vertical slider, the mixer fader and the indicator lamp (`.vslider` / `.lamp` in
+//! `design/preview-a.html`).
 //!
 //! The slider is a [`SLIDER_WIDTH`]-wide column: the formatted value (13 pt) on top, the
 //! 6x100 inset-s track (radius 3) with a 14 pt accent on-glow thumb and two 4 pt accent end
@@ -8,6 +9,9 @@
 //! range. A double-click resets to `spec.default`; arrows step 1/50 of the range while
 //! focused. The response covers the track column only (not the texts) so clicks on the value
 //! or label do nothing.
+//!
+//! The fader ([`fader`]) is the same control on the taller [`FADER_TRACK`] (6x140) for the
+//! mixer strips; both are drawn by one private `vertical_slider`.
 //!
 //! The lamp is a 10 pt circle, inset-s when off and accent + on-glow when on, with its caps
 //! label 10 pt to the right.
@@ -47,6 +51,10 @@ pub const SLIDER_MARKER: f32 = 4.0;
 pub const SLIDER_MARKER_OFFSET: f32 = 7.0;
 /// Vertical travel of the thumb centre (track height minus the thumb diameter).
 pub const SLIDER_TRAVEL: f32 = SLIDER_TRACK.y - SLIDER_THUMB;
+/// Size of the mixer fader's track: 6 wide, 140 tall (M6, `docs/ARCHITECTURE.md`).
+pub const FADER_TRACK: Vec2 = Vec2::new(6.0, 140.0);
+/// Vertical travel of the fader thumb centre (track height minus the thumb diameter).
+pub const FADER_TRAVEL: f32 = FADER_TRACK.y - SLIDER_THUMB;
 /// Gap between the value, the track and the label (`.vslider` `gap`).
 pub const SLIDER_GAP: f32 = 8.0;
 /// Fraction of the range one arrow-key press moves.
@@ -83,18 +91,25 @@ impl SliderSpec<'_> {
     }
 }
 
+/// The thumb centre's travel on a track of the given rect (its height minus the thumb):
+/// [`SLIDER_TRAVEL`] for the 6x100 track, [`FADER_TRAVEL`] for the fader's 6x140.
+fn travel_of(track: Rect) -> f32 {
+    (track.height() - SLIDER_THUMB).max(f32::EPSILON)
+}
+
 /// The fraction (1 at the top, 0 at the bottom) a pointer at `y` selects on a track whose
-/// rect is `track`: the thumb centre maps linearly over [`SLIDER_TRAVEL`] starting half a
+/// rect is `track`: the thumb centre maps linearly over the track's travel (its height minus
+/// the thumb, [`SLIDER_TRAVEL`] for a slider, [`FADER_TRAVEL`] for a fader) starting half a
 /// thumb below the top edge, like the mock's `fromY`.
 pub fn vslider_fraction_at(track: Rect, y: f32) -> f32 {
-    (1.0 - (y - track.min.y - SLIDER_THUMB * 0.5) / SLIDER_TRAVEL).clamp(0.0, 1.0)
+    (1.0 - (y - track.min.y - SLIDER_THUMB * 0.5) / travel_of(track)).clamp(0.0, 1.0)
 }
 
 /// The thumb centre for fraction `f` on `track` (inverse of [`vslider_fraction_at`]).
 pub fn vslider_thumb_pos(track: Rect, f: f32) -> Pos2 {
     pos2(
         track.center().x,
-        track.min.y + SLIDER_THUMB * 0.5 + (1.0 - f.clamp(0.0, 1.0)) * SLIDER_TRAVEL,
+        track.min.y + SLIDER_THUMB * 0.5 + (1.0 - f.clamp(0.0, 1.0)) * travel_of(track),
     )
 }
 
@@ -103,6 +118,29 @@ pub fn vslider_thumb_pos(track: Rect, f: f32) -> Pos2 {
 /// The returned response's rect is the interactive column around the track
 /// ([`SLIDER_WIDTH`] x the track height); the track itself is centred in it.
 pub fn vslider(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_>) -> Response {
+    vertical_slider(ui, theme, value, spec, SLIDER_TRACK)
+}
+
+/// Mixer fader: the [`vslider`] control on the taller [`FADER_TRACK`] (6x140) with the same
+/// 14 pt on-glow thumb, end markers, value above and caps label below. Press or drag sets the
+/// value from the pointer, a double-click resets to `spec.default`, arrows step while
+/// focused, and the `"label: value"` tooltip appears on hover. `changed()` when the value
+/// moved.
+///
+/// The response's rect is the interactive column ([`SLIDER_WIDTH`] x [`FADER_TRACK`]`.y`).
+pub fn fader(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_>) -> Response {
+    vertical_slider(ui, theme, value, spec, FADER_TRACK)
+}
+
+/// The shared slider body: a `track_size` inset-s track in a [`SLIDER_WIDTH`] column with the
+/// value above and the label below.
+fn vertical_slider(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: &mut f32,
+    spec: &SliderSpec<'_>,
+    track_size: Vec2,
+) -> Response {
     let painter = ui.painter().clone();
     let label_galley = text::layout(&painter, spec.label, TextKind::Label, theme.text_secondary);
     let value_height = text::layout(
@@ -113,18 +151,18 @@ pub fn vslider(ui: &mut Ui, theme: &Theme, value: &mut f32, spec: &SliderSpec<'_
     )
     .size()
     .y;
-    let height = value_height + SLIDER_GAP + SLIDER_TRACK.y + SLIDER_GAP + label_galley.size().y;
+    let height = value_height + SLIDER_GAP + track_size.y + SLIDER_GAP + label_galley.size().y;
 
     // The column is laid out as one block; only the track column senses input.
     let (rect, block) = ui.allocate_exact_size(vec2(SLIDER_WIDTH, height), Sense::hover());
     let track = Rect::from_center_size(
         pos2(
             rect.center().x,
-            rect.min.y + value_height + SLIDER_GAP + SLIDER_TRACK.y * 0.5,
+            rect.min.y + value_height + SLIDER_GAP + track_size.y * 0.5,
         ),
-        SLIDER_TRACK,
+        track_size,
     );
-    let hit = Rect::from_center_size(track.center(), vec2(SLIDER_WIDTH, SLIDER_TRACK.y));
+    let hit = Rect::from_center_size(track.center(), vec2(SLIDER_WIDTH, track_size.y));
     let mut response = ui.interact(hit, block.id.with("track"), Sense::click_and_drag());
 
     let before = *value;
@@ -277,6 +315,17 @@ mod tests {
         assert_eq!(vslider_fraction_at(track, 1000.0), 0.0);
         let p = vslider_thumb_pos(track, 0.75);
         assert!((vslider_fraction_at(track, p.y) - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fader_track_maps_over_its_own_travel() {
+        let track = Rect::from_min_size(pos2(0.0, 10.0), FADER_TRACK);
+        assert_eq!(FADER_TRAVEL, 126.0);
+        assert_eq!(vslider_fraction_at(track, 10.0 + 7.0), 1.0);
+        assert_eq!(vslider_fraction_at(track, 10.0 + 7.0 + FADER_TRAVEL), 0.0);
+        let p = vslider_thumb_pos(track, 0.25);
+        assert!((p.y - (10.0 + 7.0 + 0.75 * FADER_TRAVEL)).abs() < 1e-4);
+        assert!((vslider_fraction_at(track, p.y) - 0.25).abs() < 1e-5);
     }
 
     #[test]

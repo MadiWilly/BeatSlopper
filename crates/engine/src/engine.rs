@@ -1,11 +1,30 @@
-//! Engine core: message queue, polyphonic voices, drum kit, step sequencer, test tone,
+//! Engine core: message queue, polyphonic voices, drum kit, step sequencer, mixer, test tone,
 //! smoothed master gain and the master limiter.
 //!
 //! The public API below is the contract the `app` crate builds against (docs/ARCHITECTURE.md).
 //!
-//! Signal flow: `voices (sum) + drums -> FX chain (drive -> delay -> reverb) -> (+ TestTone)
-//! -> master gain (smoothed) -> Limiter (bypassable via `LimiterOn`) -> interleaved stereo`.
-//! The diagnostic test tone bypasses the effects.
+//! # Signal flow (M6)
+//!
+//! Per sample, six mixer channels ([`Channel`]): the five drum rows from
+//! [`DrumKit::tick_rows`] and the synth voices' sum, the latter through the drive insert
+//! (`DriveAmount` / `DriveMix` of the FX chain). Each channel is scaled by its smoothed gain
+//! (fader level times the mute/solo decision, [`MixerState::effective_gain`]), panned
+//! ([`crate::mixer::pan_gains`], smoothed) into the stereo dry bus, and its post-fader signal
+//! is also sent (smoothed send levels, same pan) into a stereo delay bus and a stereo reverb
+//! bus. [`FxChain::process_bus`] returns `dry + delay * DelayMix + reverb * ReverbMix`; then
+//! `(+ TestTone) -> master gain (smoothed) -> Limiter (bypassable via LimiterOn) ->
+//! interleaved stereo`. The diagnostic test tone bypasses the mixer and the effects.
+//!
+//! With the default [`MixerState`] (every strip at unity and centre, the synth sent fully to
+//! both effects) the synth is driven, delayed and reverberated as in M2-M5 and the dry
+//! levels are unchanged (the pan law is unity at the centre). Differences from the pre-mixer
+//! engine: the drums no longer pass through the drive (it is the synth's insert), the delay
+//! output no longer feeds the reverb (the buses are parallel), and `DelayMix` / `ReverbMix`
+//! are return levels rather than dry/wet crossfades, so the dry synth is no longer attenuated
+//! by `(1 - mix)` (about +4 dB dry at the defaults, with the same wet level).
+//!
+//! Block peaks of every channel (post-fader) and of the master output are published once per
+//! `render` as [`Meters`] through lock-free atomics ([`EngineHandle::meters`]).
 //!
 //! # Sequencer (M3)
 //!
@@ -54,6 +73,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use crate::drums::{DrumKit, DrumRow};
 use crate::dsp::db_to_gain;
 use crate::fx::{FxChain, Limiter};
+use crate::mixer::{Channel, ChannelParam, MixerState};
 use crate::params::{DEFAULT_SMOOTH_MS, ParamId, Smoother};
 use crate::pattern::{
     Bank, ChainEntry, DrumStep, MAX_CHAIN, MAX_STEPS, PATTERN_COUNT, Pattern, PlayMode, STEPS,
@@ -73,6 +93,8 @@ pub const TEST_TONE_DB: f32 = -12.0;
 pub const TEST_TONE_FADE_MS: f32 = 5.0;
 /// Smoothing time constant of the master gain, in milliseconds.
 pub const MASTER_GAIN_SMOOTH_MS: f32 = DEFAULT_SMOOTH_MS;
+/// Smoothing time constant of the mixer's channel gains, pans and sends, in milliseconds.
+pub const MIXER_SMOOTH_MS: f32 = DEFAULT_SMOOTH_MS;
 /// Largest master gain accepted by [`Engine::set_master_gain`] (+12 dB).
 pub const MAX_MASTER_GAIN: f32 = 4.0;
 /// Gate length of a sequencer synth-lane note as a fraction of one step: the note-off comes
@@ -189,6 +211,58 @@ pub enum Message {
     },
     /// Set the number of valid chain entries (`0..=MAX_CHAIN`).
     SetChainLen(u8),
+    /// Set one mixer value; it is clamped with [`ChannelParam::clamp`] (mute/solo snap to
+    /// 0/1) and smoothed over about [`MIXER_SMOOTH_MS`].
+    SetMixer {
+        /// Channel strip.
+        channel: Channel,
+        /// Which value of the strip.
+        param: ChannelParam,
+        /// New value (dB for `Level`, `-1..=1` for `Pan`, `0..=1` otherwise).
+        value: f32,
+    },
+}
+
+/// Block peak levels (linear, `0.0` = silence) as last published by the audio thread.
+///
+/// Each value is the largest absolute sample of the last `render` call: per channel the
+/// post-fader (pre-pan) signal, for the master the final left/right output. The UI applies
+/// its own decay / hold.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Meters {
+    /// Per-channel peaks indexed by [`Channel::index`].
+    pub channel: [f32; Channel::COUNT],
+    /// Master output peaks, left and right.
+    pub master: [f32; 2],
+}
+
+impl Meters {
+    /// All meters at silence.
+    pub const SILENT: Meters = Meters {
+        channel: [0.0; Channel::COUNT],
+        master: [0.0; 2],
+    };
+
+    /// Peak of `channel`.
+    #[must_use]
+    pub fn of(&self, channel: Channel) -> f32 {
+        self.channel[channel.index()]
+    }
+
+    /// The larger of the two master peaks.
+    #[must_use]
+    pub fn master_peak(&self) -> f32 {
+        self.master[0].max(self.master[1])
+    }
+
+    /// Replaces any NaN with `0.0` and clamps negatives (defensive, for values read from
+    /// atomics).
+    fn sanitised(mut self) -> Self {
+        for v in self.channel.iter_mut().chain(self.master.iter_mut()) {
+            *v = if v.is_finite() && *v > 0.0 { *v } else { 0.0 };
+        }
+        self
+    }
 }
 
 /// Where the sequencer is, as last published by the audio thread.
@@ -269,9 +343,33 @@ pub(crate) struct Shared {
     playing: AtomicBool,
     /// Pattern, bar, song index and queued pattern, packed by [`pack_song`].
     song: AtomicU32,
+    /// Channel block peaks as `f32` bit patterns.
+    meter_channel: [AtomicU32; Channel::COUNT],
+    /// Master block peaks (left, right) as `f32` bit patterns.
+    meter_master: [AtomicU32; 2],
 }
 
 impl Shared {
+    pub(crate) fn publish_meters(&self, meters: &Meters) {
+        for (slot, &v) in self.meter_channel.iter().zip(&meters.channel) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+        for (slot, &v) in self.meter_master.iter().zip(&meters.master) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn read_meters(&self) -> Meters {
+        let mut m = Meters::SILENT;
+        for (v, slot) in m.channel.iter_mut().zip(&self.meter_channel) {
+            *v = f32::from_bits(slot.load(Ordering::Relaxed));
+        }
+        for (v, slot) in m.master.iter_mut().zip(&self.meter_master) {
+            *v = f32::from_bits(slot.load(Ordering::Relaxed));
+        }
+        m.sanitised()
+    }
+
     pub(crate) fn publish(&self, pos: Position) {
         self.step.store(u32::from(pos.step), Ordering::Relaxed);
         let milli = (pos.frac.clamp(0.0, 0.999) * 1000.0) as u32;
@@ -335,6 +433,12 @@ impl EngineHandle {
     #[must_use]
     pub fn position(&self) -> Position {
         self.shared.read()
+    }
+
+    /// Block peak meters of the last rendered block (lock-free, see [`Meters`]).
+    #[must_use]
+    pub fn meters(&self) -> Meters {
+        self.shared.read_meters()
     }
 
     /// Takes the MIDI queue's producer (once). Returns `None` if it was already taken.
@@ -402,6 +506,68 @@ impl TestTone {
     }
 }
 
+/// Smoothed per-channel mixer gains, derived from a [`MixerState`] strip.
+///
+/// Five one-pole smoothers per channel: the fader gain (level times mute/solo, so a mute is a
+/// 10 ms fade rather than a step), the two pan gains and the two send levels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StripDsp {
+    gain: Smoother,
+    pan_l: Smoother,
+    pan_r: Smoother,
+    delay_send: Smoother,
+    reverb_send: Smoother,
+}
+
+impl StripDsp {
+    fn new(sample_rate: f32, mixer: &MixerState, channel: Channel) -> Self {
+        let gain = mixer.effective_gain(channel);
+        let (pl, pr) = mixer.pan_gains(channel);
+        let strip = mixer.strip(channel);
+        let s = |v: f32| Smoother::new(sample_rate, MIXER_SMOOTH_MS, v);
+        Self {
+            gain: s(gain),
+            pan_l: s(pl),
+            pan_r: s(pr),
+            delay_send: s(strip.delay_send),
+            reverb_send: s(strip.reverb_send),
+        }
+    }
+
+    /// Points every smoother at the strip's current values (glides over ~10 ms).
+    fn retarget(&mut self, mixer: &MixerState, channel: Channel) {
+        let (pl, pr) = mixer.pan_gains(channel);
+        let strip = mixer.strip(channel);
+        self.gain.set_target(mixer.effective_gain(channel));
+        self.pan_l.set_target(pl);
+        self.pan_r.set_target(pr);
+        self.delay_send.set_target(strip.delay_send);
+        self.reverb_send.set_target(strip.reverb_send);
+    }
+
+    /// Jumps every smoother to the strip's current values (project load).
+    fn snap(&mut self, mixer: &MixerState, channel: Channel) {
+        self.retarget(mixer, channel);
+        for s in [
+            &mut self.gain,
+            &mut self.pan_l,
+            &mut self.pan_r,
+            &mut self.delay_send,
+            &mut self.reverb_send,
+        ] {
+            s.snap(s.target());
+        }
+    }
+}
+
+/// Stereo accumulators of one mixer frame.
+#[derive(Debug, Clone, Copy, Default)]
+struct Buses {
+    dry: (f32, f32),
+    delay: (f32, f32),
+    reverb: (f32, f32),
+}
+
 /// Audio-side engine. Owns all DSP state. Lives on the audio thread (or in a test).
 pub struct Engine {
     sample_rate: f32,
@@ -438,9 +604,15 @@ pub struct Engine {
     queued: Option<u8>,
     /// Set when song mode was entered while playing: restart the chain at the next bar.
     song_restart: bool,
-    /// The procedural drum kit, summed with the voices before the FX chain.
+    /// The procedural drum kit; its rows feed the first five mixer channels.
     drums: DrumKit,
-    /// Playhead published to the UI.
+    /// Mixer settings (the authoritative, unsmoothed values).
+    mixer: MixerState,
+    /// Smoothed per-channel gains derived from `mixer`.
+    strips: [StripDsp; Channel::COUNT],
+    /// Block peaks of the last `render`.
+    meters: Meters,
+    /// Playhead and meters published to the UI.
     shared: Arc<Shared>,
     /// Cached `transport.samples_per_step(sample_rate)` (f64 so 16 steps stay exact).
     samples_per_step: f64,
@@ -478,6 +650,8 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
     let transport = Transport::default();
     let samples_per_step = transport.samples_per_step(sample_rate);
     let bar_len = bar_len_samples(samples_per_step);
+    let mixer = MixerState::default();
+    let strips = Channel::ALL.map(|ch| StripDsp::new(sample_rate, &mixer, ch));
     (
         EngineHandle {
             producer,
@@ -510,6 +684,9 @@ pub fn new_engine(sample_rate: f32) -> (EngineHandle, Engine) {
             queued: None,
             song_restart: false,
             drums: DrumKit::new(sample_rate),
+            mixer,
+            strips,
+            meters: Meters::SILENT,
             shared,
             samples_per_step,
             bar_len,
@@ -685,6 +862,48 @@ impl Engine {
     #[must_use]
     pub fn drums(&self) -> &DrumKit {
         &self.drums
+    }
+
+    // --- mixer ----------------------------------------------------------------------------
+
+    /// The mixer settings (level, pan, mute, solo, sends per channel).
+    #[must_use]
+    pub fn mixer(&self) -> &MixerState {
+        &self.mixer
+    }
+
+    /// Sets one mixer value (clamped with [`ChannelParam::clamp`]; mute/solo snap to 0/1).
+    /// The audible gains glide over about [`MIXER_SMOOTH_MS`] so toggles never click. A solo
+    /// change re-targets every channel. Returns the stored value.
+    pub fn set_mixer(&mut self, channel: Channel, param: ChannelParam, value: f32) -> f32 {
+        let stored = self.mixer.set(channel, param, value);
+        if param == ChannelParam::Solo {
+            for ch in Channel::ALL {
+                self.strips[ch.index()].retarget(&self.mixer, ch);
+            }
+        } else {
+            self.strips[channel.index()].retarget(&self.mixer, channel);
+        }
+        stored
+    }
+
+    /// Replaces the whole mixer (project load). Values are normalised into range and the
+    /// smoothers jump straight to them (no glide), so an exported or freshly loaded project
+    /// starts with its exact mix. Meant to be called before the stream starts; on the audio
+    /// thread it is a fixed-size copy, not an allocation.
+    pub fn set_mixer_state(&mut self, mixer: &MixerState) {
+        self.mixer = *mixer;
+        self.mixer.normalise();
+        for ch in Channel::ALL {
+            self.strips[ch.index()].snap(&self.mixer, ch);
+        }
+    }
+
+    /// Block peaks of the last `render` call (the UI reads the same data through
+    /// [`EngineHandle::meters`]).
+    #[must_use]
+    pub fn meters(&self) -> Meters {
+        self.meters
     }
 
     /// The sequencer playhead as the audio side sees it right now (the UI reads the same
@@ -1138,7 +1357,45 @@ impl Engine {
                 repeats,
             } => self.set_chain_entry(index, pattern, repeats),
             Message::SetChainLen(len) => self.set_chain_len(len),
+            Message::SetMixer {
+                channel,
+                param,
+                value,
+            } => {
+                self.set_mixer(channel, param, value);
+            }
         }
+    }
+
+    /// One frame of the mixer: scales each channel input by its smoothed gain, pans it into
+    /// the dry bus, adds its post-fader sends to the delay and reverb buses and tracks the
+    /// per-channel block peak (post-fader, pre-pan).
+    #[inline]
+    fn mix_frame(&mut self, inputs: &[f32; Channel::COUNT]) -> Buses {
+        let mut buses = Buses::default();
+        for (i, strip) in self.strips.iter_mut().enumerate() {
+            let x = inputs[i];
+            let post = if x.is_finite() {
+                x * strip.gain.tick()
+            } else {
+                0.0
+            };
+            let (pl, pr) = (strip.pan_l.tick(), strip.pan_r.tick());
+            let (l, r) = (post * pl, post * pr);
+            buses.dry.0 += l;
+            buses.dry.1 += r;
+            let ds = strip.delay_send.tick();
+            buses.delay.0 += l * ds;
+            buses.delay.1 += r * ds;
+            let rs = strip.reverb_send.tick();
+            buses.reverb.0 += l * rs;
+            buses.reverb.1 += r * rs;
+            let a = post.abs();
+            if a > self.meters.channel[i] {
+                self.meters.channel[i] = a;
+            }
+        }
+        buses
     }
 
     /// Renders `frames` frames of **interleaved stereo** into `out` (`out.len() >= frames * 2`).
@@ -1152,11 +1409,18 @@ impl Engine {
         let (body, tail) = out.split_at_mut(frames * 2);
         let (stereo_frames, _) = body.as_chunks_mut::<2>();
         let limiter_on = self.limiter_on;
+        self.meters = Meters::SILENT;
+        let mut rows = [0.0_f32; DrumRow::COUNT];
+        let mut inputs = [0.0_f32; Channel::COUNT];
         for [l, r] in stereo_frames {
             self.sequencer_tick();
-            // Voices and drums share the effect bus; the diagnostic test tone bypasses it.
-            let mono = self.voices.tick() + self.drums.tick();
-            let (fl, fr) = self.fx.process(mono, mono);
+            // Five drum rows plus the synth (through its drive insert) feed the mixer; the
+            // diagnostic test tone bypasses mixer and effects.
+            self.drums.tick_rows(&mut rows);
+            inputs[..DrumRow::COUNT].copy_from_slice(&rows);
+            inputs[Channel::Synth.index()] = self.fx.drive().process(self.voices.tick());
+            let buses = self.mix_frame(&inputs);
+            let (fl, fr) = self.fx.process_bus(buses.dry, buses.delay, buses.reverb);
             let tone = self.tone.tick();
             let gain = self.master_gain.tick();
             let (pl, pr) = ((fl + tone) * gain, (fr + tone) * gain);
@@ -1167,8 +1431,16 @@ impl Engine {
                 *l = if pl.is_finite() { pl } else { 0.0 };
                 *r = if pr.is_finite() { pr } else { 0.0 };
             }
+            let (al, ar) = (l.abs(), r.abs());
+            if al > self.meters.master[0] {
+                self.meters.master[0] = al;
+            }
+            if ar > self.meters.master[1] {
+                self.meters.master[1] = ar;
+            }
         }
         tail.fill(0.0);
+        self.shared.publish_meters(&self.meters);
         self.publish();
     }
 }

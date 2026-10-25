@@ -1,4 +1,4 @@
-//! Visual gallery of the `neu` M0, M1, M2, M3 and M4 widgets in both themes.
+//! Visual gallery of the `neu` M0 to M4 and the M6 mixer widgets in both themes.
 //!
 //! `cargo run -p neu --example gallery [-- --exit-after-secs N] [--light|--dark] [--scroll PX]`
 //!
@@ -162,6 +162,56 @@ fn fmt_db(v: f32) -> String {
     }
 }
 
+/// Pan display: `C` at the centre, otherwise `L n` / `R n`.
+fn fmt_pan(v: f32) -> String {
+    if v.abs() < 0.5 {
+        "C".to_owned()
+    } else if v < 0.0 {
+        format!("L {:.0}", -v)
+    } else {
+        format!("R {v:.0}")
+    }
+}
+
+/// Channel names of the gallery's MIXER strips (the first, middle and last M6 channels).
+const MIXER_STRIPS: [&str; 3] = ["Kick", "Snare", "Synth"];
+
+/// The mixer fader: level in dB, -60..=+6, unity by default.
+const LEVEL_FADER: SliderSpec<'static> = SliderSpec {
+    label: "Level",
+    min: -60.0,
+    max: 6.0,
+    default: 0.0,
+    fmt: fmt_db,
+};
+
+/// One MIXER strip's state (M6: level, pan, sends, mute, solo) plus the phase of its fake
+/// meter pulse.
+#[derive(Clone, Copy)]
+struct Strip {
+    level_db: f32,
+    pan: f32,
+    delay_send: f32,
+    reverb_send: f32,
+    mute: bool,
+    solo: bool,
+    /// Offset of this strip's pulse within the beat (fraction).
+    phase: f32,
+}
+
+impl Strip {
+    /// A fake peak level: a 120 BPM decaying pulse scaled by the fader, silent while muted or
+    /// while another strip is soloed (`heard` is the mute/solo verdict).
+    fn fake_level(&self, t: f32, heard: bool) -> f32 {
+        if !heard {
+            return 0.0;
+        }
+        let beat = (t * 2.0 + self.phase).fract();
+        let pulse = (1.0 - beat).powi(2);
+        10f32.powf(self.level_db / 20.0) * pulse
+    }
+}
+
 /// A unipolar 0..=100 % knob (`Md`) like the mock's `data-unit="%"` knobs.
 fn pct_knob(label: &str, default: f32) -> KnobSpec<'_> {
     KnobSpec {
@@ -226,6 +276,8 @@ struct Gallery {
     drum_vol: [f32; 5],
     bass_tune: f32,
     playhead: usize,
+    /// MIXER panel state: three strips and the master's stereo peak (held for display).
+    mixer: [Strip; 3],
     started: Instant,
     exit_after: Option<Duration>,
     /// Initial vertical scroll offset (`--scroll`), applied for the first few frames (the
@@ -283,6 +335,35 @@ impl Gallery {
             ],
             bass_tune: 0.0,
             playhead: 4,
+            mixer: [
+                Strip {
+                    level_db: 0.0,
+                    pan: 0.0,
+                    delay_send: 0.0,
+                    reverb_send: 0.0,
+                    mute: false,
+                    solo: false,
+                    phase: 0.0,
+                },
+                Strip {
+                    level_db: -4.0,
+                    pan: 20.0,
+                    delay_send: 0.0,
+                    reverb_send: 30.0,
+                    mute: false,
+                    solo: false,
+                    phase: 0.5,
+                },
+                Strip {
+                    level_db: -9.0,
+                    pan: -35.0,
+                    delay_send: 100.0,
+                    reverb_send: 100.0,
+                    mute: true,
+                    solo: false,
+                    phase: 0.25,
+                },
+            ],
             started: Instant::now(),
             exit_after,
             scroll_to,
@@ -344,7 +425,7 @@ impl eframe::App for Gallery {
                             // The mock's `.brand`: the wordmark with +0.16em tracking.
                             neu::brand(ui, &theme, "BeatSlopper");
                             ui.add_space(24.0);
-                            neu::label(ui, &theme, "M4 · Soft Console gallery");
+                            neu::label(ui, &theme, "M6 · Soft Console gallery");
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -449,6 +530,7 @@ impl eframe::App for Gallery {
                     // panel at 1280).
                     self.synth_panel(ui, &theme);
                     self.fx_panel(ui, &theme);
+                    self.mixer_panel(ui, &theme);
 
                     // SEQUENCER panel: the mock's demo pattern with a playhead that runs at
                     // 120 BPM (a 16th every 125 ms) while "Play" is on.
@@ -781,6 +863,147 @@ impl Gallery {
                             });
                         });
                     });
+                });
+            });
+        });
+    }
+
+    /// The M6 MIXER panel: three channel strips (name, bipolar pan knob, DELAY / REVERB send
+    /// knobs, fader beside a peak meter fed a fake pulsing level, M / S toggles) and a MASTER
+    /// strip with the stereo meter and the LIMIT toggle. Muted strips and, when any strip is
+    /// soloed, the others fall silent in the meters.
+    fn mixer_panel(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        const STRIP_GAP: f32 = 22.0;
+        const KNOB_GAP: f32 = 6.0;
+        let t = self.started.elapsed().as_secs_f32();
+        let any_solo = self.mixer.iter().any(|s| s.solo);
+        let heard = |s: &Strip| !s.mute && (!any_solo || s.solo);
+        let levels: [f32; 3] = std::array::from_fn(|i| {
+            let s = &self.mixer[i];
+            if self.playing {
+                s.fake_level(t, heard(s))
+            } else {
+                0.0
+            }
+        });
+        // Master: the loudest strip, leaning left or right with its pan.
+        let (ml, mr) = self
+            .mixer
+            .iter()
+            .zip(levels)
+            .fold((0.0f32, 0.0f32), |(l, r), (s, lv)| {
+                let p = (s.pan / 100.0).clamp(-1.0, 1.0);
+                (
+                    l.max(lv * (1.0 - p.max(0.0))),
+                    r.max(lv * (1.0 + p.min(0.0))),
+                )
+            });
+        if self.playing {
+            ui.ctx().request_repaint_after(Duration::from_millis(30));
+        }
+
+        let limiter = &mut self.limiter;
+        let strips = &mut self.mixer;
+        neu::panel(ui, theme, |ui| {
+            ui.horizontal(|ui| {
+                neu::title(ui, theme, "Mixer");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    neu::label(ui, theme, "Fader, meter, M / S");
+                });
+            });
+            ui.add_space(14.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = vec2(STRIP_GAP, 10.0);
+                for (i, strip) in strips.iter_mut().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(KNOB_GAP, 10.0);
+                        col_label(ui, theme, MIXER_STRIPS[i]);
+                        neu::knob(
+                            ui,
+                            theme,
+                            &mut strip.pan,
+                            &KnobSpec {
+                                label: "Pan",
+                                min: -100.0,
+                                max: 100.0,
+                                default: 0.0,
+                                log: false,
+                                bipolar: true,
+                                size: KnobSize::Sm,
+                                fmt: fmt_pan,
+                            },
+                        );
+                        ui.horizontal(|ui| {
+                            neu::knob(
+                                ui,
+                                theme,
+                                &mut strip.delay_send,
+                                &KnobSpec {
+                                    size: KnobSize::Sm,
+                                    ..pct_knob("Dly", 0.0)
+                                },
+                            );
+                            neu::knob(
+                                ui,
+                                theme,
+                                &mut strip.reverb_send,
+                                &KnobSpec {
+                                    size: KnobSize::Sm,
+                                    ..pct_knob("Rev", 0.0)
+                                },
+                            );
+                        });
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            neu::fader(ui, theme, &mut strip.level_db, &LEVEL_FADER);
+                            // The meter sits level with the fader's track (below the value).
+                            ui.vertical(|ui| {
+                                ui.add_space(TextKind::Value.size() + 8.0 + 4.0);
+                                neu::meter(ui, theme, levels[i], neu::METER_TRACK);
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            if neu::toggle_button_sized(
+                                ui,
+                                theme,
+                                "M",
+                                strip.mute,
+                                neu::TOGGLE_SQUARE,
+                            )
+                            .clicked()
+                            {
+                                strip.mute = !strip.mute;
+                            }
+                            if neu::toggle_button_sized(
+                                ui,
+                                theme,
+                                "S",
+                                strip.solo,
+                                neu::TOGGLE_SQUARE,
+                            )
+                            .clicked()
+                            {
+                                strip.solo = !strip.solo;
+                            }
+                        });
+                    });
+                }
+
+                // MASTER strip: stereo meter and the limiter toggle.
+                ui.add_space(10.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(KNOB_GAP, 10.0);
+                    col_label(ui, theme, "Master");
+                    neu::value(
+                        ui,
+                        theme,
+                        &format!("{:+.1} dB", 20.0 * ml.max(mr).max(1e-6).log10()),
+                    );
+                    neu::stereo_meter(ui, theme, (ml, mr), neu::STEREO_METER_SIZE);
+                    neu::label(ui, theme, "Peak");
+                    if neu::toggle_button(ui, theme, "Limit", *limiter).clicked() {
+                        *limiter = !*limiter;
+                    }
                 });
             });
         });

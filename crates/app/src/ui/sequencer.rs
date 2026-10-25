@@ -1,14 +1,26 @@
-//! SEQUENCER panel (M3): the 16-step grid.
+//! SEQUENCER panel (M3/M5): the 16-step grid of one bar of the edit pattern, the pattern tabs
+//! and the pattern controls.
 //!
-//! Layout follows `design/preview-a.html` `<section class="panel seq">`: a panel head (title
-//! left, the shift-click hint, the REC lamp and the CLEAR ALL pill right), a beat-number row
-//! (1-4 over the first cell of each group of four), one row per [`DrumRow::ALL`] (caps name,
-//! small VOL and TUNE knobs, 16 `neu::step_cell`s in groups of four, a CLEAR pill), the BASS
-//! lane (note names in the cells, no knobs) and the playhead dots under the grid.
+//! Layout follows `design/preview-a.html` `<section class="panel seq">` with the M5 pattern
+//! controls built from the kit (the mock has no pattern UI):
 //!
-//! Cell `i` sits at [`cell_x`]`(i)` from the grid's left edge, so the beat numbers and the
-//! playhead dots use the same maths as the rows. Every cell reports an accessible name
-//! ([`cell_name`], e.g. "Kick step 1") so tests can click it by label.
+//! - **Head row:** title, the pattern tabs A..H (`neu::segmented`; a click sends
+//!   `SelectPattern`, so while playing the engine switches at the next bar and the queued
+//!   letter blinks beside the tabs until it does), then flush right the LENGTH `segmented`
+//!   (1 bar | 2 bars | 4 bars), the FOLLOW toggle pill, COPY, PASTE and the REC lamp.
+//! - **Beat numbers** over the first cell of each group of four (numbered through the
+//!   pattern: bar 2 shows 5..8).
+//! - One row per [`DrumRow::ALL`] (caps name, small VOL and TUNE knobs, 16 `neu::step_cell`s
+//!   in groups of four, a CLEAR pill) and the BASS lane (note names in the cells, no knobs).
+//! - **Bottom row:** the BAR selector (`neu::segmented` 1..bars, shown for patterns longer
+//!   than one bar) under the name column, the playhead dots under the grid and the pattern's
+//!   CLEAR pill (accessible name "Clear pattern") under the row CLEAR pills.
+//!
+//! The grid shows bar [`AppState::shown_bar`] of the edit pattern: cell `i` edits the
+//! absolute step `shown_bar * 16 + i` and the playhead column lights only when the playing
+//! pattern, bar and step match. Cell `i` sits at [`cell_x`]`(i)` from the grid's left edge, so
+//! the beat numbers and the playhead dots use the same maths as the rows. Every cell reports
+//! an accessible name ([`cell_name`], e.g. "Kick step 17" on bar 2) so tests can click it.
 //!
 //! Interactions: click toggles a drum step, shift-click turns it on and flips the accent;
 //! a bass cell click selects the step for note entry (click again to deselect), shift-click
@@ -16,10 +28,11 @@
 //! work and send the engine messages.
 
 use egui::{Align, Align2, Layout, Response, Role, Sense, Ui, WidgetInfo, vec2};
-use engine::{DrumRow, STEPS};
+use engine::pattern::pattern_letter;
+use engine::{DrumRow, PATTERN_COUNT, PatternLength, STEPS};
 use neu::{KnobSize, KnobSpec, STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme};
 
-use crate::app::{AppState, EditKey};
+use crate::app::{AppState, EditKey, queued_blink_visible};
 use crate::ui::controls;
 
 /// Width of the row-name column (`.seq-row .name`).
@@ -35,17 +48,26 @@ pub const CONTROLS_WIDTH: f32 = 2.0 * SM_KNOB + KNOB_GAP;
 /// Height of a grid row (a small knob is 34 tall, a cell 32).
 pub const ROW_HEIGHT: f32 = 34.0;
 /// Vertical gap between rows (`.seq-grid{row-gap}`, tightened so the grid fits the window).
-pub const ROW_GAP: f32 = 4.0;
+pub const ROW_GAP: f32 = 2.0;
 /// Gap between the panel head and the beat numbers.
-pub const HEAD_GAP: f32 = 10.0;
+pub const HEAD_GAP: f32 = 6.0;
 /// Width of the 16-cell grid: 16 cells, 15 gaps, 3 of them widened by the group gap.
 pub const GRID_WIDTH: f32 = 16.0 * STEP_CELL + 15.0 * STEP_GAP + 3.0 * STEP_GROUP_GAP;
 /// Left edge of the grid relative to the panel content.
 pub const GRID_LEFT: f32 = NAME_WIDTH + COLUMN_GAP + CONTROLS_WIDTH + COLUMN_GAP;
 /// Caps name of the bass lane.
 pub const BASS_NAME: &str = "Bass";
-/// Height of the playhead dot row (`neu::playhead_dot`).
-const DOT_ROW: f32 = 10.0;
+/// Height of the bottom row: the BAR selector, the playhead dots and the pattern CLEAR pill
+/// (a `segmented` / pill is 30 tall).
+pub const BOTTOM_ROW: f32 = 30.0;
+/// Gap between items of the head row.
+const HEAD_ITEM_GAP: f32 = 12.0;
+/// Accessible name of the pattern CLEAR pill (the row pills are "Clear").
+pub const CLEAR_PATTERN_LABEL: &str = "Clear pattern";
+/// Caps label beside the bar selector.
+pub const BAR_LABEL: &str = "Bar";
+/// Pattern tab names, A..H.
+pub const PATTERN_TABS: [&str; PATTERN_COUNT] = ["A", "B", "C", "D", "E", "F", "G", "H"];
 
 /// Left edge of cell `i` relative to the grid's left edge.
 #[must_use]
@@ -53,10 +75,16 @@ pub fn cell_x(i: usize) -> f32 {
     i as f32 * (STEP_CELL + STEP_GAP) + (i / 4) as f32 * STEP_GROUP_GAP
 }
 
-/// Accessible name of a step cell: `"Kick step 1"`.
+/// Accessible name of a step cell: `"Kick step 1"` (`step` is the absolute, 0-based index).
 #[must_use]
 pub fn cell_name(row: &str, step: usize) -> String {
     format!("{row} step {}", step + 1)
+}
+
+/// Accessible name of the queued-pattern indicator: `"Queued B"`.
+#[must_use]
+pub fn queued_name(pattern: u8) -> String {
+    format!("Queued {}", pattern_letter(pattern))
 }
 
 /// Full row name for accessibility and tooltips (`DrumRow::label` is the short grid label).
@@ -86,6 +114,16 @@ pub fn fmt_semitones(v: f32) -> String {
     format!("{:+} st", v.round() as i32)
 }
 
+/// The LENGTH selector's items, in [`PatternLength::ALL`] order.
+#[must_use]
+pub fn length_items() -> [&'static str; 3] {
+    [
+        PatternLength::Bar1.label(),
+        PatternLength::Bar2.label(),
+        PatternLength::Bar4.label(),
+    ]
+}
+
 /// Height of the beat-number row (one caps label line).
 fn label_row_height(ui: &Ui) -> f32 {
     ui.ctx()
@@ -103,7 +141,7 @@ pub fn panel_height(ui: &Ui, theme: &Theme) -> f32 {
         + label_row_height(ui)
         + ROW_GAP
         + rows * (ROW_HEIGHT + ROW_GAP)
-        + DOT_ROW
+        + BOTTOM_ROW
 }
 
 /// Renders the SEQUENCER panel into `ui` and applies any edit to `state`.
@@ -113,7 +151,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         ui.spacing_mut().item_spacing.y = 0.0;
         head(ui, state, theme);
         ui.add_space(HEAD_GAP);
-        beat_numbers(ui, theme);
+        beat_numbers(ui, state, theme);
         ui.add_space(ROW_GAP);
         for row in DrumRow::ALL {
             drum_row(ui, state, theme, row);
@@ -121,28 +159,112 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         }
         bass_row(ui, state, theme);
         ui.add_space(ROW_GAP);
-        playhead_row(ui, state, theme);
+        bottom_row(ui, state, theme);
     });
 }
 
+/// Title, pattern tabs and the queued letter on the left; LENGTH, FOLLOW, COPY, PASTE and the
+/// REC lamp on the right.
 fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.set_min_height(controls::ROW_HEIGHT);
+        ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
         neu::title(ui, theme, "Sequencer");
+        pattern_tabs(ui, state, theme);
+        queued_indicator(ui, state, theme);
         controls::right_aligned(ui, "sequencer_head", |ui| {
-            ui.spacing_mut().item_spacing.x = 20.0;
-            neu::label(ui, theme, "shift-click = accent");
-            neu::lamp(ui, theme, state.is_recording(), "Rec");
-            if neu::button(ui, theme, "Clear all").clicked() {
-                state.clear_all();
+            ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
+            length_selector(ui, state, theme);
+            if neu::toggle_button(ui, theme, "Follow", state.follow)
+                .on_hover_text("Follow the playing bar")
+                .clicked()
+            {
+                state.toggle_follow();
             }
+            if neu::button(ui, theme, "Copy")
+                .on_hover_text("Copy this pattern")
+                .clicked()
+            {
+                state.copy_pattern();
+            }
+            let paste = ui
+                .add_enabled_ui(state.clipboard.is_some(), |ui| {
+                    neu::button(ui, theme, "Paste")
+                        .on_hover_text("Paste the copied pattern here")
+                        .clicked()
+                })
+                .inner;
+            if paste {
+                state.paste_pattern();
+            }
+            neu::lamp(ui, theme, state.is_recording(), "Rec");
         });
     });
 }
 
-/// The row of `1 2 3 4` over the first cell of each group.
-fn beat_numbers(ui: &mut Ui, theme: &Theme) {
+/// The A..H tabs: the selected item is the edit pattern; a click selects (and, while playing
+/// in pattern mode, queues) that pattern.
+fn pattern_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let before = usize::from(state.current()) % PATTERN_COUNT;
+    let mut selected = before;
+    neu::segmented(ui, theme, &mut selected, &PATTERN_TABS)
+        .on_hover_text("Pattern (switches at the next bar while playing)");
+    if selected != before {
+        state.select_pattern(selected as u8);
+    }
+}
+
+/// The letter of the pattern the engine queued for the next bar, blinking at 2 Hz. Always
+/// present as an (invisible when blinked off) label so tests can find it; nothing while no
+/// switch is pending.
+fn queued_indicator(ui: &mut Ui, state: &AppState, theme: &Theme) {
+    let Some(queued) = state.playhead.queued else {
+        return;
+    };
+    let text = pattern_letter(queued).to_string();
+    let galley = neu::text::layout(ui.painter(), &text, TextKind::Title, theme.accent);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(galley.size().x.max(12.0), controls::ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let visible = queued_blink_visible(ui.input(|i| i.time));
+    if visible && ui.is_rect_visible(rect) {
+        neu::text::paint_galley(
+            ui.painter(),
+            rect.center(),
+            Align2::CENTER_CENTER,
+            galley,
+            TextKind::Title,
+            theme.accent,
+        );
+    }
+    let name = queued_name(queued);
+    response
+        .on_hover_text(format!("Pattern {text} starts at the next bar"))
+        .widget_info(|| WidgetInfo::labeled(Role::Label, ui.is_enabled(), &name));
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(50));
+}
+
+/// LENGTH: 1 bar | 2 bars | 4 bars for the edit pattern.
+fn length_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let items = length_items();
+    let before = PatternLength::ALL
+        .iter()
+        .position(|l| *l == state.pattern().pattern_length())
+        .unwrap_or(0);
+    let mut selected = before;
+    neu::segmented(ui, theme, &mut selected, &items).on_hover_text("Pattern length");
+    if selected != before {
+        state.set_pattern_length(PatternLength::ALL[selected]);
+    }
+}
+
+/// The row of beat numbers over the first cell of each group, counted through the pattern
+/// (bar 2 shows 5 6 7 8).
+fn beat_numbers(ui: &mut Ui, state: &AppState, theme: &Theme) {
     let height = label_row_height(ui);
+    let first_beat = state.shown_bar * 4;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_space(GRID_LEFT);
@@ -151,7 +273,7 @@ fn beat_numbers(ui: &mut Ui, theme: &Theme) {
                 ui.add_space(cell_x(beat * 4) - cell_x((beat - 1) * 4) - STEP_CELL);
             }
             let (rect, response) = ui.allocate_exact_size(vec2(STEP_CELL, height), Sense::hover());
-            let text = (beat + 1).to_string();
+            let text = (first_beat + beat + 1).to_string();
             if ui.is_rect_visible(rect) {
                 neu::text::paint_text(
                     ui.painter(),
@@ -167,10 +289,10 @@ fn beat_numbers(ui: &mut Ui, theme: &Theme) {
     });
 }
 
-/// Lays `add` out as one [`ROW_HEIGHT`]-tall row with its items vertically centred.
-fn grid_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+/// Lays `add` out as one `height`-tall row with its items vertically centred.
+fn grid_row(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), ROW_HEIGHT),
+        vec2(ui.available_width(), height),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -221,12 +343,17 @@ fn row_knob(
     (response.changed() || v != value).then_some((v, response.drag_started()))
 }
 
+/// Absolute step index of grid column `column` in the shown bar.
+fn step_of(state: &AppState, column: usize) -> usize {
+    state.shown_bar * STEPS + column
+}
+
 fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
-    grid_row(ui, |ui| {
+    grid_row(ui, ROW_HEIGHT, |ui| {
         name_cell(ui, theme, row.label());
         ui.add_space(COLUMN_GAP);
 
-        let volume = state.pattern.drum_volume[row.index()];
+        let volume = state.pattern().drum_volume[row.index()];
         if let Some((db, drag_started)) = row_knob(ui, theme, volume, -24.0, 6.0, false, fmt_row_db)
         {
             if drag_started {
@@ -235,7 +362,7 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
             state.set_drum_volume(row, db);
         }
         ui.add_space(KNOB_GAP);
-        let tune = state.pattern.drum_tune[row.index()];
+        let tune = state.pattern().drum_tune[row.index()];
         if let Some((st, drag_started)) =
             row_knob(ui, theme, tune, -12.0, 12.0, true, fmt_semitones)
         {
@@ -246,13 +373,14 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
         }
         ui.add_space(COLUMN_GAP);
 
-        for step in 0..STEPS {
-            cell_gap(ui, step);
-            let cell = state.pattern.drums[row.index()][step];
+        for column in 0..STEPS {
+            cell_gap(ui, column);
+            let step = step_of(state, column);
+            let cell = state.pattern().drums[row.index()][step];
             let spec = StepCellSpec {
                 on: cell.on,
                 accent: cell.accent,
-                current: is_current(state, step),
+                current: is_current(state, column),
                 selected: false,
                 label: None,
             };
@@ -275,18 +403,19 @@ fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
 }
 
 fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    grid_row(ui, |ui| {
+    grid_row(ui, ROW_HEIGHT, |ui| {
         name_cell(ui, theme, BASS_NAME);
         ui.add_space(COLUMN_GAP + CONTROLS_WIDTH + COLUMN_GAP);
 
-        for step in 0..STEPS {
-            cell_gap(ui, step);
-            let cell = state.pattern.synth[step];
+        for column in 0..STEPS {
+            cell_gap(ui, column);
+            let step = step_of(state, column);
+            let cell = state.pattern().synth[step];
             let text = cell.note.map_or_else(|| "–".to_owned(), neu::note_name);
             let spec = StepCellSpec {
                 on: cell.note.is_some(),
                 accent: cell.accent,
-                current: is_current(state, step),
+                current: is_current(state, column),
                 selected: state.selected_step == Some(step),
                 label: Some(&text),
             };
@@ -308,20 +437,48 @@ fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     });
 }
 
-/// The playhead dots under the grid (accent dot on the current column while playing).
-fn playhead_row(ui: &mut Ui, state: &AppState, theme: &Theme) {
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), DOT_ROW),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(GRID_LEFT);
-            for step in 0..STEPS {
-                cell_gap(ui, step);
-                neu::playhead_dot(ui, theme, is_current(state, step));
-            }
-        },
-    );
+/// The bottom row: BAR selector (patterns longer than a bar) under the name column, the
+/// playhead dots under the grid (accent dot on the current column while this bar plays) and
+/// the pattern CLEAR pill under the row CLEAR pills.
+fn bottom_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    grid_row(ui, BOTTOM_ROW, |ui| {
+        let left = ui.cursor().min.x;
+        bar_selector(ui, state, theme);
+        // Whatever the selector took, the dots start at the grid's left edge.
+        let used = ui.cursor().min.x - left;
+        ui.add_space((GRID_LEFT - used).max(0.0));
+        for column in 0..STEPS {
+            cell_gap(ui, column);
+            neu::playhead_dot(ui, theme, is_current(state, column));
+        }
+        ui.add_space(COLUMN_GAP);
+        let response = clear_pill(ui, theme).on_hover_text("Clear every step of this pattern");
+        response.widget_info(|| {
+            WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLEAR_PATTERN_LABEL)
+        });
+        if response.clicked() {
+            state.clear_pattern();
+        }
+    });
+}
+
+/// `BAR 1 | 2 | ..` for a pattern of more than one bar; nothing for a one-bar pattern.
+fn bar_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let bars = state.pattern().bars();
+    if bars <= 1 {
+        return;
+    }
+    let names: Vec<String> = (1..=bars).map(|b| b.to_string()).collect();
+    let items: Vec<&str> = names.iter().map(String::as_str).collect();
+    let before = state.shown_bar.min(bars - 1);
+    let mut selected = before;
+    ui.spacing_mut().item_spacing.x = KNOB_GAP;
+    neu::label(ui, theme, BAR_LABEL);
+    neu::segmented(ui, theme, &mut selected, &items).on_hover_text("Bar shown in the grid");
+    ui.spacing_mut().item_spacing.x = 0.0;
+    if selected != before {
+        state.show_bar(selected);
+    }
 }
 
 /// The gap before cell `step` (none before the first, a wider one at group boundaries).
@@ -331,9 +488,14 @@ fn cell_gap(ui: &mut Ui, step: usize) {
     }
 }
 
-/// Whether the playhead sits on `step`.
-fn is_current(state: &AppState, step: usize) -> bool {
-    state.playhead.playing && usize::from(state.playhead.step) == step
+/// Whether the playhead sits on grid column `column`: the transport runs, the edit pattern is
+/// the one playing, its playing bar is the shown bar and the step matches.
+fn is_current(state: &AppState, column: usize) -> bool {
+    let pos = state.playhead;
+    pos.playing
+        && pos.pattern == state.current()
+        && usize::from(pos.bar) == state.shown_bar
+        && usize::from(pos.step) == column
 }
 
 fn clear_pill(ui: &mut Ui, theme: &Theme) -> Response {
@@ -359,11 +521,15 @@ mod tests {
     fn names_and_formatters() {
         assert_eq!(cell_name("Kick", 0), "Kick step 1");
         assert_eq!(cell_name(BASS_NAME, 15), "Bass step 16");
+        assert_eq!(cell_name("Kick", 16), "Kick step 17");
+        assert_eq!(queued_name(1), "Queued B");
         assert_eq!(row_name(DrumRow::ClosedHat), "Closed hat");
         assert_eq!(fmt_row_db(0.0), "0 dB");
         assert_eq!(fmt_row_db(-6.0), "-6 dB");
         assert_eq!(fmt_row_db(3.0), "+3 dB");
         assert_eq!(fmt_semitones(0.0), "+0 st");
         assert_eq!(fmt_semitones(-3.0), "-3 st");
+        assert_eq!(length_items(), ["1 bar", "2 bars", "4 bars"]);
+        assert_eq!(PATTERN_TABS.len(), PATTERN_COUNT);
     }
 }

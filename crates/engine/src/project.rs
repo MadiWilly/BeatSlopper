@@ -1,14 +1,14 @@
-//! Project file (M3/M5): `*.beatslopper.json` holding BPM, swing, the pattern bank (eight
-//! patterns, chain, play mode), synth/FX params, preset and keyboard settings.
+//! Project file (M3/M5/M6): `*.beatslopper.json` holding BPM, swing, the pattern bank (eight
+//! patterns, chain, play mode), synth/FX params, the mixer, preset and keyboard settings.
 //!
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 3), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 4), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 3,
+//!   "version": 4,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
@@ -22,6 +22,13 @@
 //!     "current": 0
 //!   },
 //!   "params": { "amp_attack": 0.01, "osc1_wave": 1.0, "...": 0.0 },
+//!   "mixer": {
+//!     "strips": [
+//!       { "level_db": 0.0, "pan": 0.0, "mute": false, "solo": false,
+//!         "delay_send": 0.0, "reverb_send": 0.0 },
+//!       "... 6 strips in all: kick, snare, clap, closed hat, open hat, synth"
+//!     ]
+//!   },
 //!   "preset_index": 0,
 //!   "octave": 4,
 //!   "velocity": 0.8
@@ -34,10 +41,12 @@
 //! missing ones take [`ParamId::default_value`]; missing top-level fields take their
 //! [`Project::default`] value.
 //!
-//! Migration: a version-2 file has a single `pattern`; it becomes pattern A with the chain
-//! `[A x1]`, pattern mode, A selected ([`Bank::from_pattern`]). Version 1 (just `version`,
-//! `bpm`, `swing`, `master_gain`) still opens with the default bank. Files written by a
-//! *newer* format version are refused ([`ProjectError::Version`]).
+//! Migration: a version-3 file has no `mixer`; it loads with [`MixerState::default`] (unity,
+//! centre, synth sent to delay and reverb, snare/clap lightly to the reverb), which plays
+//! the way M5 did. A version-2 file has a single `pattern`; it becomes pattern A with the
+//! chain `[A x1]`, pattern mode, A selected ([`Bank::from_pattern`]). Version 1 (just
+//! `version`, `bpm`, `swing`, `master_gain`) still opens with the default bank. Files written
+//! by a *newer* format version are refused ([`ProjectError::Version`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -46,6 +55,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::Engine;
+use crate::mixer::MixerState;
 use crate::params::ParamId;
 use crate::pattern::{Bank, Pattern};
 use crate::transport::DEFAULT_BPM;
@@ -59,7 +69,8 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 /// - 2: adds `pattern`, `params` (keyed by [`ParamId::key`]), `preset_index`, `octave`,
 ///   `velocity`; `master_gain` moved into `params`.
 /// - 3: `pattern` becomes `bank` (eight patterns with lengths, chain, play mode, current).
-pub const FORMAT_VERSION: u32 = 3;
+/// - 4: adds `mixer` (six strips: level, pan, mute, solo, delay/reverb sends).
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -84,6 +95,9 @@ pub struct Project {
     pub bank: Bank,
     /// Synth, FX and master parameters keyed by [`ParamId::key`].
     pub params: BTreeMap<String, f32>,
+    /// Mixer strips (M6). Absent in version-3 files, which load with the defaults.
+    #[serde(default)]
+    pub mixer: MixerState,
     /// Index of the selected built-in preset.
     pub preset_index: usize,
     /// Keyboard octave (the `Z`/`X` shift).
@@ -102,6 +116,7 @@ impl Default for Project {
             swing: 0.0,
             bank: Bank::default(),
             params: default_params(),
+            mixer: MixerState::default(),
             preset_index: 0,
             octave: DEFAULT_OCTAVE,
             velocity: DEFAULT_VELOCITY,
@@ -118,8 +133,8 @@ fn default_params() -> BTreeMap<String, f32> {
 }
 
 impl Project {
-    /// Snapshot of the engine's tempo, swing, bank and parameters plus the UI-side preset
-    /// and keyboard settings.
+    /// Snapshot of the engine's tempo, swing, bank, parameters and mixer plus the UI-side
+    /// preset and keyboard settings.
     #[must_use]
     pub fn from_engine(engine: &Engine, preset_index: usize, octave: i32, velocity: f32) -> Self {
         let params = ParamId::ALL
@@ -132,6 +147,7 @@ impl Project {
             swing: engine.transport().swing(),
             bank: engine.bank().clone(),
             params,
+            mixer: *engine.mixer(),
             preset_index,
             octave,
             velocity,
@@ -148,7 +164,7 @@ impl Project {
         }
     }
 
-    /// Pushes tempo, swing, every known parameter and the bank into `engine`.
+    /// Pushes tempo, swing, every known parameter, the mixer and the bank into `engine`.
     ///
     /// Unknown parameter keys are ignored; parameters missing from the file are set to their
     /// defaults, so a loaded project never inherits state from the previous one. Call before
@@ -159,6 +175,7 @@ impl Project {
         for &id in ParamId::ALL {
             engine.set_param(id, self.param(id));
         }
+        engine.set_mixer_state(&self.mixer);
         engine.set_bank(&self.bank);
     }
 
@@ -239,6 +256,7 @@ impl Project {
             project.bank = Bank::from_pattern(pattern);
         }
         project.bank.normalise();
+        project.mixer.normalise();
         Ok(project)
     }
 
@@ -352,12 +370,31 @@ mod tests {
     #[test]
     fn json_is_pretty_and_sorted() {
         let text = Project::default().to_json_pretty();
-        assert!(text.starts_with("{\n  \"version\": 3,"));
+        assert!(text.starts_with("{\n  \"version\": 4,"));
         assert!(text.ends_with("}\n"));
         let amp = text.find("\"amp_attack\"").unwrap();
         let osc = text.find("\"osc1_wave\"").unwrap();
         assert!(amp < osc, "params must be alphabetically sorted");
         assert!(text.contains("\"mode\": \"pattern\""));
+        assert!(text.contains("\"mixer\": {\n    \"strips\": ["));
+        assert!(text.contains("\"reverb_send\": 0.3"));
+    }
+
+    #[test]
+    fn version_3_file_loads_with_the_default_mixer() {
+        let mut v3 = serde_json::to_value(Project::default()).unwrap();
+        v3["version"] = serde_json::json!(3);
+        v3.as_object_mut().unwrap().remove("mixer");
+        let p = Project::from_json(&v3.to_string()).unwrap();
+        assert_eq!(p.version, FORMAT_VERSION);
+        assert_eq!(p.mixer, MixerState::default());
+        // Out-of-range mixer values are normalised on load.
+        let mut v4 = serde_json::to_value(Project::default()).unwrap();
+        v4["mixer"]["strips"][0]["level_db"] = serde_json::json!(99.0);
+        v4["mixer"]["strips"][5]["pan"] = serde_json::json!(-4.0);
+        let p = Project::from_json(&v4.to_string()).unwrap();
+        assert_eq!(p.mixer.strips[0].level_db, crate::mixer::MAX_LEVEL_DB);
+        assert_eq!(p.mixer.strips[5].pan, -1.0);
     }
 
     #[test]
@@ -382,7 +419,7 @@ mod tests {
             "pattern": pattern,
         });
         let p = Project::from_json(&v2.to_string()).unwrap();
-        assert_eq!(p.version, 3);
+        assert_eq!(p.version, FORMAT_VERSION);
         assert_eq!(p.bpm, 95.0);
         assert_eq!(p.bank.patterns[0], pattern);
         assert!(p.bank.patterns[1..].iter().all(Pattern::is_empty));
@@ -400,11 +437,11 @@ mod tests {
 
     #[test]
     fn newer_version_is_refused_and_garbage_is_a_json_error() {
-        let err = Project::from_json(r#"{ "version": 4 }"#).unwrap_err();
+        let err = Project::from_json(r#"{ "version": 5 }"#).unwrap_err();
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 4,
+                found: 5,
                 supported: FORMAT_VERSION
             }
         ));
