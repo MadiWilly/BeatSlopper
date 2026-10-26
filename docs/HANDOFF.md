@@ -135,3 +135,6 @@ then dropped the neumorphic design: **Phase 5 = UI overhaul** (docs/PLAN.md "Pha
   (fx/ducker.rs:12, project.rs:75, engine.rs ~1293, pattern.rs:13); export vs live render
   differ for the first ~50 ms because live smoothers glide (a "snap" message would fix it);
   the 8 classic presets are still outside `presets::LIBRARY`.
+- **Update 20:30:** the M12 shell LANDED and is tagged **m12** (2f0d6ac, 900 tests, pushed).
+  Next is M13; start with the two capture findings listed under PROGRESS.md "Phase 5"
+  (toolbar overflow + hidden main window at 853 logical points; TRACKS header label overlap).

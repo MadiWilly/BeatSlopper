@@ -243,3 +243,14 @@ opens, renders 60 frames and exits 0. Full gate: `cargo fmt --all -- --check`,
 - [x] app: deferred-viewport windows (EQ graph with draggable nodes + analyser; reverb envelope + wet meter), preset lists with MODIFIED lamp, PLUGINS pills in the FX / MIXER head, geometry persisted, shortcuts forwarded
 - [x] tests: 12 engine offline tests, 9 kittest / state tests, unit tests; gate green on the branch
 - [x] reverb audit (branch `madi/reverb-audit-087b74`, 2026-10-25): the rack's SIZE / DAMPING / MIX and the window's `ReverbState` never disagree (engine + app, proven by 4 engine and 2 app tests); `set_reverb_state` snaps its smoothers so exports honour the pre-delay from the first hit; MORE pill in the rack's REVERB group, "shared with the FX rack" hint in the window, MIX = return level / REV = send notes (see DECISIONS.md)
+
+## Phase 5: UI overhaul (design B "Deck"; docs/PLAN.md "Phase 5 brief", design/round3/WINNER.md)
+- [x] Previews A / B / C built (design/round3), user picked B "Deck" (2026-10-25)
+- [x] M12 neu: Deck restyle, every widget + new shell widgets, 146 neu tests (3dd6203)
+- [x] M12 app: shell (toolbar, browser column, channel rack, F-key views, mixer bar, keyboard strip, hint bar, work-area window sizing), tests/shell_layout.rs; gate green, 900 tests, tag m12 (2f0d6ac)
+- [ ] M13 first: at 853 logical points (the user's 150 % case with a persisted 1280x1140 physical window) the toolbar overflows on the right and the main window sits behind the rack: the narrow layout (<= 1000) must engage from the persisted size too, and `initial_inner_size` should grow a too-narrow persisted window to the work-area rule; the TRACKS header's "VOL PAN" label overlaps the column labels (see design/round3/captures/m12-deck-shell.png)
+- [ ] M13: real MIXER drawer (push-up, side column, Deck strips), SYNTH & FX Deck groups, roll Draw | Select + snap
+- [ ] M14: SONG timeline, browser polish, plugin windows restyle, keyboard strip, retire the Soft Console aliases in neu, captures under design/round3/captures, tag
+
+## Last gate result (Phase 5)
+2026-10-25 M12: all green (fmt, clippy -D warnings, 900 tests, deny licenses ok, release build + smoke from the detached worktree), tag m12.
