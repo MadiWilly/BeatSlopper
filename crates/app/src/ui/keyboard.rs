@@ -1,133 +1,200 @@
-//! KEYS panel (M1): the on-screen piano, the octave stepper and the velocity slider.
+//! The KEYBOARD strip (M1; Deck since M12, WINNER section 5 "KEYBOARD strip"): a 96 pt
+//! window (header 28 + body 68) at the bottom of the shell, collapsible to its header.
 //!
-//! Layout follows `design/preview-a.html` `<section class="panel piano">`: a panel head with
-//! the title on the left and the controls on the right (the mock's `Z` / `X` buttons are the
-//! keyboard shortcuts, shown here as hints beside the `neu::stepper` buttons), then two
-//! octaves of keys (14 white keys, 1170 pt wide). Keys light up while held via the computer
-//! keyboard or the mouse; a mouse press plays the same `NoteEvent`s as a key press.
+//! Header: "KEYBOARD" · sub "A W S E D F T G Y H U J K O L P ; · Z / X octave" (collapsed:
+//! "· oct 4 · vel 80 %" after it) · sep · "Oct" · `-` · the octave · `+` · sep · "Vel" ·
+//! the 24 pt h-slider · the value · spacer · the audio line ("48 kHz · 256 · 5.3 ms", or
+//! "no audio device") · chevron · close. Body: two octaves of keys (14 white keys, 784 pt,
+//! centred). Keys light up while held via the computer keyboard or the mouse; a mouse press
+//! plays the same `NoteEvent`s as a key press.
 //!
 //! Note numbering: the leftmost key is C of the current octave, MIDI `(octave + 1) * 12`, so
 //! octave 4 starts on C4 = 60 (see `crate::input`).
 //!
-//! The controls group is built left-to-right and pushed to the right edge using the width it
-//! had last frame (egui's right-to-left layouts put nested vertical groups at the far left).
+//! Accessible names: the octave readout [`OCTAVE_LABEL`] ("Keyboard octave", its value the
+//! octave number; "Octave" is a chord of the roll's CHORDS column), the buttons
+//! [`OCTAVE_DOWN`] / [`OCTAVE_UP`], the velocity slider "Velocity", the chevron
+//! [`COLLAPSE_LABEL`] / [`EXPAND_LABEL`], the close button [`CLOSE_LABEL`], the audio line
+//! [`AUDIO_INFO_NAME`].
 
-use egui::{Align2, Sense, Ui, vec2};
-use neu::{PianoModel, TextKind, Theme};
+use egui::{Role, Ui, WidgetInfo, vec2};
+use neu::slider::SliderSpec;
+use neu::{ButtonKind, Icon, PianoModel, TextKind, Theme};
 
 use crate::app::AppState;
 use crate::input::{KeyMap, MAX_OCTAVE, MAX_VELOCITY, MIN_OCTAVE, MIN_VELOCITY};
 
 /// White keys shown (two octaves).
 pub const WHITE_KEYS: usize = 14;
+/// Height of the open strip (header 28 + body 68) and the collapsed header.
+pub const HEIGHT: f32 = 96.0;
+pub const COLLAPSED_HEIGHT: f32 = neu::WINDOW_HEADER;
+/// Window title.
+pub const TITLE: &str = "Keyboard";
+/// The header's sub-title: the key map.
+pub const KEY_MAP_SUB: &str = "A W S E D F T G Y H U J K O L P ; · Z / X octave";
+/// Accessible names.
+pub const OCTAVE_LABEL: &str = "Keyboard octave";
+pub const OCTAVE_DOWN: &str = "Octave down";
+pub const OCTAVE_UP: &str = "Octave up";
+pub const VELOCITY_LABEL: &str = "Velocity";
+pub const COLLAPSE_LABEL: &str = "Collapse keyboard";
+pub const EXPAND_LABEL: &str = "Expand keyboard";
+pub const HIDE_LABEL: &str = "Hide keyboard";
+pub const CLOSE_LABEL: &str = "Close keyboard";
+pub const AUDIO_INFO_NAME: &str = "Audio device";
+/// Velocity slider default (the fixed velocity of played notes until the user changes it).
+pub const DEFAULT_VELOCITY: f32 = 0.8;
 
-/// Height of a stepper button row (`neu::stepper`: 28 pt round buttons).
-const STEPPER_ROW: f32 = 28.0;
-/// Gap between a control's caps label and its row (matches `neu::stepper`).
-const LABEL_GAP: f32 = 6.0;
-
-/// Renders the KEYS panel into `ui` and applies any control or key changes to `state`.
-pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    neu::panel(ui, theme, |ui| {
-        head(ui, state, theme);
-        ui.add_space(theme.space_3);
-        piano(ui, state, theme);
-    });
+/// `0.8` -> `"80 %"`.
+pub fn fmt_velocity(v: f32) -> String {
+    format!("{} %", (v * 100.0).round() as i32)
 }
 
-/// Height of the caps label row used above the stepper and the slider.
-fn label_height(ui: &Ui) -> f32 {
-    ui.ctx()
-        .fonts_mut(|f| f.row_height(&TextKind::Label.font_id()))
-}
-
-fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let row_height = label_height(ui) + LABEL_GAP + STEPPER_ROW;
-    ui.horizontal(|ui| {
-        ui.set_min_height(row_height);
-        neu::title(ui, theme, "Keys");
-
-        // Right-align the controls using the width they measured last frame.
-        let width_id = ui.scope_id().with("keys_head_controls_width");
-        let known_width: Option<f32> = ui.data(|d| d.get_temp(width_id));
-        if let Some(width) = known_width {
-            let pad = ui.available_width() - width;
-            if pad > 0.0 {
-                ui.add_space(pad);
-            }
-        }
-        let group = ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = theme.space_3;
-            octave_group(ui, state, theme);
-            ui.add_space(theme.space_3);
-            velocity_group(ui, state, theme);
-        });
-        ui.data_mut(|d| d.insert_temp(width_id, group.response.rect.width()));
-    });
-}
-
-/// A small secondary-colour shortcut hint, vertically centred on the stepper's button row
-/// (so it sits beside the (-) / (+) buttons, under the label line).
-fn hint(ui: &mut Ui, theme: &Theme, text: &str) {
-    let label_h = label_height(ui);
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = LABEL_GAP;
-        ui.add_space(label_h);
-        let galley = ui.painter().layout_no_wrap(
-            text.to_owned(),
-            egui::FontId::proportional(11.0),
-            theme.text_secondary,
-        );
-        let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x, STEPPER_ROW), Sense::hover());
-        if ui.is_rect_visible(rect) {
-            let pos = Align2::CENTER_CENTER.anchor_size(rect.center(), galley.size());
-            ui.painter().galley(pos.min, galley, theme.text_secondary);
-        }
-    });
-}
-
-/// `Z (-) 4 (+) X`: the octave stepper plus the two shortcut hints.
-fn octave_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    hint(ui, theme, "Z");
-    let mut octave = state.input.octave;
-    if neu::stepper(ui, theme, "Octave", &mut octave, MIN_OCTAVE..=MAX_OCTAVE).changed() {
-        state.input.set_octave(octave);
+/// The audio line: `"48 kHz"` with the device's sample rate, or `"no audio device"`.
+#[must_use]
+pub fn audio_info(state: &AppState) -> String {
+    match (&state.audio, &state.audio_error) {
+        (Some(audio), _) => format!(
+            "{} kHz · {} ch",
+            (audio.sample_rate() / 1000.0 * 10.0).round() / 10.0,
+            audio.channels()
+        ),
+        (None, Some(_)) => "no audio device".to_owned(),
+        (None, None) => format!("{} kHz · offline", (state.sample_rate() / 1000.0).round()),
     }
-    hint(ui, theme, "X");
 }
 
-fn velocity_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let mut velocity = state.input.velocity;
-    // Label beside a label-less small knob keeps the header row at the stepper height; the
-    // knob shows its value as a tooltip.
-    let spec = neu::KnobSpec {
-        label: "",
+/// The header's sub-title for the current state.
+#[must_use]
+pub fn header_sub(state: &AppState) -> String {
+    if state.keyboard_open {
+        KEY_MAP_SUB.to_owned()
+    } else {
+        format!(
+            "{KEY_MAP_SUB} · oct {} · vel {}",
+            state.input.octave,
+            fmt_velocity(state.input.velocity)
+        )
+    }
+}
+
+/// Renders the KEYBOARD strip into the available rect (the caller gives it [`HEIGHT`] or
+/// [`COLLAPSED_HEIGHT`]) and applies any control or key changes to `state`.
+pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let size = ui.available_size_before_wrap();
+    let open = state.keyboard_open && size.y > COLLAPSED_HEIGHT + 0.5;
+    let sub = header_sub(state);
+    // The header and the body both edit the state; the frame runs them one after the other.
+    let cell = std::cell::RefCell::new(state);
+    neu::window_frame_sized(
+        ui,
+        theme,
+        vec2(size.x, if open { size.y } else { COLLAPSED_HEIGHT }),
+        TITLE,
+        Some(&sub),
+        |ui| header_controls(ui, &mut cell.borrow_mut(), theme, open),
+        |ui| {
+            if open {
+                piano(ui, &mut cell.borrow_mut(), theme);
+            }
+        },
+    );
+}
+
+/// The header's controls, laid out right-to-left: close, the chevron, the audio line, the
+/// velocity group, the octave group.
+fn header_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, open: bool) {
+    let close = neu::header_button(ui, theme, Icon::Clear);
+    close.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLOSE_LABEL));
+    if close
+        .on_hover_text("Hide the keys (the header stays)")
+        .clicked()
+    {
+        state.keyboard_open = false;
+    }
+    let (icon, name, tip) = if open {
+        (Icon::ChevronDown, COLLAPSE_LABEL, "Collapse to the header")
+    } else if state.keyboard_open {
+        // The in-flow bar while the keys float over the workspace (narrow).
+        (Icon::ChevronDown, HIDE_LABEL, "Hide the floating keys")
+    } else {
+        (Icon::ChevronUp, EXPAND_LABEL, "Show the keys")
+    };
+    let chevron = neu::header_button(ui, theme, icon);
+    chevron.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), name));
+    if chevron.on_hover_text(tip).clicked() {
+        state.toggle_keyboard();
+    }
+    let info = audio_info(state);
+    neu::text_widget(ui, &info, TextKind::Small, theme.text_3)
+        .widget_info(|| WidgetInfo::labeled(Role::Label, true, AUDIO_INFO_NAME));
+    ui.add_space(8.0);
+    // Velocity (right to left: value, slider, label).
+    neu::value(ui, theme, &fmt_velocity(state.input.velocity));
+    let spec = SliderSpec {
+        label: VELOCITY_LABEL,
         min: MIN_VELOCITY,
         max: MAX_VELOCITY,
         default: DEFAULT_VELOCITY,
-        log: false,
-        bipolar: false,
-        size: neu::KnobSize::Sm,
         fmt: fmt_velocity,
     };
-    let row_height = label_height(ui) + LABEL_GAP + STEPPER_ROW;
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.set_min_height(row_height);
-        ui.spacing_mut().item_spacing.x = theme.space_2;
-        neu::label(ui, theme, "Velocity");
-        if neu::knob(ui, theme, &mut velocity, &spec).changed() {
-            state.input.set_velocity(velocity);
-        }
+    let mut velocity = state.input.velocity;
+    let response = neu::hslider_sized(ui, theme, &mut velocity, &spec, vec2(72.0, 24.0))
+        .on_hover_text("Velocity of played notes (double-click resets)");
+    if response.changed() || velocity != state.input.velocity {
+        state.input.set_velocity(velocity);
+    }
+    neu::label(ui, theme, "Vel");
+    neu::toolbar_separator(ui, theme);
+    // Octave (right to left: +, value, -, label).
+    let up = neu::icon_button_kind(
+        ui,
+        theme,
+        Icon::Plus,
+        vec2(22.0, 22.0),
+        ButtonKind::Secondary,
+    );
+    up.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), OCTAVE_UP));
+    if up.on_hover_text("Octave up (X)").clicked() {
+        state
+            .input
+            .set_octave((state.input.octave + 1).min(MAX_OCTAVE));
+    }
+    let value = state.input.octave.to_string();
+    let (rect, response) = ui.allocate_exact_size(vec2(16.0, 24.0), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        neu::text::paint_text(
+            ui.painter(),
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &value,
+            TextKind::Value,
+            theme.text,
+        );
+    }
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(Role::Button, true, OCTAVE_LABEL);
+        info.current_text_value = Some(value.clone());
+        info
     });
+    let down = neu::icon_button_kind(
+        ui,
+        theme,
+        Icon::Minus,
+        vec2(22.0, 22.0),
+        ButtonKind::Secondary,
+    );
+    down.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), OCTAVE_DOWN));
+    if down.on_hover_text("Octave down (Z)").clicked() {
+        state
+            .input
+            .set_octave((state.input.octave - 1).max(MIN_OCTAVE));
+    }
+    neu::label(ui, theme, "Oct");
 }
 
-/// Velocity knob default (the fixed velocity of played notes until the user changes it).
-const DEFAULT_VELOCITY: f32 = 0.8;
-
-fn fmt_velocity(v: f32) -> String {
-    format!("{}%", (v * 100.0).round() as i32)
-}
-
+/// The keys, centred in the body.
 fn piano(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let labels = KeyMap::labels(state.input.octave);
     let model = PianoModel {
@@ -138,6 +205,7 @@ fn piano(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     };
     let out = ui
         .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            ui.add_space(2.0);
             neu::piano_keys(ui, theme, &model)
         })
         .inner;

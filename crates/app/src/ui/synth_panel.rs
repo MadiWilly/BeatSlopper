@@ -2,12 +2,11 @@
 //! glide, and the M8 synthesis extensions (unison, FM / sub / noise, pluck mode, filter type
 //! and envelope, pitch envelope, velocity routing).
 //!
-//! Layout follows `design/preview-a.html` `<section class="panel synth">`: a panel head with
-//! the title on the left and the preset strip on the right (M9, `ui/preset_browser.rs`:
-//! `<` name `>` BROWSE and the MODIFIED lamp; the preset `segmented` of M2 is gone), then
-//! `.synth-body`, or the preset browser in its place while it is open. The body is a
-//! vertical `ScrollArea` of three rows of top-aligned columns; the first row is the M2 mock
-//! and always fits the top row of the page unscrolled, the M8 rows scroll into view:
+//! A panel head with the title (`Synth · <track>`) and the edit track's chip, then the body
+//! (M12: the preset strip moved to the SYNTH & FX window's toolbar, [`preset_strip`], and the
+//! preset browser to the BROWSER column; the panel is rehosted in that window until its M13
+//! restyle). The body is a vertical `ScrollArea` of three rows of top-aligned columns; the
+//! first row is the M2 mock, the M8 rows scroll into view:
 //!
 //! 1. OSC: two groups (`OSC 1`, `OSC 2`), each a head row (label + wave `segmented`) over a
 //!    knob row (DETUNE bipolar in cents, MIX in %, PULSE width in %).
@@ -31,7 +30,7 @@
 
 use egui::{Align, Layout, ScrollArea, Ui, vec2};
 use engine::ParamId;
-use neu::{DialSize, Theme};
+use neu::{DialSize, TextKind, Theme};
 
 use crate::app::AppState;
 use crate::presets;
@@ -78,18 +77,52 @@ pub const PULSE_DIMMED_NOTE: &str = "Square wave only";
 const TWO_KNOBS: f32 = KNOB_BLOCK * 2.0 + KNOB_GAP;
 
 /// Renders the SYNTH panel into `ui`, filling the space it is given, and applies any control
-/// change to `state`.
+/// change to `state`. The preset browser lives in the BROWSER column since M12; the SYNTH
+/// & FX window's toolbar carries the preset strip ([`preset_strip`]).
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::panel(ui, theme, |ui| {
         ui.set_min_size(ui.available_size());
         head(ui, state, theme);
         ui.add_space(PANEL_HEAD_GAP);
-        if state.preset_browser_open {
-            preset_browser::show(ui, state, theme);
-        } else {
-            body(ui, state, theme);
-        }
+        body(ui, state, theme);
     });
+}
+
+/// Accessible name of the SYNTH & FX toolbar's MODIFIED LED (the browser's PRESETS section
+/// carries the one named [`MODIFIED_LABEL`]).
+pub const TOOLBAR_MODIFIED_LABEL: &str = "Preset modified";
+/// Accessible name of the toolbar's preset name label.
+pub const TOOLBAR_PRESET_NAME: &str = "Toolbar preset";
+
+/// The SYNTH & FX window's toolbar strip (M12): the edit track's chip and name, the preset
+/// name (a label named [`TOOLBAR_PRESET_NAME`]; the browser's PRESETS section holds the
+/// prev / next buttons and the list) and the MODIFIED LED ([`TOOLBAR_MODIFIED_LABEL`]),
+/// then the plugin pills ([`controls::plugin_pills`]).
+pub fn preset_strip(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let track = state.edit_track_ui().clone();
+    controls::track_chip(ui, theme, track.colour, &track.name);
+    neu::text_widget(ui, &track.name, TextKind::Label, theme.text_2);
+    neu::toolbar_separator(ui, theme);
+    let preset = state.preset_name();
+    let name = neu::text_widget(ui, preset, TextKind::Value, theme.text);
+    // A button-role node so the name stays the name and the preset is its value (an egui
+    // label node keeps its text as the value instead).
+    name.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::Role::Button, true, TOOLBAR_PRESET_NAME);
+        info.current_text_value = Some(preset.to_owned());
+        info
+    });
+    name.on_hover_text("The preset of the selected track (Ctrl+PageUp / PageDown step it)");
+    neu::led_named(
+        ui,
+        theme,
+        state.preset_modified(),
+        neu::LedKind::Accent,
+        TOOLBAR_MODIFIED_LABEL,
+    )
+    .on_hover_text("Lit once a knob moved after the preset was applied");
+    neu::toolbar_separator(ui, theme);
+    controls::plugin_pills(ui, state, theme);
 }
 
 /// Names of every preset, in browser order (the unified list of `crate::presets`).
@@ -103,12 +136,11 @@ pub fn head_title(state: &AppState) -> String {
     format!("Synth · {}", state.edit_track_ui().name)
 }
 
-/// Label of the lamp beside the preset selector that lights once a per-track parameter
-/// moved after the preset was applied (M10).
-pub const MODIFIED_LABEL: &str = "Modified";
+/// Label of the LED that lights once a per-track parameter moved after the preset was
+/// applied (M10; the browser's PRESETS section and the SYNTH & FX toolbar show it).
+pub use preset_browser::MODIFIED_LABEL;
 
-/// The head: [`head_title`] with the edit track's colour chip on the left, the preset strip
-/// ([`preset_browser::head_strip`]: `<` name `>` BROWSE) and the MOD lamp flush right.
+/// The head: [`head_title`] with the edit track's colour chip on the left.
 fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     ui.horizontal(|ui| {
         ui.set_min_height(controls::ROW_HEIGHT);
@@ -117,12 +149,6 @@ fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         controls::track_chip(ui, theme, track.colour, &track.name);
         neu::title(ui, theme, &head_title(state))
             .on_hover_text("The selected track; every control here edits it");
-        controls::right_aligned(ui, "synth_preset", |ui| {
-            ui.spacing_mut().item_spacing.x = controls::HEAD_GAP;
-            preset_browser::head_strip(ui, state, theme);
-            neu::slider::lamp(ui, theme, state.preset_modified(), MODIFIED_LABEL)
-                .on_hover_text("Lit once a knob moved after the preset was applied");
-        });
     });
 }
 

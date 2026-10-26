@@ -1,8 +1,8 @@
 //! MIXER panel (M6, FL layout since M11): the source channel strips, the sixteen insert
 //! buses and a master column in the FX rack's slot.
 //!
-//! The panel shares the FX rack's head (`controls::right_panel_head`: the title and the
-//! `FX | Mixer` tab) and its [`WIDTH`]; the body is laid out by hand from a fixed origin so
+//! The panel shares the FX rack's head (`controls::plugins_head`: the title and the plugin
+//! pills; M12 rehosts the whole panel in the MIXER view until the M13 drawer) and its [`WIDTH`]; the body is laid out by hand from a fixed origin so
 //! every strip has the same geometry and the whole thing fits the top row (about 303 pt of
 //! body at the 1280 x 1140 design size) without vertical scrolling. Three docks, left to
 //! right, like FL Studio's mixer:
@@ -81,7 +81,7 @@ pub const DOCK_GAP: f32 = 4.0;
 /// Width of one insert strip: the 3 x 2 knob grid ([`GRID_WIDTH`]) plus a point each side.
 pub const INSERT_STRIP_WIDTH: f32 = GRID_WIDTH + 2.0;
 /// Width of the master column.
-pub const MASTER_WIDTH: f32 = 52.0;
+pub const MASTER_WIDTH: f32 = 60.0;
 // A `Sm` knob, the M / S squares and the number box fit a source strip; two insert strips are
 // visible at a time in the inserts dock.
 const _: () = assert!(SOURCE_STRIP_WIDTH >= KNOB + 2.0);
@@ -392,7 +392,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         ui.set_min_size(ui.available_size());
         // The strips are placed by hand from the cursor: no implicit spacing after the head.
         ui.spacing_mut().item_spacing.y = 0.0;
-        controls::right_panel_head(ui, state, theme, "Mixer");
+        controls::plugins_head(ui, theme, "Mixer");
         ui.add_space(HEAD_GAP);
         body(ui, state, theme);
     });
@@ -1359,12 +1359,13 @@ fn paint_caps_truncated(
 /// The master column at `origin`, [`MASTER_WIDTH`] wide: the MASTER gain knob level with the
 /// faders' value row, the LIMIT toggle and the stereo meter down to the faders' bottom edge.
 fn master(ui: &mut Ui, state: &mut AppState, theme: &Theme, origin: Pos2, fader: FaderRects) {
+    // The Deck knob block (56 wide with its label and value) takes the whole column.
     let knob_rect = Rect::from_min_size(
         pos2(
-            origin.x + (MASTER_WIDTH - KNOB) * 0.5,
+            origin.x,
             (fader.block.min.y + MASTER_DROP).min(fader.track.min.y),
         ),
-        vec2(KNOB, KNOB * 2.0),
+        vec2(MASTER_WIDTH, KNOB * 2.0),
     );
     let gain = place(ui, knob_rect, |ui| {
         Knob::new(ParamId::MasterGain, fmt_db)
@@ -1490,7 +1491,9 @@ mod tests {
             CONTENT_WIDTH
         );
         assert_eq!(SOURCE_DOCK_WIDTH, 144.0);
-        assert_eq!(KNOB, KnobSize::Sm.block_width());
+        // M12: the Deck mini knob is 22; the 34 cell keeps the M11 strip geometry until the
+        // M13 mixer drawer lays the strips out again.
+        assert!(KNOB >= KnobSize::Sm.block_width());
         assert_eq!(INSERT_STRIP_WIDTH, 108.0);
         // The constant invariants (a knob, the M / S squares and the number box fit a source
         // strip; two inserts are visible at a time) are `const` assertions at the top.

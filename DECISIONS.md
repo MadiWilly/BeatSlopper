@@ -434,3 +434,48 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
 - **`HINT` lost its Ctrl+T mention** to make room for the LINK button beside the move
   arrows (the ADD tooltip still names the shortcut). `Ctrl+L` is checked last in the
   shortcut order so nothing above it changes.
+
+## 2026-10-25: M12 shell (app)
+- **The tab strip spans the workspace, not the main window, and is always shown.** WINNER
+  grows it only at narrow, under the main window's header; but with the browser open and
+  the rack at its 664 default the main window is 372 wide at 1280 x 800, too narrow for five
+  tabs with keycaps. Across the rack + main width it always fits, the F-keys are discoverable
+  at every size, and the collapsed rack's header sits under it like FL's view bar.
+- **VISUALIZER is a fifth view**, not SONG's side window: at 1280 x 800 the SONG window plus
+  a 340 wide visualizer beside it leaves the song table 28 points; M14 revisits when the
+  timeline lands. F11 covers the workspace as WINNER says.
+- **Draw | Select and the snap dropdown are not drawn.** The roll's selection is Ctrl-click /
+  Ctrl-drag (a real "Select" tool needs `PianoRollModel` support, M13's roll restyle) and the
+  only snap is the 1/16 grid; a one-entry dropdown and a segmented that changes nothing would
+  be fake controls. The toolbar hint says "Ctrl+drag selects".
+- **Rack "close" collapses.** A hidden rack would need a second flag and a place to bring
+  it back from; the collapsed header is 28 points and F5 / the chevron re-expand it.
+- **Row operations live in a right-click menu on the NAME button** (FL's channel button),
+  with the DELETE confirm in the add row: WINNER's rack has no per-row buttons for
+  duplicate / delete / move / colour / link, and a visible toolbar for the selected row would
+  cost a 36 pt row at narrow.
+- **A track's lane cells show its own notes on every row** (`lane_cell` derives them), and a
+  click on another track's cell selects that track first; the engine's derived lane only
+  covers the edit track.
+- **The LEN segmented doubles / halves step by step** so a 1 -> 4 bar change still copies the
+  loop into the new bars (the QOL behaviour); `set_pattern_length` alone would leave them
+  empty.
+- **"Test tone" moved into the project menu**: the toolbar has no room and it is a
+  diagnostic, not a transport control.
+- **The transport's mini visualizer strip is gone**: the Deck toolbar has no slot for it.
+- **The keyboard's octave readout is "Keyboard octave"** and the toolbar's unsaved dot is
+  "Unsaved dot": "Octave" is a chord of the CHORDS column and kittest folds two same-named
+  label nodes into one.
+- **The category chip "Bass" reads "EDM Bass"**: the "Bass" preset entry is a button of the
+  same list.
+- **Narrow defaults apply once per launch** (`narrow_applied`): the first frame at or under
+  1000 points collapses the browser and the keyboard; the user may open them again, and an
+  open keyboard then floats over the workspace instead of pushing the rack up.
+- **`MASTER_WIDTH` 52 -> 60 in the M11 mixer**: the Deck labelled knob block is 56 wide.
+  The inserts dock loses 8 points and still shows two strips.
+- **`mixer_drawer_open` is derived from the view** in M12 (sanitised on load): the real drawer
+  that pushes the workspace up is M13; keeping the flag now means the layout file does not
+  change shape then.
+- **The hint bar stays beside the toolbar's hint panel**: WINNER folds the status line into
+  the toolbar, the brief asks for a bottom hint bar with the audio line; the toolbar panel
+  shows the status / default hint, the bar the keycap pairs.

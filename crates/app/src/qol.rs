@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use engine::{Channel, DrumRow, MAX_TRACKS, Message, Note, PatternLength, STEPS, TrackId};
 
-use crate::app::{AppState, LaneView, MAX_BPM, MIN_BPM, PendingAction};
+use crate::app::{AppState, MAX_BPM, MIN_BPM, PendingAction};
 use crate::drag_paint::{PaintRow, PaintStroke};
 use crate::tempo::nudge_bpm;
 
@@ -301,9 +301,6 @@ impl AppState {
     /// the grid: moves its note, clamped to MIDI, keeping the accent. `false` when no note is
     /// selected or the note cannot move.
     pub fn nudge_selected_note(&mut self, semitones: i32) -> bool {
-        if self.lane_view != LaneView::Grid {
-            return false;
-        }
         let Some(step) = self.selected_step else {
             return false;
         };
@@ -573,9 +570,11 @@ mod tests {
             !state.nudge_selected_note(1),
             "an empty step has no note to move"
         );
-        state.set_lane_view(LaneView::Roll);
+        // M12: the rack is always on screen, so a selected step nudges in every view.
+        state.set_view(crate::app::View::Synth);
         state.selected_step = Some(0);
-        assert!(!state.nudge_selected_note(1), "grid only");
+        assert!(state.nudge_selected_note(1), "every view");
+        assert_eq!(state.pattern().synth[0].note, Some(1));
         assert_eq!(state.bank.mode, PlayMode::Pattern);
     }
 

@@ -1,14 +1,12 @@
-//! egui_kittest: the M9 preset browser in the SYNTH panel. The head strip shows the selected
-//! track's preset between `<` / `>`; BROWSE opens the browser, whose category row filters
-//! the list (counts match the unified list's categories), whose search narrows it, and
-//! whose entries apply to the selected track; `<` / `>` and Ctrl+PageUp / PageDown wrap
-//! within the category; Ctrl+Shift+P opens the browser with the search focused, where
-//! typing neither plays the piano nor fires Space; Escape closes; the MODIFIED lamp lights
-//! on a knob move and clears on a new preset; both themes render; the browser leaves the
-//! 1280 x 1140 whole-sequencer layout alone.
+//! egui_kittest: the M9 preset browser as the BROWSER column's PRESETS section (M12). The
+//! list shows every preset and filters by category chip, clicking an entry applies it to the
+//! selected track, the search field narrows the list and Escape closes the section from
+//! inside the field, prev / next wrap within the category and the MODIFIED LED clears on a
+//! new preset, the shortcuts step presets and open the section with the search focused,
+//! and the open section leaves the rack whole and its chips inside the column.
 
 use app::ui::preset_browser::{
-    self, BROWSE_LABEL, CATEGORY_LABELS, CLOSE_LABEL, NEXT_LABEL, PREV_LABEL, head_name,
+    BROWSE_LABEL, CATEGORY_LABELS, CLOSE_LABEL, NEXT_LABEL, PREV_LABEL, head_name,
 };
 use app::ui::synth_panel::MODIFIED_LABEL;
 use app::{AppState, BeatSlopperApp, presets, ui};
@@ -19,15 +17,15 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use engine::ParamId;
 use neu::{Theme, ThemeMode};
 
-/// The SYNTH panel alone, 780 x 520 (its share of the design page), with the browser open.
-fn synth_harness(mode: ThemeMode) -> Harness<'static, AppState> {
+/// The BROWSER column alone (208 x 900) with the PRESETS section open.
+fn browser_harness(mode: ThemeMode) -> Harness<'static, AppState> {
     let (mut state, _engine) = AppState::headless(mode);
     state.open_preset_browser(false);
     let theme = Theme::for_mode(mode);
     let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(780.0, 520.0))
+        .with_size(egui::Vec2::new(ui::browser::WIDTH + 16.0, 900.0))
         .build_ui_state(
-            move |ui, state: &mut AppState| ui::synth_panel::show(ui, state, &theme),
+            move |ui, state: &mut AppState| ui::browser::show(ui, state, &theme),
             state,
         );
     harness.run_steps(3);
@@ -38,7 +36,7 @@ fn synth_harness(mode: ThemeMode) -> Harness<'static, AppState> {
 fn app_harness() -> Harness<'static, BeatSlopperApp> {
     let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
     let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .with_size(egui::Vec2::new(1280.0, 800.0))
         .build_ui_state(
             |ui, app: &mut BeatSlopperApp| {
                 app.tick(ui.ctx());
@@ -50,8 +48,8 @@ fn app_harness() -> Harness<'static, BeatSlopperApp> {
     harness
 }
 
-/// The browser entries shown: every button named after a preset (inside `within`, when
-/// given: the whole app has a "Bass" button in the sequencer's lane label too).
+/// The list entries shown: every button named after a preset (inside `within`, when
+/// given).
 fn shown_entries_within<S>(harness: &Harness<'_, S>, within: Option<egui::Rect>) -> Vec<String> {
     let names: Vec<&str> = presets::all().map(|p| p.name).collect();
     harness
@@ -62,13 +60,14 @@ fn shown_entries_within<S>(harness: &Harness<'_, S>, within: Option<egui::Rect>)
         .collect()
 }
 
-/// [`shown_entries_within`] over the whole harness (the SYNTH panel alone).
+/// [`shown_entries_within`] over the whole harness (the column alone).
 fn shown_entries<S>(harness: &Harness<'_, S>) -> Vec<String> {
     shown_entries_within(harness, None)
 }
 
-fn radio<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kittest::Node<'h> {
-    harness.get_by_role_and_label(Role::RadioButton, label)
+/// A category chip (a toggle button named `label`).
+fn chip<'h, S>(harness: &'h Harness<'_, S>, label: &'h str) -> egui_kittest::Node<'h> {
+    harness.get_by_role_and_label(Role::Button, label)
 }
 
 fn entry<'h, S>(harness: &'h Harness<'_, S>, name: &'h str) -> egui_kittest::Node<'h> {
@@ -85,7 +84,7 @@ fn modified<S>(harness: &Harness<'_, S>) -> Option<Toggled> {
 #[test]
 fn browser_lists_every_preset_and_filters_by_category_in_both_themes() {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
-        let mut harness = synth_harness(mode);
+        let mut harness = browser_harness(mode);
         harness.get_by_label(CLOSE_LABEL);
         harness.get_by_label(&head_name("Bass"));
         // `All`: the whole unified list, in order, the current preset toggled.
@@ -101,15 +100,23 @@ fn browser_lists_every_preset_and_filters_by_category_in_both_themes() {
             entry(&harness, "Lofi Piano").accesskit_node().toggled(),
             Some(Toggled::False)
         );
-        harness.get_by_label(&preset_browser::count_text(
+        harness.get_by_label(&ui::preset_browser::count_text(
             presets::count(),
             presets::count(),
         ));
+        // Every chip sits inside the column.
+        for label in CATEGORY_LABELS {
+            let rect = chip(&harness, label).rect();
+            assert!(
+                rect.max.x <= ui::browser::WIDTH + 16.0 && rect.min.x >= 0.0,
+                "{label} at {rect:?}"
+            );
+        }
 
         // Each category: the entries are exactly the category's presets (the engine's
         // `by_category` plus the classics of that category).
         for (i, category) in presets::Category::ALL.iter().enumerate() {
-            radio(&harness, CATEGORY_LABELS[i + 1]).click();
+            chip(&harness, CATEGORY_LABELS[i + 1]).click();
             harness.run_steps(2);
             assert_eq!(harness.state().preset_category, Some(*category));
             let shown = shown_entries(&harness);
@@ -125,7 +132,7 @@ fn browser_lists_every_preset_and_filters_by_category_in_both_themes() {
             assert_eq!(shown.len(), library + classics);
             assert!(shown.len() >= 10);
         }
-        radio(&harness, preset_browser::ALL_LABEL).click();
+        chip(&harness, ui::preset_browser::ALL_LABEL).click();
         harness.run_steps(2);
         assert_eq!(harness.state().preset_category, None);
         assert_eq!(shown_entries(&harness).len(), presets::count());
@@ -139,8 +146,8 @@ fn browser_lists_every_preset_and_filters_by_category_in_both_themes() {
 }
 
 #[test]
-fn clicking_an_entry_applies_it_to_the_selected_track_and_the_head_follows() {
-    let mut harness = synth_harness(ThemeMode::Dark);
+fn clicking_an_entry_applies_it_to_the_selected_track_and_the_current_row_follows() {
+    let mut harness = browser_harness(ThemeMode::Dark);
     harness.state_mut().add_track();
     harness.run_steps(2);
     assert_eq!(harness.state().edit_track, 1);
@@ -161,13 +168,13 @@ fn clicking_an_entry_applies_it_to_the_selected_track_and_the_head_follows() {
     assert!(harness.state().dirty);
     assert!(
         harness.state().preset_browser_open,
-        "a pick keeps the browser open"
+        "a pick keeps the section open"
     );
     // The sound followed: a lo-fi keys preset with vinyl noise, lo-fi on.
     assert!(harness.state().param(ParamId::LofiMix) > 0.0);
     assert!(harness.state().param(ParamId::LofiNoise) > 0.0);
 
-    // Selecting track 1 shows its own preset in the head and the list.
+    // Selecting track 1 shows its own preset in the current row and the list.
     harness.state_mut().select_track(0);
     harness.run_steps(2);
     harness.get_by_label(&head_name("Bass"));
@@ -176,17 +183,23 @@ fn clicking_an_entry_applies_it_to_the_selected_track_and_the_head_follows() {
         Some(Toggled::True)
     );
 
-    // CLOSE puts the oscillator groups back.
-    assert!(harness.query_by_label("Osc 1").is_none());
+    // CLOSE collapses the section: the list and the chips are gone, the current row stays.
     harness.get_by_label(CLOSE_LABEL).click();
     harness.run_steps(2);
     assert!(!harness.state().preset_browser_open);
-    harness.get_by_label("Osc 1");
+    assert!(shown_entries(&harness).is_empty());
     assert!(harness.query_by_label(CLOSE_LABEL).is_none());
-    // BROWSE opens it again; the name well does too.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, CATEGORY_LABELS[1])
+            .is_none()
+    );
+    harness.get_by_label(&head_name("Bass"));
+    // The section head opens it again and closes it; the current preset's name opens it.
     harness.get_by_label(BROWSE_LABEL).click();
     harness.run_steps(2);
     assert!(harness.state().preset_browser_open);
+    assert_eq!(shown_entries(&harness).len(), presets::count());
     harness.get_by_label(BROWSE_LABEL).click();
     harness.run_steps(2);
     assert!(!harness.state().preset_browser_open);
@@ -197,7 +210,7 @@ fn clicking_an_entry_applies_it_to_the_selected_track_and_the_head_follows() {
 
 #[test]
 fn search_narrows_the_list_and_escape_closes_from_the_field() {
-    let mut harness = synth_harness(ThemeMode::Light);
+    let mut harness = browser_harness(ThemeMode::Light);
     let field = harness.get_by_role(Role::TextInput);
     field.click();
     harness.run_steps(2);
@@ -209,12 +222,15 @@ fn search_narrows_the_list_and_escape_closes_from_the_field() {
     assert!(shown.contains(&"Toy Piano".to_owned()), "{shown:?}");
     assert_eq!(shown.len(), engine::presets::search("piano").len());
     assert!(shown.len() < presets::count());
-    harness.get_by_label(&preset_browser::count_text(shown.len(), presets::count()));
+    harness.get_by_label(&ui::preset_browser::count_text(
+        shown.len(),
+        presets::count(),
+    ));
     // A category on top of the search; a tag search; nothing matching.
-    radio(&harness, CATEGORY_LABELS[1]).click();
+    chip(&harness, CATEGORY_LABELS[1]).click();
     harness.run_steps(2);
     assert_eq!(shown_entries(&harness), vec!["Lofi Piano", "Toy Piano"]);
-    radio(&harness, preset_browser::ALL_LABEL).click();
+    chip(&harness, ui::preset_browser::ALL_LABEL).click();
     harness.run_steps(2);
     harness.get_by_role(Role::TextInput).click();
     harness.run_steps(1);
@@ -229,8 +245,8 @@ fn search_narrows_the_list_and_escape_closes_from_the_field() {
     harness.event(Event::Text("zzzz".to_owned()));
     harness.run_steps(2);
     assert!(shown_entries(&harness).is_empty());
-    harness.get_by_label(preset_browser::NO_MATCH);
-    // Escape inside the field closes the browser; the text is kept for next time.
+    harness.get_by_label(ui::preset_browser::NO_MATCH);
+    // Escape inside the field closes the section; the text is kept for next time.
     harness.key_press(Key::Escape);
     harness.run_steps(2);
     assert!(!harness.state().preset_browser_open);
@@ -240,11 +256,19 @@ fn search_narrows_the_list_and_escape_closes_from_the_field() {
         0,
         "searching applies nothing"
     );
+    // Typing into the field opens the section again.
+    harness.get_by_role(Role::TextInput).click();
+    harness.run_steps(2);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    harness.event(Event::Text("pad".to_owned()));
+    harness.run_steps(2);
+    assert!(harness.state().preset_browser_open);
+    assert_eq!(harness.state().preset_query, "pad");
 }
 
 #[test]
-fn prev_next_wrap_within_the_category_and_the_lamp_clears_on_a_new_preset() {
-    let mut harness = synth_harness(ThemeMode::Dark);
+fn prev_next_wrap_within_the_category_and_the_led_clears_on_a_new_preset() {
+    let mut harness = browser_harness(ThemeMode::Dark);
     let count = presets::count();
     harness.get_by_label(PREV_LABEL).click();
     harness.run_steps(2);
@@ -262,7 +286,7 @@ fn prev_next_wrap_within_the_category_and_the_lamp_clears_on_a_new_preset() {
     assert_eq!(harness.state().preset_name(), "Sub");
 
     // Inside a category: only its presets, wrapping at both ends.
-    radio(&harness, CATEGORY_LABELS[2]).click(); // Lofi Guitars
+    chip(&harness, CATEGORY_LABELS[2]).click(); // Lofi Guitars
     harness.run_steps(2);
     let guitars = harness.state().preset_filter();
     assert_eq!(guitars.len(), 12);
@@ -281,7 +305,7 @@ fn prev_next_wrap_within_the_category_and_the_lamp_clears_on_a_new_preset() {
         Some(Toggled::True)
     );
 
-    // The lamp: a knob move lights it, the next preset clears it.
+    // The LED: a knob move lights it, the next preset clears it.
     assert_eq!(modified(&harness), Some(Toggled::False));
     harness.state_mut().set_param(ParamId::FilterCutoff, 900.0);
     harness.run_steps(2);
@@ -299,10 +323,10 @@ fn prev_next_wrap_within_the_category_and_the_lamp_clears_on_a_new_preset() {
 }
 
 #[test]
-fn shortcuts_step_presets_and_open_the_browser_with_the_search_focused() {
+fn shortcuts_step_presets_and_open_the_section_with_the_search_focused() {
     let mut harness = app_harness();
     assert!(!harness.state().state().preset_browser_open);
-    harness.get_by_label("Osc 1");
+    assert!(harness.query_by_label(CLOSE_LABEL).is_none());
     harness.key_press_modifiers(Modifiers::COMMAND, Key::PageDown);
     harness.run_steps(2);
     assert_eq!(harness.state().state().preset_name(), "Sub");
@@ -321,13 +345,12 @@ fn shortcuts_step_presets_and_open_the_browser_with_the_search_focused() {
     harness.run_steps(2);
     assert_eq!(harness.state().state().bpm, bpm + 1.0);
 
-    // Ctrl+Shift+P: the browser opens with the search field focused; typing goes into the
+    // Ctrl+Shift+P: the section opens with the search field focused; typing goes into the
     // field, plays no piano key and Space does not start the loop.
     harness.key_press_modifiers(app::shortcuts::COMMAND_SHIFT, Key::P);
     harness.run_steps(3);
     assert!(harness.state().state().preset_browser_open);
     harness.get_by_label(CLOSE_LABEL);
-    assert!(harness.query_by_label("Osc 1").is_none());
     assert!(
         harness.ctx.memory(|m| m.focused()).is_some(),
         "the search field has the keyboard"
@@ -341,8 +364,14 @@ fn shortcuts_step_presets_and_open_the_browser_with_the_search_focused() {
     assert_eq!(harness.state().state().note_on_count, 0, "no piano");
     assert!(!harness.state().state().playing, "Space typed, not played");
     assert_eq!(harness.state().state().preset_query, "a pad");
-    let top_row = harness.state().state().top_row_rect.expect("measured");
-    let shown = shown_entries_within(&harness, Some(top_row));
+    // The matching entries are listed inside the browser column.
+    let column_right = harness
+        .get_by_label(ui::browser::COLLAPSE_LABEL)
+        .rect()
+        .max
+        .x;
+    let column = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(column_right + 1.0, 800.0));
+    let shown = shown_entries_within(&harness, Some(column));
     let expected: Vec<&str> = harness
         .state()
         .state()
@@ -366,7 +395,7 @@ fn shortcuts_step_presets_and_open_the_browser_with_the_search_focused() {
     harness.key_press(Key::Escape);
     harness.run_steps(3);
     assert!(!harness.state().state().preset_browser_open);
-    harness.get_by_label("Osc 1");
+    assert!(harness.query_by_label(CLOSE_LABEL).is_none());
     harness.key_press(Key::Space);
     harness.run_steps(2);
     assert!(harness.state().state().playing);
@@ -378,85 +407,60 @@ fn shortcuts_step_presets_and_open_the_browser_with_the_search_focused() {
     harness.event(Event::Text("s".to_owned()));
     harness.run_steps(2);
     assert_eq!(harness.state().state().preset_query, "a pads");
+    // With the browser collapsed to the rail, Ctrl+Shift+P opens the column too.
+    harness.key_press(Key::Escape);
+    harness.run_steps(2);
+    harness.key_press(Key::F9);
+    harness.run_steps(2);
+    assert!(!harness.state().state().browser_open);
+    harness.key_press_modifiers(app::shortcuts::COMMAND_SHIFT, Key::P);
+    harness.run_steps(3);
+    assert!(harness.state().state().browser_open && harness.state().state().preset_browser_open);
+    harness.get_by_label(CLOSE_LABEL);
 }
 
-/// At the design size the browser, open or closed, leaves the whole sequencer visible (see
-/// `ui_renders::whole_sequencer_is_visible_at_the_default_window_size`) and its category
-/// row fits inside the SYNTH panel.
+/// At the design size the open section leaves the rack whole (its sixteen steps stay where
+/// they were) and its chips, field, CLOSE button and entries sit inside the browser column.
 #[test]
-fn browser_keeps_the_whole_sequencer_visible_at_the_design_size() {
+fn the_open_section_keeps_the_rack_whole_and_stays_inside_the_column() {
     let mut harness = app_harness();
-    let check = |harness: &Harness<'_, BeatSlopperApp>| {
-        let bass = harness.get_by_label("Bass step 16").rect();
-        let octave = harness.get_by_label("Octave").rect();
-        let sequencer_bottom = bass.max.y + ui::sequencer::ROW_GAP + 10.0 + 20.0;
-        let keys_panel_top = octave.min.y - 30.0;
-        assert!(
-            sequencer_bottom <= keys_panel_top,
-            "sequencer ends at {sequencer_bottom} but the KEYS panel starts at {keys_panel_top}"
-        );
-    };
-    check(&harness);
-    let top_row = harness.state().state().top_row_rect.expect("measured");
-    let head_before = harness.get_by_label(MODIFIED_LABEL).rect();
-    // The closed panel's first row, the LFO column at its right end included, is inside
-    // the SYNTH panel's padding (M10 review).
-    let synth_inner_right = top_row.max.x - ui::fx_rack::WIDTH - 10.0 - 20.0;
-    for label in ["Depth value", "Rate value", "Glide value"] {
-        let readout = harness
-            .get_all_by_label(label)
-            .map(|n| n.rect())
-            .filter(|r| top_row.contains_rect(*r) && r.min.x < synth_inner_right)
-            .max_by(|a, b| a.max.x.total_cmp(&b.max.x))
-            .unwrap_or_else(|| panic!("{label} in the SYNTH panel"));
-        assert!(
-            readout.max.x <= synth_inner_right + 0.01,
-            "{label} at {readout:?} overhangs the SYNTH panel (inner right {synth_inner_right})"
-        );
-    }
+    let steps_before = harness.get_by_label("Synth step 16").rect();
+    let handle = harness.get_by_label(ui::shell::RACK_HANDLE_NAME).rect();
+    assert!(steps_before.max.x <= handle.min.x);
+    let column_right = harness
+        .get_by_label(ui::browser::COLLAPSE_LABEL)
+        .rect()
+        .max
+        .x;
 
     harness.get_by_label(BROWSE_LABEL).click();
     harness.run_steps(3);
     assert!(harness.state().state().preset_browser_open);
-    check(&harness);
-    // The row keeps its height and its width exactly (M10 review: the closed panel's LFO
-    // column, DEPTH readout included, sits inside the SYNTH panel since the first row's
-    // column gap compresses to the scale's 4; before that it overhung by 5 pt and pushed
-    // the FX rack with it).
-    let open_row = harness.state().state().top_row_rect.expect("measured");
     assert_eq!(
-        open_row, top_row,
-        "the browser does not move or resize the top row"
-    );
-    assert_eq!(harness.get_by_label(MODIFIED_LABEL).rect(), head_before);
-    let synth_right = open_row.max.x - ui::fx_rack::WIDTH - 10.0;
-    assert_eq!(
-        top_row.max.x,
-        1280.0 - 20.0 - 8.0,
-        "the top row ends at the page's edge (20 pt padding, egui's 8 pt scroll gutter)"
+        harness.get_by_label("Synth step 16").rect(),
+        steps_before,
+        "the section does not move the rack"
     );
     for label in CATEGORY_LABELS {
-        let rect = radio(&harness, label).rect();
+        let rect = chip(&harness, label).rect();
         assert!(
-            rect.max.x <= synth_right && rect.min.x >= top_row.min.x,
-            "{label} at {rect:?} is outside the SYNTH panel (right edge {synth_right})"
+            rect.max.x <= column_right + 0.5 && rect.min.x >= 0.0,
+            "{label} at {rect:?} is outside the column (right edge {column_right})"
         );
     }
     let close = harness.get_by_label(CLOSE_LABEL).rect();
-    assert!(close.max.x <= synth_right && top_row.contains_rect(close));
+    assert!(close.max.x <= column_right + 0.5);
     let field = harness.get_by_role(Role::TextInput).rect();
-    assert!(top_row.contains_rect(field));
-    // The list fills the rest of the panel: several columns of entries, inside the panel.
-    let first = entry(&harness, "Sub").rect(); // "Bass" is the sequencer lane too
+    assert!(field.max.x <= column_right + 0.5 && field.min.x >= 0.0);
+    // The list: one column of rows inside the column, scrolling.
+    let first = entry(&harness, "Sub").rect();
     let second = entry(&harness, "Lead").rect();
-    assert!(
-        second.min.x > first.max.x,
-        "more than one column at 1280 wide"
-    );
-    assert!(top_row.contains_rect(first) && top_row.contains_rect(second));
+    assert!(first.max.x <= column_right + 0.5 && second.max.x <= column_right + 0.5);
+    assert!(second.min.y > first.max.y - 0.5, "one row under the other");
+    assert_eq!(first.height(), ui::preset_browser::ROW_HEIGHT);
 
     harness.key_press(Key::Escape);
     harness.run_steps(3);
     assert!(!harness.state().state().preset_browser_open);
-    check(&harness);
+    assert_eq!(harness.get_by_label("Synth step 16").rect(), steps_before);
 }

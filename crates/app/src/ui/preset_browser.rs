@@ -1,56 +1,45 @@
-//! Preset browser (M9): the SYNTH panel's preset chooser over the unified preset list
-//! (`crate::presets`: the eight classics, then the 91-preset library).
+//! The preset browser (M9; the BROWSER column's PRESETS section since M12, WINNER section 5
+//! "BROWSER column") over the unified preset list (`crate::presets`: the eight classics,
+//! then the 91-preset library).
 //!
-//! Two pieces, both drawn by `ui/synth_panel.rs`:
-//!
-//! - [`head_strip`], flush right in the panel head: `<` (previous), the current preset's
-//!   name of the selected track in an inset-s well ([`NAME_WIDTH`] wide, cut with an
-//!   ellipsis, a click opens the browser), `>` (next) and the `BROWSE` pill (lit while the
-//!   browser is open). The MODIFIED lamp the head already had sits after it. Previous / next
-//!   step within the browser's category filter and wrap ([`AppState::step_preset`]).
-//! - [`show`], the browser itself, which takes the place of the oscillator groups (the
-//!   panel body) while [`AppState::preset_browser_open`] is set, so the panel keeps its
-//!   size and the page layout does not move (the whole sequencer stays visible at the
-//!   1280 x 1140 design size). Top to bottom: the category `segmented` ([`CATEGORY_LABELS`]:
-//!   `All` + the eight categories with short labels, so the nine items fit the panel), a row
-//!   with the search field (placeholder [`SEARCH_HINT`]; an `egui::TextEdit` in the kit's
-//!   inset-s editor pill, like the inline value editors, so the shortcuts and the piano stay
-//!   quiet while it has the keyboard, like the TRACKS rename field), the match count and
-//!   the `CLOSE` pill, then the scrollable list of matching presets in as many
-//!   [`COLUMN_MIN_WIDTH`] columns as fit: the selected preset on an inset-s well with an
-//!   accent dot, every entry showing its name (and, in the `All` view, its category) with a
-//!   `vinyl` / `drone` tag where the preset hisses without a note or never dies away. A
-//!   click applies the preset to the selected track. Escape (also from inside the search
-//!   field), `CLOSE` and `BROWSE` close it; the filter and the search text are kept.
+//! - [`current_row`]: the section's always-visible second line: `<` (previous), the current
+//!   preset's name of the selected track (a button named [`head_name`]; a click opens the
+//!   section), the MODIFIED LED ([`MODIFIED_LABEL`]) and `>` (next). Previous / next step
+//!   within the category filter and wrap ([`AppState::step_preset`]).
+//! - [`show`]: the section body while [`AppState::preset_browser_open`]: the category chips
+//!   ([`CATEGORY_LABELS`]: `All` + the eight categories with short labels, wrapping), the
+//!   match count ([`count_text`]) and the scrolling row list of matching presets (the
+//!   selected one on the accent wash with the accent bar; `vinyl` / `drone` tags where the
+//!   preset hisses without a note or never dies away; in the `All` view the category as a
+//!   plain tag). A click applies the preset to the selected track. Escape (also from inside
+//!   the search field) and the CLOSE button collapse the section; the filter and the search
+//!   text are kept.
+//! - [`search_field`]: the column toolbar's search field (placeholder [`SEARCH_HINT`]; a
+//!   `neu::text_field`, so the shortcuts and the piano stay quiet while it has the keyboard).
+//!   Typing opens the section.
 
-use egui::epaint::text::{LayoutJob, TextFormat};
-use egui::{
-    Align, Align2, Color32, FontId, Frame, Id, Key, Layout, Margin, Rect, RichText, Role,
-    ScrollArea, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
-};
-use neu::{Depth, TextKind, Theme, paint_soft_rect};
+use egui::{Align2, Key, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use neu::{ButtonKind, ButtonSize, Icon, LedKind, TagKind, TextKind, Theme};
 
 use crate::app::AppState;
 use crate::presets::{self, Category};
-use crate::ui::controls::{self, GROUP_GAP};
 
-/// Label of the pill that opens / closes the browser.
-pub const BROWSE_LABEL: &str = "Browse";
-/// Label of the browser's close pill.
+/// Accessible name of the PRESETS section head (a click toggles the section).
+pub const BROWSE_LABEL: &str = "Presets";
+/// Accessible name of the CLOSE button beside the search field while the section is open.
 pub const CLOSE_LABEL: &str = "Close";
-/// Label (and accessible name) of the previous-preset button.
-pub const PREV_LABEL: &str = "<";
-/// Label (and accessible name) of the next-preset button.
-pub const NEXT_LABEL: &str = ">";
-/// Placeholder of the search field.
+/// Accessible name of the previous-preset button.
+pub const PREV_LABEL: &str = "Previous preset";
+/// Accessible name of the next-preset button.
+pub const NEXT_LABEL: &str = "Next preset";
+/// Placeholder of the search field (its accessible name too).
 pub const SEARCH_HINT: &str = "search name or tag";
 /// The category row's first item: no category filter.
 pub const ALL_LABEL: &str = "All";
-/// The category `segmented`'s items: [`ALL_LABEL`] then the eight categories in
-/// `Category::ALL` order, shortened so the row fits the SYNTH panel at the minimum window
-/// width (the full labels are the items' tooltips).
+/// The category chips: [`ALL_LABEL`] then the eight categories in `Category::ALL` order,
+/// shortened so three or four fit a 208 pt column row (the full labels are the tooltips).
 pub const CATEGORY_LABELS: [&str; 9] = [
-    ALL_LABEL, "Lo Keys", "Lo Gtr", "Lo Pads", "Leads", "Bass", "Plucks", "EDM Pads", "Risers",
+    ALL_LABEL, "Lo Keys", "Lo Gtr", "Lo Pads", "Leads", "EDM Bass", "Plucks", "EDM Pads", "Risers",
 ];
 /// Tag shown on presets whose lo-fi insert hisses even with no note playing.
 pub const VINYL_TAG: &str = "vinyl";
@@ -60,35 +49,29 @@ pub const DRONE_TAG: &str = "drone";
 pub const NO_MATCH: &str = "No preset matches";
 /// Longest search text accepted.
 pub const SEARCH_CHAR_LIMIT: usize = 32;
+/// Label of the MODIFIED LED.
+pub const MODIFIED_LABEL: &str = "Modified";
 
-/// Width of the preset name well in the head strip.
-pub const NAME_WIDTH: f32 = 128.0;
-/// Width of the search field.
-pub const SEARCH_WIDTH: f32 = 220.0;
-/// Height of one list entry.
-pub const ROW_HEIGHT: f32 = 26.0;
-/// Gap between list rows.
-pub const ROW_GAP: f32 = 2.0;
-/// Narrowest list column; the list shows as many columns of at least this width as fit.
-pub const COLUMN_MIN_WIDTH: f32 = 200.0;
-/// Gap between list columns.
-pub const COLUMN_GAP: f32 = 10.0;
-/// Corner radius of a list entry's well.
-pub const ROW_RADIUS: f32 = 8.0;
-/// Horizontal padding inside a list entry and the name well.
-const ENTRY_PAD_X: f32 = 10.0;
-/// Diameter of the accent dot marking the selected entry.
-const SELECTED_DOT: f32 = 6.0;
-/// Font size of the entry tags and the category text.
-const TAG_SIZE: f32 = 11.0;
+/// Height of one list row.
+pub const ROW_HEIGHT: f32 = 28.0;
+/// Height of the current-preset row.
+pub const CURRENT_ROW: f32 = 36.0;
+/// Horizontal padding inside a list row (WINNER list rows: padding 0 8 0 12).
+const ROW_PAD_LEFT: f32 = 12.0;
+const ROW_PAD_RIGHT: f32 = 8.0;
+/// Gap between the name and the tags, and between tags.
+const TAG_GAP: f32 = 6.0;
+/// Padding around the chips (WINNER: padding 4 8 8, gap 4).
+const CHIP_PAD: f32 = 8.0;
+const CHIP_GAP: f32 = 4.0;
 
-/// Accessible name of the head's preset name well: `"Preset: Lofi Piano"`.
+/// Accessible name of the current preset's name button: `"Preset: Lofi Piano"`.
 #[must_use]
 pub fn head_name(preset: &str) -> String {
     format!("Preset: {preset}")
 }
 
-/// The category the segmented item `index` of [`CATEGORY_LABELS`] stands for (`None` = All).
+/// The category the chip `index` of [`CATEGORY_LABELS`] stands for (`None` = All).
 #[must_use]
 pub fn category_at(index: usize) -> Option<Category> {
     index
@@ -96,7 +79,7 @@ pub fn category_at(index: usize) -> Option<Category> {
         .and_then(|i| Category::ALL.get(i).copied())
 }
 
-/// The segmented item index of `category` (`None` = All).
+/// The chip index of `category` (`None` = All).
 #[must_use]
 pub fn category_item(category: Option<Category>) -> usize {
     category.map_or(0, |c| c.index() + 1)
@@ -128,64 +111,81 @@ pub fn entry_tags(index: usize, show_category: bool) -> Vec<&'static str> {
     tags
 }
 
-/// The search field's widget id (stable, so a focus request can address it before it is
-/// drawn).
-fn search_id() -> Id {
-    Id::NULL.with("preset_browser_search")
+// ---------------------------------------------------------------------------------------------
+// Search field and the current-preset row.
+
+/// The column toolbar's search field, `width` wide. Takes the keyboard when
+/// [`AppState::preset_search_focus`] asks; typing opens the section. Escape inside the field
+/// (egui drops the focus) closes the section.
+pub fn search_field(ui: &mut Ui, state: &mut AppState, theme: &Theme, width: f32) {
+    let response = neu::text_field(
+        ui,
+        theme,
+        &mut state.preset_query,
+        SEARCH_HINT,
+        Some(Icon::Search),
+        width,
+    );
+    if state.preset_query.chars().count() > SEARCH_CHAR_LIMIT {
+        state.preset_query = state.preset_query.chars().take(SEARCH_CHAR_LIMIT).collect();
+    }
+    if state.preset_search_focus {
+        response.request_focus();
+        state.preset_search_focus = false;
+    }
+    if response.changed() || response.gained_focus() {
+        state.preset_browser_open = true;
+    }
+    response.on_hover_text("Search by name or tag (Ctrl+Shift+P)");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Head strip.
-
-/// The head's preset strip: `<`, the name well, `>`, `BROWSE`.
-pub fn head_strip(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    if neu::button(ui, theme, PREV_LABEL)
+/// `<` · the current preset's name (a button, [`head_name`]) · MODIFIED LED · `>`, laid out
+/// across `width`.
+pub fn current_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, CURRENT_ROW), Sense::hover());
+    let mut row = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(CHIP_PAD, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center))
+            .id_salt("preset_current_row"),
+    );
+    row.spacing_mut().item_spacing = vec2(TAG_GAP, 0.0);
+    let ui = &mut row;
+    let prev = neu::header_button(ui, theme, Icon::ChevronLeft);
+    prev.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), PREV_LABEL));
+    if prev
         .on_hover_text("Previous preset in the category (Ctrl+PageUp)")
         .clicked()
     {
         state.step_preset(-1);
     }
-    name_well(ui, state, theme);
-    if neu::button(ui, theme, NEXT_LABEL)
-        .on_hover_text("Next preset in the category (Ctrl+PageDown)")
-        .clicked()
-    {
-        state.step_preset(1);
-    }
-    if neu::toggle_button(ui, theme, BROWSE_LABEL, state.preset_browser_open)
-        .on_hover_text("Browse the preset library (Ctrl+Shift+P searches; Escape closes)")
-        .clicked()
-    {
-        if state.preset_browser_open {
-            state.close_preset_browser();
-        } else {
-            state.open_preset_browser(false);
-        }
-    }
-}
-
-/// The current preset's name on an inset-s pill, [`NAME_WIDTH`] wide; a click opens the
-/// browser. Accessible as a button named [`head_name`].
-fn name_well(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    // The name takes what the buttons and the LED leave.
+    let right = 24.0 + TAG_GAP + neu::LED_SIZE + TAG_GAP;
+    let name_width = (ui.available_width() - right).max(24.0);
     let name = state.preset_name();
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(NAME_WIDTH, neu::button::PILL_HEIGHT), Sense::click());
+    let (name_rect, response) =
+        ui.allocate_exact_size(vec2(name_width, CURRENT_ROW), Sense::click());
     let accessible = head_name(name);
     response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &accessible));
-    if ui.is_rect_visible(rect) {
-        paint_soft_rect(ui.painter(), rect, theme.radius_pill, Depth::InsetS, theme);
+    if ui.is_rect_visible(name_rect) {
         let colour = if response.hovered() {
             theme.accent
         } else {
-            theme.text_primary
+            theme.text
         };
-        paint_truncated(
-            ui,
-            rect.shrink2(vec2(ENTRY_PAD_X, 0.0)),
-            name,
-            FontId::proportional(TextKind::Value.size()),
+        let shown = neu::ellipsise(ui.painter(), name, TextKind::Value, name_rect.width());
+        let mut format = TextKind::Value.format(colour);
+        format.font_id = egui::FontId::proportional(12.0);
+        let galley = ui
+            .painter()
+            .layout_job(egui::epaint::text::LayoutJob::single_section(shown, format));
+        ui.painter().galley(
+            pos2(
+                name_rect.min.x,
+                name_rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
             colour,
-            Align::Center,
         );
     }
     let category = presets::get(state.preset_index()).map_or("", |p| p.category.label());
@@ -195,126 +195,109 @@ fn name_well(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     {
         state.open_preset_browser(false);
     }
+    neu::led_named(
+        ui,
+        theme,
+        state.preset_modified(),
+        LedKind::Accent,
+        MODIFIED_LABEL,
+    )
+    .on_hover_text("Lit once a knob moved after the preset was applied");
+    let next = neu::header_button(ui, theme, Icon::ChevronRight);
+    next.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), NEXT_LABEL));
+    if next
+        .on_hover_text("Next preset in the category (Ctrl+PageDown)")
+        .clicked()
+    {
+        state.step_preset(1);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
-// The browser.
+// The section body.
 
-/// The browser body: category row, search row, the list. Escape closes it.
-pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+/// The section body: category chips, the match count, the list; `height` is what the list
+/// may take (it scrolls). Escape closes it.
+pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32) {
     // Escape closes, also from inside the search field (egui drops the field's focus on
     // Escape and the keyboard handler skips Escape while a field has the keyboard).
     if ui.input(|i| i.key_pressed(Key::Escape)) {
         state.close_preset_browser();
         return;
     }
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = GROUP_GAP;
-        category_row(ui, state, theme);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = controls::HEAD_GAP;
-            search_field(ui, state, theme);
-            let matching = state.preset_matches().len();
-            neu::label(ui, theme, &count_text(matching, presets::count()))
-                .on_hover_text("Matching presets of the category");
-            controls::right_aligned(ui, "preset_browser_close", |ui| {
-                if neu::button(ui, theme, CLOSE_LABEL)
-                    .on_hover_text("Close the browser (Escape)")
-                    .clicked()
-                {
-                    state.close_preset_browser();
-                }
-            });
-        });
-        list(ui, state, theme);
+    let top = ui.cursor().min.y;
+    category_chips(ui, state, theme);
+    let matching = state.preset_matches().len();
+    ui.horizontal(|ui| {
+        ui.add_space(CHIP_PAD);
+        neu::text_widget(
+            ui,
+            &count_text(matching, presets::count()),
+            TextKind::Small,
+            theme.text_3,
+        )
+        .on_hover_text("Matching presets of the category");
     });
+    ui.add_space(4.0);
+    let used = ui.cursor().min.y - top;
+    list(ui, state, theme, (height - used).max(ROW_HEIGHT));
 }
 
-/// The category `segmented`: `All` + the eight categories.
-fn category_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+/// The category chips, wrapping: small toggle buttons named by [`CATEGORY_LABELS`].
+fn category_chips(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let before = category_item(state.preset_category);
     let mut selected = before;
-    neu::segmented(ui, theme, &mut selected, &CATEGORY_LABELS)
-        .on_hover_text("Category: filters the list and the < / > buttons");
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), 0.0),
+        egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+        |ui| {
+            ui.add_space(CHIP_PAD);
+            ui.spacing_mut().item_spacing = vec2(CHIP_GAP, CHIP_GAP);
+            for (i, label) in CATEGORY_LABELS.iter().enumerate() {
+                let full = category_at(i).map_or("Every category", Category::label);
+                if neu::button_kind(
+                    ui,
+                    theme,
+                    label,
+                    ButtonKind::Toggle(i == selected),
+                    ButtonSize::Small,
+                )
+                .on_hover_text(format!("{full}: filters the list and the < / > buttons"))
+                .clicked()
+                {
+                    selected = i;
+                }
+            }
+        },
+    );
+    ui.add_space(CHIP_PAD);
     if selected != before {
         state.preset_category = category_at(selected);
     }
 }
 
-/// The search field: an `egui::TextEdit` on the kit's inset-s editor pill, styled like the
-/// inline value editors. Takes the keyboard when [`AppState::preset_search_focus`] asks.
-fn search_field(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let (rect, _) =
-        ui.allocate_exact_size(vec2(SEARCH_WIDTH, controls::ROW_HEIGHT), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        paint_soft_rect(ui.painter(), rect, theme.radius_pill, Depth::InsetS, theme);
-    }
-    let id = search_id();
-    if state.preset_search_focus {
-        ui.memory_mut(|m| m.request_focus(id));
-        state.preset_search_focus = false;
-    }
-    let inner = rect.shrink2(vec2(ENTRY_PAD_X, neu::value_edit::EDIT_PAD_Y));
-    let font = FontId::proportional(TextKind::Value.size());
-    let response = ui
-        .scope_builder(
-            UiBuilder::new()
-                .max_rect(inner)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                let visuals = &mut ui.style_mut().visuals;
-                visuals.text_cursor.stroke.color = theme.accent;
-                visuals.selection.bg_fill = theme.glow;
-                visuals.selection.stroke.color = theme.text_primary;
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.preset_query)
-                        .id(id)
-                        .frame(Frame::NONE)
-                        .margin(Margin::ZERO)
-                        .font(font)
-                        .text_color(theme.text_primary)
-                        .hint_text(RichText::new(SEARCH_HINT).color(theme.text_secondary))
-                        .desired_width(inner.width())
-                        .min_size(inner.size())
-                        .char_limit(SEARCH_CHAR_LIMIT),
-                )
-            },
-        )
-        .inner;
-    response.on_hover_text("Search by name or tag (Ctrl+Shift+P)");
-}
-
-/// The scrollable list of matching presets, in as many columns as fit.
-fn list(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+/// The scrolling list of matching presets, `height` tall.
+fn list(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32) {
     let matches = state.preset_matches();
     let current = state.preset_index();
     let show_category = state.preset_category.is_none();
     let mut clicked = None;
-    ScrollArea::vertical()
-        .id_salt("preset_browser_list")
-        .auto_shrink([false, false])
+    neu::scroll_vertical("preset_browser_list")
+        .max_height(height)
         .show(ui, |ui| {
-            // Measured inside the scroll area: its scrollbar takes a few points.
-            let (columns, column_width) = columns_for(ui.available_width());
-            ui.spacing_mut().item_spacing = vec2(COLUMN_GAP, ROW_GAP);
+            ui.set_min_height(height);
+            ui.spacing_mut().item_spacing.y = 0.0;
             if matches.is_empty() {
-                neu::label(ui, theme, NO_MATCH);
-            }
-            for row in matches.chunks(columns) {
                 ui.horizontal(|ui| {
-                    for &index in row {
-                        if entry(
-                            ui,
-                            theme,
-                            index,
-                            index == current,
-                            show_category,
-                            column_width,
-                        ) {
-                            clicked = Some(index);
-                        }
-                    }
+                    ui.add_space(ROW_PAD_LEFT);
+                    neu::text_widget(ui, NO_MATCH, TextKind::Body, theme.text_2);
                 });
+            }
+            let width = ui.available_width();
+            for &index in &matches {
+                if entry(ui, theme, index, index == current, show_category, width) {
+                    clicked = Some(index);
+                }
             }
         });
     if let Some(index) = clicked {
@@ -322,19 +305,9 @@ fn list(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     }
 }
 
-/// How many list columns fit in `width` (at least one, each at least [`COLUMN_MIN_WIDTH`]
-/// wide, [`COLUMN_GAP`] apart) and how wide each one is.
-#[must_use]
-pub fn columns_for(width: f32) -> (usize, f32) {
-    let columns =
-        (((width + COLUMN_GAP) / (COLUMN_MIN_WIDTH + COLUMN_GAP)).floor() as usize).max(1);
-    let column_width = (width - COLUMN_GAP * (columns - 1) as f32) / columns as f32;
-    (columns, column_width)
-}
-
-/// One list entry: the name (left, cut with an ellipsis) and its tags (right, 11 pt
-/// secondary); the selected one on an inset-s well with an accent dot. Accessible as a
-/// button named after the preset (`toggled` = selected). Returns `true` when clicked.
+/// One list row: the name (left, ellipsised) and its tags (right); the selected one on the
+/// accent wash with the 2 px accent bar. Accessible as a button named after the preset
+/// (`toggled` = selected). Returns `true` when clicked.
 fn entry(
     ui: &mut Ui,
     theme: &Theme,
@@ -351,48 +324,62 @@ fn entry(
         .widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), selected, preset.name));
     let tags = entry_tags(index, show_category);
     if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
         if selected {
-            paint_soft_rect(ui.painter(), rect, ROW_RADIUS, Depth::InsetS, theme);
-            ui.painter().circle_filled(
-                pos2(rect.min.x + ENTRY_PAD_X * 0.5, rect.center().y),
-                SELECTED_DOT * 0.5,
+            painter.rect_filled(rect, 0.0, theme.accent_wash);
+            painter.rect_filled(
+                Rect::from_min_size(rect.min, vec2(2.0, rect.height())),
+                0.0,
                 theme.accent,
             );
+        } else if response.hovered() {
+            painter.rect_filled(rect, 0.0, theme.panel_3);
         }
-        let tag_text = tags.join(" · ");
-        let tag_font = FontId::proportional(TAG_SIZE);
-        let tag_width = if tag_text.is_empty() {
-            0.0
-        } else {
-            let galley = ui.painter().layout_no_wrap(
-                tag_text.clone(),
-                tag_font.clone(),
-                theme.text_secondary,
-            );
+        // Tags, right-aligned.
+        let mut right = rect.max.x - ROW_PAD_RIGHT;
+        for tag in tags.iter().rev() {
+            let kind = match *tag {
+                VINYL_TAG => TagKind::Vinyl,
+                DRONE_TAG => TagKind::Drone,
+                _ => TagKind::Plain,
+            };
+            let galley = neu::text::layout(painter, tag, TextKind::Small, theme.text_2);
+            let w = galley.size().x + 10.0;
             let tag_rect = Rect::from_min_max(
-                pos2(rect.max.x - ENTRY_PAD_X - galley.size().x, rect.min.y),
-                pos2(rect.max.x - ENTRY_PAD_X, rect.max.y),
+                pos2(right - w, rect.center().y - neu::TAG_HEIGHT * 0.5),
+                pos2(right, rect.center().y + neu::TAG_HEIGHT * 0.5),
             );
-            let pos = Align2::RIGHT_CENTER.anchor_size(tag_rect.right_center(), galley.size());
-            ui.painter().galley(pos.min, galley, theme.text_secondary);
-            tag_rect.width() + ENTRY_PAD_X
-        };
+            let colour = kind.colour(theme);
+            let border = if kind == TagKind::Plain {
+                theme.border_2
+            } else {
+                neu::with_alpha(colour, 0.5)
+            };
+            neu::paint_control(painter, tag_rect, 3.0, egui::Color32::TRANSPARENT, border);
+            neu::text::paint_galley(
+                painter,
+                tag_rect.center(),
+                Align2::CENTER_CENTER,
+                galley,
+                TextKind::Small,
+                colour,
+            );
+            right = tag_rect.min.x - TAG_GAP;
+        }
         let colour = if selected || response.hovered() {
-            theme.text_primary
+            theme.text
         } else {
-            theme.text_secondary
+            theme.text_2
         };
-        let name_rect = Rect::from_min_max(
-            pos2(rect.min.x + ENTRY_PAD_X, rect.min.y),
-            pos2(rect.max.x - ENTRY_PAD_X - tag_width, rect.max.y),
-        );
-        paint_truncated(
-            ui,
-            name_rect,
-            preset.name,
-            FontId::proportional(TextKind::Value.size()),
+        let name_width = (right - rect.min.x - ROW_PAD_LEFT).max(0.0);
+        let shown = neu::ellipsise(painter, preset.name, TextKind::Body, name_width);
+        neu::text::paint_text(
+            painter,
+            pos2(rect.min.x + ROW_PAD_LEFT, rect.center().y),
+            Align2::LEFT_CENTER,
+            &shown,
+            TextKind::Body,
             colour,
-            Align::Min,
         );
     }
     let tooltip = if tags.is_empty() {
@@ -408,30 +395,6 @@ fn entry(
     response
         .on_hover_text(format!("{tooltip}\nTags: {}", preset.tags.join(", ")))
         .clicked()
-}
-
-/// Paints `text` in `font` and `colour` inside `rect` (vertically centred, `align`ed
-/// horizontally), cut to the rect's width with an ellipsis.
-fn paint_truncated(ui: &Ui, rect: Rect, text: &str, font: FontId, colour: Color32, align: Align) {
-    let mut job = LayoutJob::single_section(
-        text.to_owned(),
-        TextFormat {
-            font_id: font,
-            color: colour,
-            ..TextFormat::default()
-        },
-    );
-    job.wrap.max_width = rect.width().max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let galley = ui.painter().layout_job(job);
-    let anchor = match align {
-        Align::Min => Align2::LEFT_CENTER.anchor_size(rect.left_center(), galley.size()),
-        Align::Center => Align2::CENTER_CENTER.anchor_size(rect.center(), galley.size()),
-        Align::Max => Align2::RIGHT_CENTER.anchor_size(rect.right_center(), galley.size()),
-    };
-    ui.painter().galley(anchor.min, galley, colour);
 }
 
 #[cfg(test)]
@@ -455,19 +418,6 @@ mod tests {
         assert_eq!(category_at(CATEGORY_LABELS.len()), None);
         assert_eq!(head_name("Lofi Piano"), "Preset: Lofi Piano");
         assert_eq!(count_text(12, 99), "12 of 99");
-    }
-
-    #[test]
-    fn columns_fill_the_width_without_overflowing() {
-        assert_eq!(columns_for(100.0), (1, 100.0));
-        assert_eq!(columns_for(COLUMN_MIN_WIDTH), (1, COLUMN_MIN_WIDTH));
-        let (columns, width) = columns_for(2.0 * COLUMN_MIN_WIDTH + COLUMN_GAP);
-        assert_eq!(columns, 2);
-        assert_eq!(width, COLUMN_MIN_WIDTH);
-        let (columns, width) = columns_for(700.0);
-        assert_eq!(columns, 3);
-        assert!(width >= COLUMN_MIN_WIDTH);
-        assert!((width * 3.0 + COLUMN_GAP * 2.0 - 700.0).abs() < 1e-3);
     }
 
     #[test]

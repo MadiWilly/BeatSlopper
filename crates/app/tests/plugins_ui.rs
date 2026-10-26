@@ -6,7 +6,7 @@
 use app::plugins::{PluginEdit, PluginHost, PluginKind, PluginShared};
 use app::ui::plugins::{eq_graph, eq_window, reverb_window};
 use app::{AppState, BeatSlopperApp};
-use egui::{Vec2, pos2, vec2};
+use egui::{Key, Vec2, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use engine::fx::{eq, reverb};
@@ -312,7 +312,7 @@ fn app_state_setters_sync_engine_undo_and_both_reverb_views() {
 fn plugin_pills_toggle_windows_and_the_host_round_trips() {
     let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
     let mut harness = Harness::builder()
-        .with_size(Vec2::new(1280.0, 1080.0))
+        .with_size(Vec2::new(1920.0, 1080.0))
         .build_ui_state(
             |ui, app: &mut BeatSlopperApp| {
                 app.tick(ui.ctx());
@@ -321,6 +321,9 @@ fn plugin_pills_toggle_windows_and_the_host_round_trips() {
             app,
         );
     harness.run_steps(3);
+    // The plugin pills live in the SYNTH & FX window's toolbar (M12).
+    harness.key_press(Key::F7);
+    harness.run_steps(2);
     assert_eq!(harness.state().state().plugin_open, [false, false]);
     harness.get_by_label("EQ").click();
     harness.step();
@@ -625,7 +628,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
 fn the_racks_more_pill_opens_the_reverb_window_and_the_window_hint_renders() {
     let (app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
     let mut harness = Harness::builder()
-        .with_size(Vec2::new(1280.0, 1080.0))
+        .with_size(Vec2::new(1920.0, 1080.0))
         .build_ui_state(
             |ui, app: &mut BeatSlopperApp| {
                 app.tick(ui.ctx());
@@ -634,6 +637,9 @@ fn the_racks_more_pill_opens_the_reverb_window_and_the_window_hint_renders() {
             app,
         );
     harness.run_steps(3);
+    // The FX rack lives in the SYNTH & FX view (M12).
+    harness.key_press(Key::F7);
+    harness.run_steps(2);
     assert!(!harness.state().state().is_plugin_open(PluginKind::Reverb));
     harness
         .get_by_label(app::ui::fx_rack::REVERB_MORE_LABEL)

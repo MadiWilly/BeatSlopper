@@ -2136,3 +2136,225 @@ light by default.
   76 (the roll tests, since the roll grew a 16 ruler and a 44 velocity lane and its key
   column is 40; the whole-sequencer / mixer / visualizer fit tests, since cells are 24 and
   faders 24 wide). `tests/plugins_ui.rs` and `main.rs` stay green.
+
+## M12 as built (app)
+
+The app half of Phase 5: `crates/app` is re-laid out as the Deck shell of
+`design/round3/WINNER.md` section 5 on top of the restyled `neu` kit. Every pre-M12 behaviour
+(shortcuts, undo, dirty flag, track ops, note editing, drag-paint, accents, pattern ops,
+preset apply, plugin pop-outs, the visualizer overlay) is reachable from the new shell; the
+MIXER, SYNTH & FX, SONG and VISUALIZER panels are rehosted inside Deck windows until their
+own milestones (M13 / M14).
+
+### Window sizing (`window.rs`, `main.rs`)
+
+`MIN_INNER_SIZE` 840 x 600 (the viewport's minimum). `default_inner_size(work_area)` =
+clamp(0.7 x work area, `DEFAULT_MIN` 1280 x 800 .. `DEFAULT_MAX` 1920 x 1200), then no larger
+than the work area minus `WORK_AREA_MARGIN` (40, 60), never below the minimum; `None`
+(unknown monitor) gives 1280 x 800. `fits_work_area(size, work_area)` and
+`initial_inner_size(persisted, work_area)` implement WINNER's "a persisted geometry is kept
+only while it fits": `BeatSlopperApp::check_window_size` runs once on the first frame that
+reports a monitor, takes the actual inner size (what eframe restored, or what the OS gave
+the 1280 x 800 request) as the persisted size and sends one `InnerSize` when it differs from
+the target by more than `RESIZE_TOLERANCE` (2 %). egui reports the monitor size, not the work
+area, so the margin stands in for the taskbar and the title bar. `is_narrow(width)`: at or
+under `NARROW_WIDTH` 1000 the shell uses the narrow layout. Unit tests cover the 150 % case
+(2560 x 1440 -> 1792 x 1008), 1080p at 100 / 125 / 150 %, the pre-M12 1280 x 1140 geometry
+(does not fit 864 - 60: re-run), a sub-minimum geometry and an unknown monitor.
+
+### State (`app.rs`)
+
+`RightTab`, `RightPanel` and `LaneView` are gone. `View { Roll, Mixer, Synth, Song, Visual }`
+(`ALL`, `title()`, `tab_label()` in caps, `key()` F5 / F6 / F7 / F8 / none, `button_name()`
+"Piano roll view" .., `icon()`, `collapses_rack()`) is the main window's content.
+`ShellLayout { view, browser_open, keyboard_open, mixer_drawer_open, rack_open, rack_width,
+project_open, recent_open, roll_ghosts }` (serde, `#[serde(default)]`, `sanitised()` clamps
+the width to `MIN_RACK_WIDTH` 400 .. `MAX_RACK_WIDTH` 1200 and ties `mixer_drawer_open` to the
+view) is persisted as one value under `SHELL_LAYOUT_KEY` = `"shell_layout"`
+(`AppState::layout()` / `apply_layout()`); the old `right_panel` / `lane_view` keys are no
+longer read or written. The same fields live on `AppState`, plus `last_main_view` (what the
+mixer bar's chevron returns to), `narrow_applied` (the narrow defaults were applied once) and
+`workspace_rect` (replaces `top_row_rect`: the rack + main area the F11 overlay covers).
+`set_view(view)`: SYNTH & FX, SONG and VISUALIZER collapse the rack to its header, PIANO ROLL
+re-expands it, MIXER keeps it; leaving the roll drops the roll selection; `mixer_drawer_open`
+= the MIXER view. `toggle_mixer_drawer()` (F6 and the mixer bar) returns to `last_main_view`
+when the mixer is showing. `toggle_browser()`, `toggle_keyboard()`, `toggle_rack()`,
+`set_rack_width()`, `apply_narrow_defaults(narrow)` (the first narrow frame collapses the
+browser and the keyboard). `set_play_mode` shows SONG / PIANO ROLL instead of switching a
+tab; `apply_project` (load, new) does the same. `open_preset_browser` opens the BROWSER column
+too; `preset_browser_open` now means "the PRESETS section is expanded" (Escape collapses it as
+before). The rack is always on screen, so a selected rack cell takes keyboard notes and
+Delete / Up / Down / PageUp / PageDown in every view (`note_on_from`, `handle_keyboard`,
+`nudge_selected_note` lost their grid-only checks). `run_shortcut`: Ctrl+T / Ctrl+Shift+D
+expand the rack, Ctrl+L shows the MIXER view, and the new `Shortcut::ViewRoll` F5, `ViewMixer`
+F6, `ViewSynth` F7, `ViewSong` F8, `ToggleBrowser` F9, `VisualFull` F11 (`shortcuts.rs`, 26
+shortcuts).
+
+### Shell (`ui/shell.rs`, `ui/mod.rs`)
+
+`ui::show` draws the frame on `bg` with 4 pt padding and 4 pt gaps, top to bottom: the
+TOOLBAR (40), the BODY (flex), the MIXER BAR (28), the KEYBOARD strip (96 open / 28 collapsed)
+and the HINT BAR (28). BODY = the BROWSER column (208) or its rail (28) | the WORKSPACE: a
+`tab_strip` across its top (PIANO ROLL F5 | MIXER F6 | SYNTH & FX F7 | SONG F8 | VISUALIZER;
+padding 8 at narrow) over either `CHANNEL RACK (rack_width) | handle | MAIN` (rack open) or
+the rack's 28 pt header over MAIN (collapsed). The handle is a 4 pt bar in an 8 pt drag hit
+("Rack handle", `Role::Splitter`); it clamps the rack to 400 .. (workspace - 240) and is fixed
+at 400 at narrow. `state.workspace_rect` is set every frame. The views: PIANO ROLL
+(`ui/roll_view.rs`); MIXER = `window_frame_sized("Mixer", "16 inserts - master - insert n
+selected")` with a toolbar holding the plugin pills and the M11 `mixer::show` panel in a
+`scroll_both` at its 476 width (M13 brings the drawer); SYNTH & FX = a window with the
+toolbar strip (`synth_panel::preset_strip`: chip, track name, the preset name, the MODIFIED
+LED, the plugin pills) over `synth_panel::show` beside `fx_rack::show` (476) in a
+`scroll_both`, stacked under `SYNTH_STACK_BELOW` 980 of main width, the synth panel never
+narrower than `SYNTH_PANEL_MIN_WIDTH` 700 (the view scrolls sideways; the Deck groups are
+M13); SONG = `song::show` in a window with "n entries - m bars"; VISUALIZER = `visualizer::show`
+in a window named after the preset (M14 puts it beside SONG). The mixer bar ("Mixer bar", a
+button; "Open mixer" / "Close mixer" chevron; "Mixer bar meter"): "MIXER" - "16 inserts -
+master" - five insert chips + "... 16" - the master h-meter - F6 - chevron; a click opens the
+MIXER view. The hint bar: `neu::hint_bar` with `HINTS` (Space - R - Ctrl+Z - Ctrl+T - Ctrl+L
+- F5..F9 - Esc) and the audio line ("Audio info": "48 kHz - 2 ch" / "no audio device" /
+"48 kHz - offline") at the right. Narrow: the keyboard, when opened, floats over the bottom of
+the workspace in a Foreground `Area` with the floating shadow. `visualizer::overlay` covers
+the workspace while `visual_full` (F11, the FULL toggle; Escape / CLOSE / F11 close it).
+
+### Toolbar (`ui/transport_bar.rs`, `ui/tempo.rs`)
+
+`neu::app_toolbar` in WINNER's order; accessible names: "Menu" (the project menu: New Ctrl+N,
+Open Ctrl+O, "Recent projects" Ctrl+Shift+O (opens the column's RECENT section), Save,
+Save as, Export WAV / Export song Ctrl+E, "Test tone" with an ON / OFF keycap), the project
+name (13 / 600, tooltip the path) + "Unsaved dot", "Undo" / "Redo" (ghost icons, disabled
+when nothing to step to), "Play" (primary; a stop glyph while playing, the name stays
+"Play", selected = playing), "Stop", "Record" (rec toggle), the `Pattern | Song` segmented
+("Pat" at narrow), "Decrease" - "BPM value" (the typed readout, min width 34, display type)
+- "Increase" - "Tap", "Swing" label + the mini knob (a slider named "Swing") + its value, the
+position label ("A - bar 1/2"), the "Master" h-slider (72, `MasterGain` in dB) + "Master
+meter" (72 h-meter), the "Hint" panel (flex: the status line, else `DEFAULT_HINT`), "MIDI"
+(a button with the LED, selected while a port is open; its menu lists "None" then the ports;
+the port name follows), the view buttons "Piano roll view" .. "Visualizer view" (rail
+buttons, ON for the showing view) and "Browser" (F9), the "Dark theme" switch. Narrow drops
+the project name, undo / redo, TAP, swing, the meter, the hint text and the port name.
+
+### BROWSER column (`ui/browser.rs`, `ui/preset_browser.rs`, `ui/project_bar.rs`, `ui/recent_panel.rs`)
+
+`browser::show`: a window "BROWSER" (chevron "Collapse browser", F9) with the search toolbar
+(`neu::text_field` named by its placeholder "search name or tag"; typing or focusing opens
+the PRESETS section; a "Close" header button beside it while the section is open) over a
+`scroll_vertical` of three sections, each a 28 pt `section_head` (a button whose selected
+state is "open", named "Presets" / "Project" / "Recent", with the count at the right).
+PRESETS: the head, then the always-visible current row (`preset_browser::current_row`:
+"Previous preset", the name as a button "Preset: <name>" that opens the section, the
+"Modified" LED, "Next preset"), then while open the category chips (small toggles named
+`CATEGORY_LABELS`: All, Lo Keys, Lo Gtr, Lo Pads, Leads, EDM Bass, Plucks, EDM Pads, Risers),
+the "n of 99" count and the row list (28 pt rows, buttons named by the preset, selected =
+current, `vinyl` / `drone` / category tags right-aligned; the list takes the column's height
+less the other sections' room and scrolls inside). PROJECT (`project_bar::show`): the file
+row (icon, name, the "Unsaved changes" dot), New / Open / Save / Save as xs buttons, "Export"
++ the `x1 x2 x4 x8` small segmented (song mode: the "Whole song" line), an info line, the
+primary "Export WAV" / "Export song", the "Discard unsaved changes?" confirm (New / Open
+only) and the status line. RECENT (`recent_panel::show`): list rows named "Recent 1: <file>"
+(selected = the open project, the file's age at the right), the OpenRecent confirm, "Clear
+list". `browser::rail`: "Expand browser", "Presets section", "Project section", "Recent
+section" (each opens the column on that section) and BROWSER vertical.
+
+### CHANNEL RACK (`ui/sequencer.rs`, `ui/tracks.rs`)
+
+`sequencer::show` fills its rect with `window_frame_sized("Channel rack", "Pattern A - 2 bars
+- <track> - <preset>")` (header: F5 keycap, "Collapse rack" / "Expand rack", "Close rack" =
+collapse) and, while `rack_open`, the toolbar and the body. Toolbar: the pattern tiles
+("Pattern A" .. "Pattern H", selected = current, `text` when the pattern has content) - the
+queued letter ("Queued B") - "Len" + the small segmented `1 bar | 2 bars | 4 bars`
+(`set_length_item` doubles / halves step by step, so the loop is copied along) - "Bar" + the
+small segmented of bars (patterns longer than a bar) - "Follow" - "Copy" - "Paste" (disabled
+without a clipboard) - "Clear pattern". A rack narrower than `COMPACT_BELOW` 600 (the narrow
+layout's 400) shows the compact toolbar: dropdowns "Pattern" ("Pattern A") and "Length"
+("2 bars"), the bar segmented, FOLLOW and a "More" dots menu (Copy - Paste - Clear pattern).
+Body: a `scroll_vertical` holding the fixed left columns (`left_width(compact)`: 218 / 150)
+beside the steps in their own always-visible horizontal `ScrollArea` (426 + 8 wide; the
+compact viewport is `STEPS_VIEWPORT_COMPACT` 210, WINNER narrow), both drawn from one line
+plan: the ruler (20; beat numbers counted through the pattern as labels "5" .. "8" on bar 2,
+the playhead triangle), the DRUMS head (section type, legends VOL TUNE / INS), five drum
+rows, the TRACKS head ("Tracks n / 8", VOL PAN), one row per active track, the add row.
+Rows: 28 on a 32 pitch; LED ("Kick LED" / "Synth LED", a check box lit while audible; click
+mutes, right-click solos) - S ("Solo row Kick" / "Solo track Synth") - VOL mini knob ("Kick
+volume" = the pattern's drum volume / "Level track Synth" = the strip level, sliders with
+the value) - TUNE / PAN ("Kick tune" / "Pan track Synth") - INS box ("Row insert Kick" /
+"Insert box Synth", opens `mixer::route_picker`) - NAME button (`name_button_sized`: drums
+"Kick" .. "O.Hat" with a text-3 bar, double-click mutes, Shift + double-click solos; tracks
+"Track row 1: Synth" with the track colour, selected = the edit track, click selects,
+double-click renames inline, Shift + double-click solos) - the sixteen `step_cell_at`s ("Kick
+step 1" .. ; track cells "Synth step 1" .. in the track colour with the note name, selected =
+the note-entry step; a click on another track's cell selects that track first). The selected
+row sits on the accent wash with the 2 px bar. Right-click on a NAME button opens the row
+menu (`egui::Popup::context_menu` + `neu::menu`): drums Mute / Unmute - Solo / Unsolo - Clear
+row; tracks Rename - Duplicate - Delete - Move up - Move down - Next colour - "Link to free
+insert" (Ctrl+L) - Clear notes (`tracks::*_LABEL` / `*_NAME`; disabled entries where the
+operation cannot run). Delete asks in the add row ("Delete <name>?" "Yes" / "No",
+`tracks::pending_delete`); otherwise the add row is the "Add track" button, the text and the
+Ctrl+T keycap. `lane_cell(state, slot, step)` derives another track's lane from its notes.
+`steps_scroll(ctx)` reports the steps scroll area's content and viewport widths for tests.
+
+### PIANO ROLL (`ui/roll_view.rs`)
+
+`roll_view::show`: `window_frame_sized("Piano roll", "<track> - <preset>")` (header: "Pop out"
+toggle, F5), the toolbar ("Track" dropdown with the colour bar, picks the edit track; "Zoom
+out" / "Zoom in" step `roll_extra_width` by `ZOOM_STEP` 8 per step; "Ghosts" and "Black keys"
+small toggles; the hint "Ctrl+drag selects - wheel scrolls pitch" where it fits) and the
+body: the roll (`piano_roll_coloured`, ghosts while `roll_ghosts`) in a `scroll_horizontal`
+beside the CHORDS column ("Chords" + one small toggle per chord). `roll_model(state, size)`:
+columns fitted to the width (12 .. 192, 48 at the fitted width), rows fitted under the 16
+ruler and above the 44 velocity lane (`ROLL_ROW_HEIGHT` 13, at least 12), `low_pitch` at the
+bottom; feeding the model's size back reproduces it. `roll_ghosts`, `roll_notes`,
+`apply_roll_output`, the pop-out window (`ROLL_WINDOW_TITLE`, "Dock") moved here from
+`sequencer.rs`; the roll's row / width drag handles and `roll_extra_rows` are retired (the
+roll fills its window; the zoom buttons replace the width handle). Draw | Select and the snap
+dropdown wait for M13 (see DECISIONS).
+
+### KEYBOARD strip (`ui/keyboard.rs`)
+
+`window_frame_sized("Keyboard", KEY_MAP_SUB [+ "- oct 4 - vel 80 %" collapsed])`; header
+controls (right to left): "Close keyboard", "Collapse keyboard" / "Expand keyboard" / "Hide
+keyboard" (the in-flow bar while the keys float at narrow), "Audio device" (the device line),
+the "Velocity" h-slider (24 h) with its value and "Vel", a separator, "Octave up", the
+"Keyboard octave" readout (a button whose value is the octave; "Octave" is a chord), "Octave
+down", "Oct". Body (open): the 14 white keys ("Piano keys", 784 wide) centred.
+
+### Rehosted panels
+
+`synth_panel::show` lost its head strip (the preset strip moved to the SYNTH & FX toolbar:
+`TOOLBAR_PRESET_NAME` "Toolbar preset" with the preset as its value, `TOOLBAR_MODIFIED_LABEL`
+"Preset modified"; `MODIFIED_LABEL` is re-exported from `preset_browser`). `fx_rack::show` /
+`mixer::show` heads are plain titles (`controls::plugins_head`); the plugin pills are
+`controls::plugin_pills` ("Plugins" label, "EQ" / "REVERB" small toggles) in the SYNTH & FX
+and MIXER window toolbars. `mixer::MASTER_WIDTH` grew 52 -> 60 so the Deck 56 pt knob block
+fits the master column; `INSERTS_DOCK_WIDTH` follows. `song::show` and `visualizer::show`
+lost the `Proj | Chain | Vis | Tracks` head (plain titles); `visualizer::strip` is gone.
+`controls::panel_head` / `right_panel_head` / `RIGHT_TABS` / `RIGHT_PANEL_TABS` and
+`ui::main_area` / `RIGHT_COLUMN_WIDTH` / `PAGE_*` are gone.
+
+### Tests
+
+- `crates/app`: 209 unit tests (new: `views_docks_and_the_layout_round_trip`, the window
+  sizing rule, the rack row budget, `lane_cell`, the roll model's size round trip; re-pointed:
+  `play_mode_switches_the_engine_the_tab_and_the_position_text`,
+  `lane_view_and_roll_playhead`, `nudge_selected_note`, the mixer dock budget) and 120
+  kittests: `tests/shell_layout.rs` 11 (new: the toolbar fits its bar at 840 / 1280 / 1920,
+  nothing lies outside the window at the three sizes (scrolling lists excluded), the rack's
+  sixteen steps are visible at 1280+ and scroll in a 210 viewport at 840, the F-keys / tabs /
+  toolbar buttons switch the views, the browser collapses to the rail and back (F9, the
+  chevron, the rail buttons), the keyboard strip collapses and expands, the mixer bar opens
+  the mixer view, the hint bar shows the shortcuts, the narrow 853 x 600 layout keeps every
+  shell control reachable in every view, the rack handle trades width and persists, the F11
+  overlay covers the workspace), `tests/ui_renders.rs` 72 (every M0-M11 behaviour re-pointed
+  at the shell's names: pattern tiles, the length segmented, the rack's track cells "Synth
+  step n", the row menu's CLEAR ROW, the project menu's test tone, the RECENT section, the
+  roll view's zoom / ghosts / black keys / pop-out, the SYNTH & FX and MIXER views at
+  1920 x 1080 where the rehosted panels fit, the visualizer view and overlay, the persisted
+  layout), `tests/tracks_panel.rs` 9 (the rack's track rows: list, select, add / duplicate /
+  delete with the confirm, rename via the menu and double-click, LED / S, move / colour,
+  Ctrl+T expands the rack, eight tracks scroll, the VOL knob), `tests/mixer_panel.rs` 10,
+  `tests/preset_browser.rs` 6 (the column alone and through the app), `tests/plugins_ui.rs`
+  12 (the pills in the SYNTH & FX toolbar at 1920). `neu` 146 and `engine` unchanged.
+- Known: `egui_kittest`'s `get_by_label` on two `Role::Label` nodes with the same text can
+  return one (its labelled-by filter), so the two unsaved markers carry different names;
+  entries of scrolling lists keep their unclipped rects, which the "outside the window"
+  check excludes by name.

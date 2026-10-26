@@ -27,7 +27,8 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
 }
 
 /// Sizes are logical points; `persist_window` restores the previous session's geometry, and
-/// the app corrects an undersized window on its first frame (see `app::window`).
+/// the app applies the work-area rule on its first frame (see `app::window`: a persisted
+/// size is kept only while it fits the monitor, otherwise 70 % of the work area).
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

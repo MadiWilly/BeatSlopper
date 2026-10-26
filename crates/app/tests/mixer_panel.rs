@@ -3,8 +3,8 @@
 //! grid, a slot knob edit reaches the engine, the ROUTE pill only offers the master and
 //! higher inserts, the head selects (Shift extends) and selected faders move together, the
 //! pencil renames inline and the name survives the project text, undo takes a slot change
-//! back, meters and the gain-reduction bar render, Ctrl+L links the edit track, the TRACKS
-//! and sequencer number boxes route too, and everything renders in both themes.
+//! back, meters and the gain-reduction bar render, Ctrl+L links the edit track, the rack
+//! rows' number boxes route too, and everything renders in both themes.
 
 use app::ui;
 use app::ui::mixer;
@@ -335,7 +335,7 @@ fn meters_render_and_a_compressor_adds_the_gain_reduction_bar() {
 
 #[test]
 fn ctrl_l_links_the_edit_track_to_a_free_insert_and_shows_the_mixer() {
-    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
+    let mut harness = app_harness_sized(egui::Vec2::new(1920.0, 1080.0));
     harness.run_steps(2);
     assert_eq!(harness.state().state().mixer.route(Channel::Synth), 6);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::L);
@@ -346,7 +346,7 @@ fn ctrl_l_links_the_edit_track_to_a_free_insert_and_shows_the_mixer() {
         7,
         "7 is the first free insert"
     );
-    assert_eq!(state.right_panel, app::app::RightPanel::Mixer);
+    assert_eq!(state.view, app::app::View::Mixer);
     assert_eq!(state.highlighted_insert(), 7);
     assert!(state.dirty);
     // The mixer is showing with the source strips in view.
@@ -359,11 +359,10 @@ fn ctrl_l_links_the_edit_track_to_a_free_insert_and_shows_the_mixer() {
 }
 
 #[test]
-fn the_tracks_row_and_sequencer_row_boxes_route_their_channels() {
-    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 1140.0));
-    harness.state_mut().state_mut().right_tab = app::app::RightTab::Tracks;
+fn the_rack_rows_boxes_route_their_channels() {
+    let mut harness = app_harness_sized(egui::Vec2::new(1280.0, 800.0));
     harness.run_steps(3);
-    // TRACKS row: the box opens the same picker.
+    // The track row's box opens the picker.
     harness
         .get_by_label(&ui::tracks::insert_box_name("Synth"))
         .click();
@@ -377,7 +376,7 @@ fn the_tracks_row_and_sequencer_row_boxes_route_their_channels() {
         "a box click does not change the selection"
     );
     assert!(!harness.ctx.text_edit_focused(), "no rename editor opened");
-    // The sequencer rows: the kick straight to the master, the bass row is the edit track.
+    // The drum rows: the kick straight to the master.
     harness
         .get_by_label(&ui::sequencer::row_box_name("Kick"))
         .click();
@@ -390,14 +389,20 @@ fn the_tracks_row_and_sequencer_row_boxes_route_their_channels() {
         "no mute toggled"
     );
     harness
-        .get_by_label(&ui::sequencer::row_box_name(ui::sequencer::BASS_NAME))
+        .get_by_label(&ui::tracks::insert_box_name("Synth"))
         .click();
     harness.run_steps(2);
     harness.get_by_label(&mixer::pick_name(12)).click();
     harness.run_steps(2);
     assert_eq!(harness.state().state().mixer.route(Channel::Synth), 12);
-    // The LINK button in the TRACKS footer does what Ctrl+L does.
-    harness.get_by_label(ui::tracks::LINK_NAME).click();
+    // The row menu's LINK entry does what Ctrl+L does.
+    harness
+        .get_by_label(&ui::tracks::row_name(0, "Synth"))
+        .click_secondary();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::MenuItem, ui::tracks::LINK_NAME)
+        .click();
     harness.run_steps(2);
     let state = harness.state().state();
     assert_eq!(
@@ -405,21 +410,21 @@ fn the_tracks_row_and_sequencer_row_boxes_route_their_channels() {
         1,
         "insert 1 was freed by the kick"
     );
-    assert_eq!(state.right_panel, app::app::RightPanel::Mixer);
+    assert_eq!(state.view, app::app::View::Mixer);
 }
 
-/// The whole app at the design size with the MIXER showing: the sequencer stays whole, the
-/// panel stays inside the FX rack's slot (both docks scroll inside it) and the inserts dock
-/// starts right of the source dock.
+/// The whole app with the MIXER view showing: the rack stays whole, the panel sits inside
+/// the main window (both docks scroll inside it) and the inserts dock starts right of the
+/// source dock.
 #[test]
-fn the_mixer_stays_inside_its_slot_at_the_design_size() {
+fn the_mixer_stays_inside_the_main_window() {
     let (mut app, _engine) = BeatSlopperApp::headless(ThemeMode::Dark, false);
-    app.state_mut().right_panel = app::app::RightPanel::Mixer;
+    app.state_mut().set_view(app::app::View::Mixer);
     for _ in 0..3 {
         app.state_mut().add_track();
     }
     let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(1280.0, 1140.0))
+        .with_size(egui::Vec2::new(1920.0, 1080.0))
         .build_ui_state(
             |ui, app: &mut BeatSlopperApp| {
                 app.tick(ui.ctx());
@@ -428,22 +433,21 @@ fn the_mixer_stays_inside_its_slot_at_the_design_size() {
             app,
         );
     harness.run_steps(3);
-    let bass = harness.get_by_label("Bass step 16").rect();
-    let octave = harness.get_by_label("Octave").rect();
-    let sequencer_bottom = bass.max.y + ui::sequencer::ROW_GAP + 10.0 + 20.0;
-    assert!(sequencer_bottom <= octave.min.y - 30.0);
-    let seq = harness.get_by_label("Sequencer").rect();
+    let last_step = harness.get_by_label("Track 4 step 16").rect();
+    let handle = harness.get_by_label(ui::shell::RACK_HANDLE_NAME).rect();
+    let mixer_bar = harness.get_by_label(ui::shell::MIXER_BAR_NAME).rect();
+    assert!(last_step.max.x <= handle.min.x && last_step.max.y <= mixer_bar.min.y);
     let kick = harness.get_by_label("Kick level").rect();
     let insert_one = harness.get_by_label("Insert 1 level").rect();
     let stereo = harness.get_by_label("Stereo level").rect();
-    let page_right = 1280.0 - 20.0;
-    assert!(stereo.max.x <= page_right + 0.5, "{stereo:?}");
+    assert!(kick.min.x >= handle.max.x, "{kick:?} right of {handle:?}");
+    assert!(stereo.max.x <= 1920.0 - 8.0 + 0.5, "{stereo:?}");
     assert!(insert_one.min.x >= kick.min.x + mixer::SOURCE_DOCK_WIDTH);
     assert!(
-        insert_one.max.y + 10.0 <= seq.min.y,
-        "{insert_one:?} vs {seq:?}"
+        insert_one.max.y <= mixer_bar.min.y,
+        "{insert_one:?} vs {mixer_bar:?}"
     );
-    assert!(stereo.max.y + 10.0 <= seq.min.y);
+    assert!(stereo.max.y <= mixer_bar.min.y);
     // The fader got a usable track under the head, pills, grid and route pill.
     assert!(insert_one.height() >= 60.0, "{insert_one:?}");
     // The panel's sources scroll: the fourth track's strip sits past the dock.

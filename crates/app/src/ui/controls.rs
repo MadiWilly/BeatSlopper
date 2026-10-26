@@ -12,7 +12,7 @@ use engine::ParamId;
 use neu::slider::SliderSpec;
 use neu::{DialSize, KnobSize, KnobSpec, Theme};
 
-use crate::app::{AppState, RightPanel, RightTab};
+use crate::app::AppState;
 
 /// Height of a group head row (`.ghead`, `.col > .lbl`): the segmented control's height.
 pub const ROW_HEIGHT: f32 = 30.0;
@@ -369,89 +369,42 @@ pub fn group_head<R>(
     .inner
 }
 
-/// Items of the right-hand column's tab selector, in [`RightTab`] order. The RECENT panel
-/// (QOL) is a sub-view of PROJECT, reached from its clock button and left by its BACK pill,
-/// so it has no item of its own and selects the `Proj` tab while shown. The labels are short
-/// (M10): the four full words (`Project | Chain | Visual | Tracks`, about 236 pt) overflow
-/// the column's 220 pt inner width; these fit with room to spare.
-pub const RIGHT_TABS: [&str; 4] = ["Proj", "Chain", "Vis", "Tracks"];
-
-/// The head row shared by the PROJECT, SONG CHAIN, VISUALIZER and TRACKS panels: the
-/// `Proj | Chain | Vis | Tracks` tab (`neu::segmented`), whose selected item doubles as the
-/// panel title. A click switches [`AppState::right_tab`].
-pub fn panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
-    // With three tabs the segmented (about 176 pt) and a title no longer fit side by side in
-    // the column's 220 pt inner width, and a second row would push the PROJECT panel's status
-    // line into the KEYS panel. The selected tab is set in the title style (12/500 caps,
-    // text-primary), so it *is* the panel's title; `title` names the panel for the tooltip.
-    ui.horizontal(|ui| {
-        ui.set_min_height(ROW_HEIGHT);
-        let before = match state.right_tab {
-            RightTab::Project | RightTab::Recent => 0,
-            RightTab::Chain => 1,
-            RightTab::Visual => 2,
-            RightTab::Tracks => 3,
-        };
-        let mut selected = before;
-        neu::segmented(ui, theme, &mut selected, &RIGHT_TABS).on_hover_text(format!(
-            "{title}. Proj: files and export. Chain: the song. Vis: the visualizer. \
-             Tracks: the instrument tracks."
-        ));
-        if selected != before {
-            state.right_tab = match selected {
-                0 => RightTab::Project,
-                1 => RightTab::Chain,
-                2 => RightTab::Visual,
-                _ => RightTab::Tracks,
-            };
-        }
-    });
-}
-
-/// Items of the top row's right-slot tab, in [`RightPanel`] order.
-pub const RIGHT_PANEL_TABS: [&str; 2] = ["FX", "Mixer"];
-
-/// The head row shared by the FX rack and the MIXER panel (M6): the title on the left, the
-/// PLUGINS pills (`EQ` / `Reverb`, lit while their pop-out window is open; plugins
-/// milestone) and the `FX | Mixer` tab (`neu::segmented`) flush right. A click on the tab
-/// switches [`AppState::right_panel`]; a pill toggles [`AppState::plugin_open`].
-pub fn right_panel_head(ui: &mut Ui, state: &mut AppState, theme: &Theme, title: &str) {
+/// The head row of the FX rack and the MIXER panel (M6; M12: the `FX | Mixer` tab is gone,
+/// the main window's tab strip switches views, and the PLUGINS pills moved to the SYNTH & FX
+/// and MIXER window toolbars, [`plugin_pills`]): the title.
+pub fn plugins_head(ui: &mut Ui, theme: &Theme, title: &str) {
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
         neu::title(ui, theme, title);
-        right_aligned(ui, "right_panel_tabs", |ui| {
-            ui.spacing_mut().item_spacing.x = KNOB_GAP;
-            neu::label(ui, theme, "Plugins");
-            for kind in crate::plugins::PluginKind::ALL {
-                let open = state.is_plugin_open(kind);
-                if neu::toggle_button(ui, theme, kind.pill_label(), open)
-                    .on_hover_text(format!(
-                        "{} the {} window",
-                        if open { "Close" } else { "Open" },
-                        kind.title()
-                    ))
-                    .clicked()
-                {
-                    state.toggle_plugin(kind);
-                }
-            }
-            ui.add_space(HEAD_GAP - KNOB_GAP);
-            let before = match state.right_panel {
-                RightPanel::Fx => 0,
-                RightPanel::Mixer => 1,
-            };
-            let mut selected = before;
-            neu::segmented(ui, theme, &mut selected, &RIGHT_PANEL_TABS)
-                .on_hover_text("FX: the effect parameters. Mixer: levels, pans, sends, meters.");
-            if selected != before {
-                state.right_panel = if selected == 0 {
-                    RightPanel::Fx
-                } else {
-                    RightPanel::Mixer
-                };
-            }
-        });
     });
+}
+
+/// Accessible name of the label before the plugin pills.
+pub const PLUGINS_LABEL: &str = "Plugins";
+
+/// The PLUGINS pills (`EQ` / `REVERB`, small toggles lit while their pop-out window is open;
+/// plugins milestone) after a "Plugins" label. A pill toggles [`AppState::plugin_open`].
+pub fn plugin_pills(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    neu::label(ui, theme, PLUGINS_LABEL);
+    for kind in crate::plugins::PluginKind::ALL {
+        let open = state.is_plugin_open(kind);
+        if neu::button_kind(
+            ui,
+            theme,
+            kind.pill_label(),
+            neu::ButtonKind::Toggle(open),
+            neu::ButtonSize::Small,
+        )
+        .on_hover_text(format!(
+            "{} the {} window",
+            if open { "Close" } else { "Open" },
+            kind.title()
+        ))
+        .clicked()
+        {
+            state.toggle_plugin(kind);
+        }
+    }
 }
 
 /// Diameter of a track colour chip (M10).

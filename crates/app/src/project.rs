@@ -382,10 +382,10 @@ impl AppState {
         self.selected_step = None;
         self.shown_bar = 0;
         self.song_selected = (self.bank.chain_len > 0).then_some(0);
-        self.right_tab = match self.bank.mode {
-            engine::PlayMode::Song => crate::app::RightTab::Chain,
-            engine::PlayMode::Pattern => crate::app::RightTab::Project,
-        };
+        self.set_view(match self.bank.mode {
+            engine::PlayMode::Song => crate::app::View::Song,
+            engine::PlayMode::Pattern => crate::app::View::Roll,
+        });
         self.resend_all();
     }
 
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(loaded.pattern().len(), 32);
         assert_eq!(loaded.bank.patterns[2].len(), 64);
         assert!(loaded.bank.patterns[2].drums[DrumRow::Snare.index()][63].on);
-        assert_eq!(loaded.right_tab, crate::app::RightTab::Chain, "song mode");
+        assert_eq!(loaded.view, crate::app::View::Song, "song mode");
         assert_eq!(loaded.song_selected, Some(0));
         assert_eq!(loaded.input.octave, 3);
         assert_eq!(loaded.input.velocity, 0.6);

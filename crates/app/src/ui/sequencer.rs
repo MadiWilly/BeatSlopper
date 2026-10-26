@@ -1,392 +1,161 @@
-//! SEQUENCER panel (M3/M5): the 16-step grid of one bar of the edit pattern, the pattern tabs
-//! and the pattern controls.
+//! The CHANNEL RACK window (M3 / M5 / M10 / M11; Deck since M12, `design/round3/WINNER.md`
+//! section 5 "CHANNEL RACK window"): FL Studio's channel rack over the edit pattern.
 //!
-//! Layout follows `design/preview-a.html` `<section class="panel seq">` with the M5 pattern
-//! controls built from the kit (the mock has no pattern UI):
+//! - **Header** "CHANNEL RACK" · sub "Pattern A · 2 bars · <track> · <preset>" · F5 ·
+//!   chevron (collapse to the header) · close (the same: the F5 key or the toolbar's roll
+//!   button bring it back).
+//! - **Toolbar** (36): the pattern tiles A..H (`neu::pattern_tile`, named "Pattern A"; a
+//!   click sends `SelectPattern`, so while playing the engine switches at the next bar and
+//!   the queued letter blinks beside the tiles until it does) · "Len" + the small segmented
+//!   `1 bar | 2 bars | 4 bars` (doubling copies the loop into the new half, QOL) · "Bar" +
+//!   the small segmented of bars (patterns longer than a bar) · FOLLOW · spacer · copy ·
+//!   paste · clear pattern (small ghost icons). Compact (a rack under [`COMPACT_BELOW`]
+//!   wide, the narrow layout): dropdowns "Pattern A" / "2 bars", the bar segmented, FOLLOW
+//!   and a dots menu with Copy · Paste · Clear.
+//! - **Body** (padding-top 4; a vertical scroll area): the ruler (20 h, beat numbers counted
+//!   through the pattern, the playhead triangle) over the steps, the DRUMS section head
+//!   (with the VOL TUNE / INS legends), the five drum rows, the TRACKS head ("Tracks n / 8",
+//!   VOL PAN), one row per active track and the add row ("+ Add track Ctrl+T", or the
+//!   "Delete <name>?" confirm). The left columns (LED · S · knob · knob · INS · NAME) stay put
+//!   while the sixteen step cells scroll horizontally in their own always-visible scroll
+//!   area, so a narrow rack shows a 210 pt viewport of the steps (WINNER narrow).
 //!
-//! - **Head row:** title, the pattern tabs A..H (`neu::segmented`; a click sends
-//!   `SelectPattern`, so while playing the engine switches at the next bar and the queued
-//!   letter blinks beside the tabs until it does), then flush right the LENGTH `segmented`
-//!   group (QOL: `/2`, the length read-out, `x2`), the FOLLOW toggle pill, COPY, PASTE and
-//!   the REC lamp.
-//! - **Beat numbers** over the first cell of each group of four (numbered through the
-//!   pattern: bar 2 shows 5..8).
-//! - One row per [`DrumRow::ALL`] (caps name, small VOL and TUNE knobs, 16 `neu::step_cell`s
-//!   in groups of four, a CLEAR circle) and the BASS lane (note names in the cells, no knobs).
-//! - **Bottom row:** the BAR selector (`neu::segmented` 1..bars, shown for patterns longer
-//!   than one bar) under the name column, the playhead dots under the grid and the pattern's
-//!   CLEAR circle (accessible name "Clear pattern") under the row CLEAR circles.
+//! Row: 28 h on a 32 pitch, padding 0 8, gap 6, columns LED 10 · S 22 · VOL 22 · TUNE / PAN
+//! 22 · INS 22 · NAME 76 · STEPS 426 = 652 ([`CONTENT_WIDTH`]); compact rows drop the two
+//! knobs (the values live in the LED tooltip) and use a 64 name. The selected row (the edit
+//! track) sits on the accent wash with a 2 px accent bar; a muted row's LED is off and its
+//! name reads `text_2`.
 //!
 //! The grid shows bar [`AppState::shown_bar`] of the edit pattern: cell `i` edits the
 //! absolute step `shown_bar * 16 + i` and the playhead column lights only when the playing
-//! pattern, bar and step match. Cell `i` sits at [`cell_x`]`(i)` from the grid's left edge, so
-//! the beat numbers and the playhead dots use the same maths as the rows. Every cell reports
-//! an accessible name ([`cell_name`], e.g. "Kick step 17" on bar 2) so tests can click it.
+//! pattern, bar and step match. Every cell reports an accessible name ([`cell_name`], e.g.
+//! "Kick step 17" on bar 2, "Synth step 3" on a track row).
 //!
-//! Interactions: click toggles a drum step, shift-click turns it on and flips the accent;
-//! a bass cell click selects the step for note entry (click again to deselect), shift-click
-//! flips its accent (or gives an empty step a note). Right-click clears a cell: a drum step
-//! goes off (accent too), a bass step becomes a rest and loses its selection. The state
-//! methods on `AppState` do the work and send the engine messages.
-//!
-//! QOL pass (`crate::qol`, `crate::drag_paint`): cells act on the *press*, so pressing a drum
-//! cell and dragging across its row paints every cell to the first cell's new state (one
-//! undo step per stroke; pressing an "on" cell starts an erase stroke); the bass lane keeps
-//! its click-to-select entry;
-//! Ctrl-click flips the accent like shift-click. A double-click on a row label mutes the
-//! row's mixer channel (shift + double-click: solo); muted labels dim, soloed ones carry an
-//! accent dot. The head gains `-` / `+` length steppers around the LENGTH read-out ([`HALVE_LABEL`],
-//! [`DOUBLE_LABEL`]), the beat-number row shows VOL / TUNE over the row knobs, and the hat rows
-//! read `C.Hat` / `O.Hat` like the mixer strips ([`row_label`]).
-//!
-//! Piano roll (M7): the head's `GRID | ROLL` tab ([`LANE_VIEW_TABS`], [`AppState::lane_view`])
-//! swaps the grid area for `neu::piano_roll` over the edit pattern's whole note list (every
-//! bar, every bar line). The roll takes the space of the six rows and the bottom row
-//! ([`ROLL_AREA_HEIGHT`], less the [`ROLL_HANDLE_HEIGHT`] strip under it) under a beat-number
-//! row aligned to its columns, so the panel height is the same in both views until the
-//! handle is dragged: each [`ROLL_ROW_HEIGHT`] of drag adds a row
-//! ([`AppState::roll_extra_rows`], persisted) and the panel grows with it. Its geometry comes
-//! from [`roll_model`] (columns fitted to the width left of the CHORDS column, rows to the
-//! height, [`AppState::roll_low_pitch`] at the bottom, the held keys lit) and every edit the
-//! widget reports is applied by [`apply_roll_output`] through the undoable note methods on
-//! `AppState`. The CHORDS column ([`CHORD_COLUMN_WIDTH`], right of the roll) lists
-//! [`CHORDS`] as toggle pills: with one armed, a draw on the roll places the whole chord on
-//! the drawn root ([`AppState::add_chord`], one undo step).
-//!
-//! Instrument tracks (M10): the bass lane and the roll edit the *edit track's* notes
-//! ([`AppState::edit_notes`]); the head shows the edit track's colour chip and name after
-//! the `GRID | ROLL` tab ([`controls::track_tag`]), and the roll draws every other active
-//! track's notes of the pattern as ghosts in their track colours ([`roll_ghosts`],
-//! `neu::piano_roll_with_ghosts`): reference only, never editable.
+//! Interactions: click toggles a drum step, Shift-click turns it on and flips the accent,
+//! Ctrl-click flips the accent; pressing a drum cell and dragging across its row paints every
+//! cell to the first cell's new state (one undo step per stroke, `crate::drag_paint`). A
+//! track cell click selects the step for note entry (click again to deselect; it selects
+//! the track first when it is another track's row), Shift-click flips its accent (or gives
+//! an empty step a note). Right-click clears a cell. The row LED: click mutes, right-click
+//! solos. A drum NAME button: double-click mutes (Shift: solo); a track NAME button: click
+//! selects, double-click renames inline, Shift + double-click solos; right-click opens the
+//! row menu (`crate::ui::tracks`). The state methods on `AppState` do the work and send the
+//! engine messages.
 
-use egui::epaint::text::LayoutJob;
 use egui::{
-    Align, Align2, CursorIcon, Layout, Modifiers, Response, Role, ScrollArea, Sense, Ui, Vec2,
-    WidgetInfo, vec2,
+    Align, Align2, CursorIcon, Frame, Layout, Modifiers, Rect, Response, Role, ScrollArea, Sense,
+    Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 use engine::pattern::pattern_letter;
-use engine::{DrumRow, Note, PATTERN_COUNT, PatternLength, STEPS};
+use engine::track::COLOUR_COUNT;
+use engine::{
+    Channel, ChannelParam, DrumRow, PATTERN_COUNT, PatternLength, STEPS, SynthStep, TrackId,
+};
 use neu::{
-    GhostNote, Icon, KEY_COLUMN_WIDTH, KnobSize, KnobSpec, PianoRollModel, PianoRollOutput,
-    RollNote, STEP_CELL, STEP_GAP, STEP_GROUP_GAP, StepCellSpec, TextKind, Theme,
+    ButtonKind, ButtonSize, Icon, KnobSize, KnobSpec, LedKind, MenuItem, STEP_CELL, STEP_GAP,
+    STEP_GROUP_GAP, StepCellSpec, TextKind, Theme, ValueEditOutput,
 };
 
-use crate::app::{AppState, EditKey, LaneView, queued_blink_visible};
-use crate::chords::CHORDS;
+use crate::app::{AppState, EditKey, View, queued_blink_visible};
 use crate::drag_paint::PaintRow;
-use crate::ui::controls;
+use crate::shortcuts::Shortcut;
+use crate::ui::controls::{fmt_level_db, fmt_pan};
+use crate::ui::tracks;
 
-/// Width of the row-name column (`.seq-row .name`).
-pub const NAME_WIDTH: f32 = 64.0;
-/// Gap between the name column, the knobs, the grid and the CLEAR circle (`.seq-row{gap}`).
-pub const COLUMN_GAP: f32 = 14.0;
-/// Gap between the VOL and TUNE knobs.
-pub const KNOB_GAP: f32 = 8.0;
-/// Width of a small knob block (`KnobSize::Sm.block_width()`, checked by a test).
-pub const SM_KNOB: f32 = 34.0;
-/// Width of the per-row control column: two small knobs and their gap.
-pub const CONTROLS_WIDTH: f32 = 2.0 * SM_KNOB + KNOB_GAP;
-/// Height of a grid row (a small knob is 34 tall, a cell 32).
-pub const ROW_HEIGHT: f32 = 34.0;
-/// Vertical gap between rows (`.seq-grid{row-gap}`, tightened so the grid fits the window).
-pub const ROW_GAP: f32 = 2.0;
-/// Gap between the panel head and the beat numbers.
-pub const HEAD_GAP: f32 = 6.0;
-/// Width of the 16-cell grid: 16 cells, 15 gaps, 3 of them widened by the group gap.
-pub const GRID_WIDTH: f32 = 16.0 * STEP_CELL + 15.0 * STEP_GAP + 3.0 * STEP_GROUP_GAP;
-/// Left edge of the grid relative to the panel content.
-pub const GRID_LEFT: f32 = NAME_WIDTH + COLUMN_GAP + CONTROLS_WIDTH + COLUMN_GAP;
-/// Caps name of the bass lane.
-pub const BASS_NAME: &str = "Bass";
-/// Height of the bottom row: the BAR selector, the playhead dots and the pattern CLEAR circle
-/// (a `segmented` / pill is 30 tall).
-pub const BOTTOM_ROW: f32 = 30.0;
-/// Gap between items of the head row (8, the scale's step under the 12 the rest of the
-/// heads use: the head holds nine items at 1280 wide and the track tag's name needs the room).
-const HEAD_ITEM_GAP: f32 = 8.0;
-/// The head's right group (LENGTH, FOLLOW, COPY, PASTE, REC) as measured at 1280 x 1140 in
-/// GRID view, used for the track tag's room on the first frame, before
-/// [`controls::right_aligned`] has measured the group (a tag laid out into the whole head
-/// would overflow it for one frame). At least the measured width (a test checks).
-pub const HEAD_RIGHT_GROUP_SEED: f32 = 416.0;
-/// Accessible name of the pattern CLEAR circle (the row circles are "Clear").
-pub const CLEAR_PATTERN_LABEL: &str = "Clear pattern";
-/// Caps label beside the bar selector.
-pub const BAR_LABEL: &str = "Bar";
-/// Pattern tab names, A..H.
+/// Height of a row's controls and the row pitch.
+pub const ROW_HEIGHT: f32 = 28.0;
+pub const ROW_PITCH: f32 = 32.0;
+/// Row padding (left and right) and the gap between columns.
+pub const ROW_PAD: f32 = 8.0;
+pub const COL_GAP: f32 = 6.0;
+/// The column widths: LED, S, a mini knob, the insert box, the name (wide / compact).
+pub const LED_WIDTH: f32 = 10.0;
+pub const SOLO_WIDTH: f32 = 22.0;
+pub const KNOB_WIDTH: f32 = 22.0;
+pub const INS_WIDTH: f32 = 22.0;
+pub const NAME_WIDTH: f32 = 76.0;
+pub const NAME_WIDTH_COMPACT: f32 = 64.0;
+/// Width of the 16-cell grid: 16 cells, 12 x 2 gaps and 3 x 6 beat gaps (426).
+pub const GRID_WIDTH: f32 = 16.0 * STEP_CELL + 12.0 * STEP_GAP + 3.0 * STEP_GROUP_GAP;
+/// The row's content width in the wide layout (652) and the compact one (368).
+pub const CONTENT_WIDTH: f32 = left_width(false) + GRID_WIDTH + ROW_PAD;
+pub const CONTENT_WIDTH_COMPACT: f32 = left_width(true) + STEPS_VIEWPORT_COMPACT + ROW_PAD;
+/// The steps viewport of a compact rack (WINNER narrow: 210).
+pub const STEPS_VIEWPORT_COMPACT: f32 = 210.0;
+/// A rack narrower than this drops its knob columns and scrolls its steps.
+pub const COMPACT_BELOW: f32 = 600.0;
+/// Height of the ruler row, a section head and the add row.
+pub const RULER_HEIGHT: f32 = 20.0;
+pub const SECTION_HEAD: f32 = 24.0;
+pub const ADD_ROW: f32 = 28.0;
+/// Body padding-top.
+pub const BODY_PAD_TOP: f32 = 4.0;
+/// Window title.
+pub const TITLE: &str = "Channel rack";
+/// Section titles.
+pub const DRUMS_TITLE: &str = "Drums";
+pub const TRACKS_TITLE: &str = "Tracks";
+/// Pattern tile letters, A..H.
 pub const PATTERN_TABS: [&str; PATTERN_COUNT] = ["A", "B", "C", "D", "E", "F", "G", "H"];
-/// Items of the `GRID | ROLL` view tab, in [`LaneView`] order.
-pub const LANE_VIEW_TABS: [&str; 2] = ["Grid", "Roll"];
-/// Accessible name of the stepper that doubles the pattern length (QOL; a `+` stepper
-/// circle since the M10 review, so the head has room for the track tag).
-pub const DOUBLE_LABEL: &str = "Double length";
-/// Accessible name of the stepper that halves the pattern length (QOL).
-pub const HALVE_LABEL: &str = "Halve length";
-/// Item padding of the A..H pattern tabs (the kit's 8 on single letters made the track a
-/// third padding; 6 keeps the chips wider than tall and gives the track tag 32 pt).
-pub const PATTERN_TAB_PADDING: f32 = 6.0;
-/// Legends over the row knobs (QOL).
-pub const KNOB_LEGENDS: [&str; 2] = ["Vol", "Tune"];
-/// Narrowest length read-out between the `-` and `+` steppers (QOL).
-pub const LENGTH_TEXT_MIN_WIDTH: f32 = 44.0;
-/// Diameter of the solo dot beside a row label (QOL).
-pub const SOLO_DOT: f32 = 6.0;
-/// Alpha of a muted row's label (QOL): dim, but still readable.
+/// Caps labels in the toolbar.
+pub const LEN_LABEL: &str = "Len";
+pub const BAR_LABEL: &str = "Bar";
+pub const FOLLOW_LABEL: &str = "Follow";
+/// Accessible names of the toolbar's icon buttons.
+pub const COPY_LABEL: &str = "Copy";
+pub const PASTE_LABEL: &str = "Paste";
+pub const CLEAR_PATTERN_LABEL: &str = "Clear pattern";
+/// Accessible names of the compact toolbar's dropdowns and menu.
+pub const PATTERN_DROPDOWN: &str = "Pattern";
+pub const LENGTH_DROPDOWN: &str = "Length";
+pub const MORE_LABEL: &str = "More";
+/// Accessible names of the header buttons.
+pub const COLLAPSE_LABEL: &str = "Collapse rack";
+pub const EXPAND_LABEL: &str = "Expand rack";
+pub const CLOSE_LABEL: &str = "Close rack";
+/// Alpha of a muted row's name.
 pub const MUTED_ALPHA: f32 = 0.45;
-/// Height of the area the piano roll replaces: the six grid rows (each with its gap) and the
-/// bottom row. The row gap after the beat numbers stays in both views.
-pub const ROLL_AREA_HEIGHT: f32 = (DrumRow::COUNT + 1) as f32 * (ROW_HEIGHT + ROW_GAP) + BOTTOM_ROW;
-/// Row height of the piano roll (one pitch).
-pub const ROLL_ROW_HEIGHT: f32 = 14.0;
-/// Fewest pitch rows the roll shows, whatever the height (an octave).
-pub const MIN_ROLL_PITCHES: usize = 12;
-/// Narrowest and widest step column of the roll (64 steps in a narrow panel / 16 in a wide one).
-pub const MIN_ROLL_STEP_WIDTH: f32 = 12.0;
-pub const MAX_ROLL_STEP_WIDTH: f32 = 48.0;
-/// Height of the resize handle strip under the roll (inside [`ROLL_AREA_HEIGHT`], leaving
-/// the default roll exactly 17 rows).
-pub const ROLL_HANDLE_HEIGHT: f32 = 8.0;
-/// Size of the grip painted in the middle of the handle strip.
-pub const ROLL_GRIP: Vec2 = vec2(36.0, 4.0);
-/// Accessible name of the handle under the roll.
-pub const ROLL_HANDLE_LABEL: &str = "Resize roll";
-/// Width of the CHORDS column to the right of the roll.
-pub const CHORD_COLUMN_WIDTH: f32 = 96.0;
-/// Size of one chord pill (the column minus room for the scroll bar).
-pub const CHORD_PILL: Vec2 = vec2(84.0, 26.0);
-/// Vertical gap between chord pills.
-pub const CHORD_PILL_GAP: f32 = 6.0;
-/// Caps title over the chord pills.
-pub const CHORDS_TITLE: &str = "Chords";
-/// Label of the head pill that shows / hides the roll's black-key rows.
-pub const BLACK_KEYS_LABEL: &str = "Black keys";
-/// Width of the handle strip right of the roll (drag it to make the roll wider).
-pub const ROLL_WIDTH_HANDLE: f32 = 8.0;
-/// Accessible name of the handle right of the roll.
-pub const ROLL_WIDTH_HANDLE_LABEL: &str = "Resize roll width";
-/// Widest step column the roll zooms to when dragged wider than its fitted width.
-pub const MAX_ROLL_STEP_WIDTH_ZOOMED: f32 = 192.0;
-/// Label of the head pill that moves the roll into its own window (lit while it is there).
-pub const POP_OUT_LABEL: &str = "Pop out";
-/// Label of the pill in the roll window that brings the roll back into the panel.
-pub const DOCK_LABEL: &str = "Dock";
-/// Title of the roll's own window.
-pub const ROLL_WINDOW_TITLE: &str = "BeatSlopper piano roll";
-/// What the panel shows in place of the roll while it is in its own window.
-pub const POPPED_LABEL: &str = "The piano roll is open in its own window";
-/// Size the roll window opens at.
-pub const ROLL_WINDOW_SIZE: Vec2 = vec2(1100.0, 620.0);
 
-/// The roll's fitted width: every step at [`MAX_ROLL_STEP_WIDTH`], no wider than
-/// `available` (and never narrower than the key column).
+/// Width of the fixed left columns (padding and gaps included, up to the steps).
 #[must_use]
-pub fn fitted_roll_width(state: &AppState, available: f32) -> f32 {
-    let steps = state.pattern().len().max(1) as f32;
-    (KEY_COLUMN_WIDTH + steps * MAX_ROLL_STEP_WIDTH)
-        .min(available)
-        .max(KEY_COLUMN_WIDTH)
-}
-
-/// The roll's width in the panel: the fitted width plus what the handle was dragged to
-/// ([`AppState::roll_extra_width`]), no wider than `available`.
-#[must_use]
-pub fn roll_width(state: &AppState, available: f32) -> f32 {
-    (fitted_roll_width(state, available) + state.roll_extra_width)
-        .min(available)
-        .max(KEY_COLUMN_WIDTH)
-}
-
-/// Height of the roll itself for `state`: the roll area minus the handle strip, plus the rows
-/// the handle was dragged to ([`AppState::roll_extra_rows`]).
-#[must_use]
-pub fn roll_height(state: &AppState) -> f32 {
-    ROLL_AREA_HEIGHT - ROLL_HANDLE_HEIGHT + roll_extra_height(state)
-}
-
-/// How much taller than the grid view the roll view makes the panel.
-#[must_use]
-pub fn roll_extra_height(state: &AppState) -> f32 {
-    state.roll_extra_rows as f32 * ROLL_ROW_HEIGHT
-}
-
-/// The roll's view model for a roll of `size` (the space it may take: `ROLL_AREA_HEIGHT` tall
-/// and the panel's width): one column per step of the edit pattern, the column width fitted
-/// to the width (whole points, `MIN_ROLL_STEP_WIDTH..=MAX_ROLL_STEP_WIDTH`), as many
-/// [`ROLL_ROW_HEIGHT`] rows as fit the height (at least [`MIN_ROLL_PITCHES`]),
-/// [`AppState::roll_low_pitch`] at the bottom (clamped so the rows stay within MIDI), the
-/// playhead while the edit pattern plays, the roll selection and the held keys
-/// ([`AppState::held_notes`], lit in the key column). Feeding the model's own `size()` back
-/// in reproduces it, so tests can rebuild it from the rendered rect.
-#[must_use]
-pub fn roll_model(state: &AppState, size: Vec2) -> PianoRollModel {
-    let steps = state.pattern().len().max(1);
-    let step_width = ((size.x - KEY_COLUMN_WIDTH) / steps as f32)
-        .floor()
-        .clamp(MIN_ROLL_STEP_WIDTH, MAX_ROLL_STEP_WIDTH_ZOOMED);
-    let pitches = ((size.y / ROLL_ROW_HEIGHT).floor().max(0.0) as usize).max(MIN_ROLL_PITCHES);
-    let mut model = PianoRollModel {
-        steps,
-        low_pitch: state.roll_low_pitch,
-        pitches,
-        step_width,
-        row_height: ROLL_ROW_HEIGHT,
-        playhead_step: state.roll_playhead(),
-        selected: state.roll_selected,
-        selection: roll_selection(state),
-        held: state.held_notes,
-        black_keys: state.roll_black_keys,
-    };
-    model.normalise(state.edit_notes().len());
-    model
-}
-
-/// The other active tracks' notes of the edit pattern as ghosts (M10), each in its track's
-/// colour; every track but the edit track, in slot order. Built per frame.
-#[must_use]
-pub fn roll_ghosts(state: &AppState, theme: &Theme) -> Vec<GhostNote> {
-    state
-        .active_tracks()
-        .filter(|&slot| slot != state.edit_track)
-        .flat_map(|slot| {
-            let colour = theme.track_colour(state.track(slot).colour);
-            state.track_notes(slot).iter().map(move |n| GhostNote {
-                start: n.start,
-                length: n.length,
-                pitch: n.pitch,
-                colour,
-            })
-        })
-        .collect()
-}
-
-/// The roll's selection: [`AppState::roll_selection`] plus the primary
-/// [`AppState::roll_selected`] when it is missing from it (older paths set the primary
-/// alone).
-#[must_use]
-pub fn roll_selection(state: &AppState) -> Vec<usize> {
-    let mut selection = state.roll_selection.clone();
-    if let Some(primary) = state.roll_selected
-        && !selection.contains(&primary)
-    {
-        selection.push(primary);
+pub const fn left_width(compact: bool) -> f32 {
+    if compact {
+        ROW_PAD
+            + LED_WIDTH
+            + COL_GAP
+            + SOLO_WIDTH
+            + COL_GAP
+            + INS_WIDTH
+            + COL_GAP
+            + NAME_WIDTH_COMPACT
+            + COL_GAP
+    } else {
+        ROW_PAD
+            + LED_WIDTH
+            + COL_GAP
+            + SOLO_WIDTH
+            + COL_GAP
+            + KNOB_WIDTH
+            + COL_GAP
+            + KNOB_WIDTH
+            + COL_GAP
+            + INS_WIDTH
+            + COL_GAP
+            + NAME_WIDTH
+            + COL_GAP
     }
-    selection
 }
 
-/// The roll's view of a pattern note (`selected` when it is in the roll selection).
+/// Whether a rack `width` points wide uses the compact rows.
 #[must_use]
-pub fn roll_notes(state: &AppState) -> Vec<RollNote> {
-    state
-        .edit_notes()
-        .iter()
-        .enumerate()
-        .map(|(i, n)| RollNote {
-            start: n.start,
-            length: n.length,
-            pitch: n.pitch,
-            velocity: n.velocity,
-            selected: state.roll_selected == Some(i) || state.roll_selection.contains(&i),
-        })
-        .collect()
-}
-
-/// A roll note as a pattern note.
-#[must_use]
-pub fn to_note(n: RollNote) -> Note {
-    Note::new(n.start, n.length, n.pitch, n.velocity)
-}
-
-/// Applies what the roll reported this frame: the scrolled bottom pitch and the selection
-/// (view state the widget edits in `model`), then the one edit, if any, through
-/// [`AppState::add_note`] / [`AppState::add_chord`] / [`AppState::set_note`] /
-/// [`AppState::move_notes`] / [`AppState::remove_note`] / [`AppState::remove_notes`]. The
-/// selection follows its notes across the re-sort an add or move causes: every selected
-/// note is remembered by value (as the edit leaves it), then found again in the new list.
-pub fn apply_roll_output(state: &mut AppState, model: &PianoRollModel, out: PianoRollOutput) {
-    state.set_roll_low_pitch(model.low_pitch);
-    let before = state.edit_notes().to_vec();
-    let mut wanted: Vec<Note> = model
-        .selection
-        .iter()
-        .filter_map(|&i| before.get(i).copied())
-        .collect();
-    let mut primary: Option<Note> = model.selected.and_then(|i| before.get(i).copied());
-    // What a moved note becomes, carried into the remembered selection.
-    let mut follow = |old: Option<&Note>, new: Note, wanted: &mut Vec<Note>| {
-        if let Some(old) = old {
-            for w in wanted.iter_mut().filter(|w| *w == old) {
-                *w = new;
-            }
-            if primary.as_ref() == Some(old) {
-                primary = Some(new);
-            }
-        }
-    };
-
-    if let Some(n) = out.add {
-        // With a chord armed the drawn note is the root: every chord tone lands at once.
-        match state.armed_chord.and_then(|i| CHORDS.get(i)) {
-            Some(chord) => {
-                state.add_chord(chord, n.pitch, n.start, n.length, n.velocity);
-            }
-            None => {
-                state.add_note(to_note(n));
-            }
-        }
-    } else if !out.moved_many.is_empty() {
-        let edits: Vec<(usize, Note)> = out
-            .moved_many
-            .iter()
-            .map(|&(i, n)| (i, to_note(n)))
-            .collect();
-        state.move_notes(&edits);
-        for (i, n) in &edits {
-            let mut n = *n;
-            n.normalise();
-            follow(before.get(*i), n, &mut wanted);
-        }
-    } else if let Some((i, n)) = out.moved {
-        let mut note = to_note(n);
-        note.normalise();
-        state.set_note(i, note);
-        follow(before.get(i), note, &mut wanted);
-    } else if !out.removed_many.is_empty() {
-        state.remove_notes(&out.removed_many);
-        for i in &out.removed_many {
-            if let Some(gone) = before.get(*i) {
-                wanted.retain(|w| w != gone);
-                if primary.as_ref() == Some(gone) {
-                    primary = None;
-                }
-            }
-        }
-    } else if let Some(i) = out.removed {
-        state.remove_note(i);
-        if let Some(gone) = before.get(i) {
-            wanted.retain(|w| w != gone);
-            if primary.as_ref() == Some(gone) {
-                primary = None;
-            }
-        }
-    }
-
-    let after = state.edit_notes();
-    let mut selection: Vec<usize> = wanted
-        .iter()
-        .filter_map(|w| after.iter().position(|n| n == w))
-        .collect();
-    selection.dedup();
-    let primary = primary
-        .and_then(|p| after.iter().position(|n| *n == p))
-        .or_else(|| selection.last().copied());
-    state.roll_selection = selection;
-    state.roll_selected = primary;
+pub fn is_compact(width: f32) -> bool {
+    width < COMPACT_BELOW
 }
 
 /// Left edge of cell `i` relative to the grid's left edge.
 #[must_use]
 pub fn cell_x(i: usize) -> f32 {
-    i as f32 * (STEP_CELL + STEP_GAP) + (i / 4) as f32 * STEP_GROUP_GAP
+    neu::step_x_offset(i)
 }
 
 /// Accessible name of a step cell: `"Kick step 1"` (`step` is the absolute, 0-based index).
@@ -395,13 +164,19 @@ pub fn cell_name(row: &str, step: usize) -> String {
     format!("{row} step {}", step + 1)
 }
 
+/// Accessible name of a pattern tile: `"Pattern B"`.
+#[must_use]
+pub fn tile_name(pattern: u8) -> String {
+    format!("Pattern {}", pattern_letter(pattern))
+}
+
 /// Accessible name of the queued-pattern indicator: `"Queued B"`.
 #[must_use]
 pub fn queued_name(pattern: u8) -> String {
     format!("Queued {}", pattern_letter(pattern))
 }
 
-/// Caps label of a drum row in the grid, spelled like the mixer strips (`C.Hat`, `O.Hat`).
+/// Caps label of a drum row, spelled like the mixer strips (`C.Hat`, `O.Hat`).
 #[must_use]
 pub fn row_label(row: DrumRow) -> &'static str {
     match row {
@@ -423,6 +198,12 @@ pub fn row_name(row: DrumRow) -> &'static str {
         DrumRow::ClosedHat => "Closed hat",
         DrumRow::OpenHat => "Open hat",
     }
+}
+
+/// Accessible name of a drum row's insert number box: `"Row insert Kick"`.
+#[must_use]
+pub fn row_box_name(text: &str) -> String {
+    format!("Row insert {text}")
 }
 
 /// `-6.0` -> `"-6 dB"`, `0.0` -> `"0 dB"`, `3.0` -> `"+3 dB"`.
@@ -450,478 +231,197 @@ pub fn length_items() -> [&'static str; 3] {
     ]
 }
 
-/// Height of the beat-number row (one caps label line).
-fn label_row_height(ui: &Ui) -> f32 {
-    ui.ctx()
-        .fonts_mut(|f| f.row_height(&TextKind::Label.font_id()))
-}
-
-/// Height of the whole panel (padding included), from the layout constants, so the page can
-/// reserve the exact space without measuring a frame first. In ROLL view the rows the roll
-/// was dragged taller by ([`roll_extra_height`]) are added.
+/// The header's sub-title: `"Pattern A · 2 bars · Synth · Bass"`.
 #[must_use]
-pub fn panel_height(ui: &Ui, theme: &Theme, state: &AppState) -> f32 {
-    let rows = (DrumRow::COUNT + 1) as f32;
-    let extra = match state.lane_view {
-        LaneView::Grid => 0.0,
-        LaneView::Roll => roll_extra_height(state),
-    };
-    2.0 * theme.panel_padding
-        + controls::ROW_HEIGHT
-        + HEAD_GAP
-        + label_row_height(ui)
-        + ROW_GAP
-        + rows * (ROW_HEIGHT + ROW_GAP)
-        + BOTTOM_ROW
-        + extra
-}
-
-/// Renders the SEQUENCER panel into `ui` and applies any edit to `state`.
-pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    // A paint stroke lives as long as a button is down.
-    if !ui.input(|i| i.pointer.any_down()) {
-        state.end_paint();
-    }
-    neu::panel(ui, theme, |ui| {
-        // Every row is one allocation; the gaps below are explicit, so no implicit spacing.
-        ui.spacing_mut().item_spacing.y = 0.0;
-        head(ui, state, theme);
-        ui.add_space(HEAD_GAP);
-        match state.lane_view {
-            LaneView::Grid => {
-                beat_numbers(ui, state, theme);
-                ui.add_space(ROW_GAP);
-                for row in DrumRow::ALL {
-                    drum_row(ui, state, theme, row);
-                    ui.add_space(ROW_GAP);
-                }
-                bass_row(ui, state, theme);
-                ui.add_space(ROW_GAP);
-                bottom_row(ui, state, theme);
-            }
-            LaneView::Roll if state.roll_popped => {
-                popped_placeholder(ui, state, theme);
-                roll_window(ui.ctx(), state, theme);
-            }
-            LaneView::Roll => {
-                let available =
-                    (ui.available_width() - ROLL_WIDTH_HANDLE - COLUMN_GAP - CHORD_COLUMN_WIDTH)
-                        .max(KEY_COLUMN_WIDTH);
-                let max_extra = (available - fitted_roll_width(state, available)).max(0.0);
-                let width = roll_width(state, available);
-                let model = roll_model(state, vec2(width, roll_height(state)));
-                roll_beat_numbers(ui, theme, &model);
-                ui.add_space(ROW_GAP);
-                roll_area(ui, state, theme, model, max_extra);
-            }
-        }
-    });
-}
-
-/// The beat numbers over the roll: one per beat of the whole pattern (1..=4 x bars), centred
-/// on the first column of each group of four.
-fn roll_beat_numbers(ui: &mut Ui, theme: &Theme, model: &PianoRollModel) {
-    let height = label_row_height(ui);
-    let beats = model.steps / 4;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(KEY_COLUMN_WIDTH);
-        for beat in 0..beats {
-            if beat > 0 {
-                ui.add_space(3.0 * model.step_width);
-            }
-            let (rect, response) =
-                ui.allocate_exact_size(vec2(model.step_width, height), Sense::hover());
-            let text = (beat + 1).to_string();
-            if ui.is_rect_visible(rect) {
-                neu::text::paint_text(
-                    ui.painter(),
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    &text,
-                    TextKind::Label,
-                    theme.text_secondary,
-                );
-            }
-            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
-        }
-    });
-}
-
-/// The piano roll over the edit pattern's notes with the resize handle under it, and the
-/// CHORDS column to its right, in the space of the grid rows and the bottom row (plus the
-/// extra rows); whatever the roll reports is applied by [`apply_roll_output`].
-fn roll_area(
-    ui: &mut Ui,
-    state: &mut AppState,
-    theme: &Theme,
-    mut model: PianoRollModel,
-    max_extra_width: f32,
-) {
-    let height = roll_height(state);
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let notes = roll_notes(state);
-            let ghosts = roll_ghosts(state, theme);
-            let out = neu::piano_roll_with_ghosts(ui, theme, &mut model, &notes, &ghosts);
-            apply_roll_output(state, &model, out);
-            // Whole rows only: pad the rest so the handle sits at the same place.
-            let rest = height - model.size().y;
-            if rest > 0.0 {
-                ui.add_space(rest);
-            }
-            roll_handle(ui, state, theme, model.size().x);
-        });
-        roll_width_handle(ui, state, theme, height, max_extra_width);
-        ui.add_space(COLUMN_GAP);
-        chord_column(ui, state, theme, height + ROLL_HANDLE_HEIGHT, true);
-    });
-}
-
-/// The strip right of the roll: dragging it right makes the roll wider (the step columns
-/// zoom, [`AppState::set_roll_extra_width`], at most `max_extra` past the fitted width so
-/// the CHORDS column stays in the panel), dragging it left narrower, down to the fitted
-/// width. Painted as a vertical [`ROLL_GRIP`], accent while hovered or dragged.
-fn roll_width_handle(
-    ui: &mut Ui,
-    state: &mut AppState,
-    theme: &Theme,
-    height: f32,
-    max_extra: f32,
-) {
-    let (rect, response) = ui.allocate_exact_size(vec2(ROLL_WIDTH_HANDLE, height), Sense::drag());
-    let origin_id = response.id.with("origin");
-    if response.dragged()
-        && let Some(p) = response.interact_pointer_pos()
-    {
-        let origin = ui
-            .data(|d| d.get_temp::<(f32, f32)>(origin_id))
-            .filter(|_| !response.drag_started())
-            .unwrap_or((p.x, state.roll_extra_width));
-        ui.data_mut(|d| d.insert_temp(origin_id, origin));
-        let width = (origin.1 + (p.x - origin.0)).clamp(0.0, max_extra);
-        if width != state.roll_extra_width {
-            state.set_roll_extra_width(width);
-        }
-    }
-    if ui.is_rect_visible(rect) {
-        let lit = response.hovered() || response.dragged();
-        let grip = egui::Rect::from_center_size(rect.center(), vec2(ROLL_GRIP.y, ROLL_GRIP.x));
-        let fill = if lit { theme.accent } else { theme.shadow_dark };
-        ui.painter().rect_filled(grip, ROLL_GRIP.y * 0.5, fill);
-    }
-    response
-        .on_hover_cursor(CursorIcon::ResizeHorizontal)
-        .on_hover_text("Drag to make the roll wider or narrower")
-        .widget_info(|| {
-            WidgetInfo::labeled(Role::Slider, ui.is_enabled(), ROLL_WIDTH_HANDLE_LABEL)
-        });
-}
-
-/// What the panel shows while the roll is in its own window: [`POPPED_LABEL`] centred in
-/// the space the roll view takes (beat numbers, roll, handle), so the panel keeps its height.
-fn popped_placeholder(ui: &mut Ui, state: &AppState, theme: &Theme) {
-    let height = label_row_height(ui) + ROW_GAP + roll_height(state) + ROLL_HANDLE_HEIGHT;
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), height),
-        Layout::centered_and_justified(egui::Direction::TopDown),
-        |ui| {
-            neu::label(ui, theme, POPPED_LABEL)
-                .on_hover_text("Click POP OUT again, or DOCK in the window, to bring it back");
-        },
-    );
-}
-
-/// The roll in its own window ([`ROLL_WINDOW_TITLE`]) while [`AppState::roll_popped`]: an
-/// immediate viewport (a real OS window under eframe, which can be maximised or put full
-/// screen; an embedded `egui::Window` where the backend has no multi-window support, e.g.
-/// headless tests). Closing the window docks the roll again.
-fn roll_window(ctx: &egui::Context, state: &mut AppState, theme: &Theme) {
-    let id = egui::ViewportId::from_hash_of("beatslopper_piano_roll_window");
-    let builder = egui::ViewportBuilder::default()
-        .with_title(ROLL_WINDOW_TITLE)
-        .with_inner_size(ROLL_WINDOW_SIZE)
-        .with_min_inner_size(vec2(600.0, 300.0));
-    ctx.show_viewport_immediate(id, builder, |ctx, _class| {
-        // This window's keyboard: shortcuts (Space, R, Ctrl+Z, ...) and the piano keys work
-        // here as in the main window.
-        state.handle_window_input(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) {
-            state.set_roll_popped(false);
-        }
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme.surface)
-                    .inner_margin(theme.panel_padding),
-            )
-            .show(ctx, |ui| roll_window_contents(ui, state, theme));
-    });
-}
-
-/// Inside the roll window: a title row with the DOCK pill, then the beat numbers, the roll
-/// fitted to the window (columns to its width, rows to its height) and the CHORDS column.
-fn roll_window_contents(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    ui.spacing_mut().item_spacing.y = 0.0;
-    ui.horizontal(|ui| {
-        ui.set_min_height(controls::ROW_HEIGHT);
-        ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
-        neu::title(ui, theme, "Roll");
-        controls::right_aligned(ui, "roll_window_head", |ui| {
-            if neu::button(ui, theme, DOCK_LABEL)
-                .on_hover_text("Put the roll back in the SEQUENCER panel")
-                .clicked()
-            {
-                state.set_roll_popped(false);
-            }
-        });
-    });
-    ui.add_space(HEAD_GAP);
-    let width = (ui.available_width() - COLUMN_GAP - CHORD_COLUMN_WIDTH).max(KEY_COLUMN_WIDTH);
-    let height = (ui.available_height() - label_row_height(ui) - ROW_GAP)
-        .max(ROLL_ROW_HEIGHT * MIN_ROLL_PITCHES as f32);
-    let mut model = roll_model(state, vec2(width, height));
-    roll_beat_numbers(ui, theme, &model);
-    ui.add_space(ROW_GAP);
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let notes = roll_notes(state);
-        let ghosts = roll_ghosts(state, theme);
-        let out = neu::piano_roll_with_ghosts(ui, theme, &mut model, &notes, &ghosts);
-        apply_roll_output(state, &model, out);
-        ui.add_space(COLUMN_GAP);
-        chord_column(ui, state, theme, model.size().y, false);
-    });
-}
-
-/// The strip under the roll: dragging it down adds rows to the roll, dragging it up takes
-/// them away ([`AppState::set_roll_extra_rows`], one row per [`ROLL_ROW_HEIGHT`] points from
-/// where the drag started). Painted as a [`ROLL_GRIP`] pill, accent while hovered or dragged.
-fn roll_handle(ui: &mut Ui, state: &mut AppState, theme: &Theme, width: f32) {
-    let (rect, response) = ui.allocate_exact_size(vec2(width, ROLL_HANDLE_HEIGHT), Sense::drag());
-    let origin_id = response.id.with("origin");
-    if response.dragged()
-        && let Some(p) = response.interact_pointer_pos()
-    {
-        let origin = ui
-            .data(|d| d.get_temp::<(f32, usize)>(origin_id))
-            .filter(|_| !response.drag_started())
-            .unwrap_or((p.y, state.roll_extra_rows));
-        ui.data_mut(|d| d.insert_temp(origin_id, origin));
-        let delta = ((p.y - origin.0) / ROLL_ROW_HEIGHT).round() as i64;
-        let rows = (origin.1 as i64 + delta).max(0) as usize;
-        if rows != state.roll_extra_rows {
-            state.set_roll_extra_rows(rows);
-        }
-    }
-    if ui.is_rect_visible(rect) {
-        let lit = response.hovered() || response.dragged();
-        let grip = egui::Rect::from_center_size(rect.center(), ROLL_GRIP);
-        let fill = if lit { theme.accent } else { theme.shadow_dark };
-        ui.painter().rect_filled(grip, ROLL_GRIP.y * 0.5, fill);
-    }
-    response
-        .on_hover_cursor(CursorIcon::ResizeVertical)
-        .on_hover_text("Drag to make the roll taller or shorter")
-        .widget_info(|| WidgetInfo::labeled(Role::Slider, ui.is_enabled(), ROLL_HANDLE_LABEL));
-}
-
-/// The CHORDS column: the roll's view pills (BLACK KEYS, and POP OUT when `docked`), a caps
-/// title and one toggle pill per [`CHORDS`] entry (most common at the top) in a scroll area
-/// of the rest of the roll's height. The lit chord pill is the armed chord
-/// ([`AppState::armed_chord`]); clicking it again disarms. With a chord armed, drawing on
-/// the roll places the whole chord with the drawn note as its root.
-fn chord_column(ui: &mut Ui, state: &mut AppState, theme: &Theme, height: f32, docked: bool) {
-    ui.allocate_ui_with_layout(
-        vec2(CHORD_COLUMN_WIDTH, height),
-        Layout::top_down(Align::Min),
-        |ui| {
-            ui.spacing_mut().item_spacing.y = CHORD_PILL_GAP;
-            let top = ui.cursor().min.y;
-            if neu::toggle_button_sized(
-                ui,
-                theme,
-                BLACK_KEYS_LABEL,
-                state.roll_black_keys,
-                CHORD_PILL,
-            )
-            .on_hover_text("Show the black-key rows on the roll (off: white keys only)")
-            .clicked()
-            {
-                state.toggle_black_keys();
-            }
-            if docked
-                && neu::toggle_button_sized(ui, theme, POP_OUT_LABEL, state.roll_popped, CHORD_PILL)
-                    .on_hover_text("Open the roll in its own window (it can go full screen)")
-                    .clicked()
-            {
-                state.set_roll_popped(!state.roll_popped);
-            }
-            ui.add_space(CHORD_PILL_GAP);
-            neu::label(ui, theme, CHORDS_TITLE)
-                .on_hover_text("Pick a chord, then draw on the roll to place it");
-            let used = ui.cursor().min.y - top;
-            let list_height = (height - used).max(0.0);
-            ScrollArea::vertical()
-                .id_salt("chords")
-                .max_height(list_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = CHORD_PILL_GAP;
-                    let mut clicked = None;
-                    for (i, chord) in CHORDS.iter().enumerate() {
-                        let on = state.armed_chord == Some(i);
-                        let response =
-                            neu::toggle_button_sized(ui, theme, chord.name, on, CHORD_PILL);
-                        if response.clicked() {
-                            clicked = Some(i);
-                        }
-                    }
-                    if clicked.is_some() {
-                        state.arm_chord(clicked);
-                    }
-                });
-        },
-    );
-}
-
-/// Title, pattern tabs and the queued letter on the left; LENGTH, FOLLOW, COPY, PASTE and the
-/// REC lamp on the right.
-fn head(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    ui.horizontal(|ui| {
-        ui.set_min_height(controls::ROW_HEIGHT);
-        ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
-        neu::title(ui, theme, "Sequencer");
-        pattern_tabs(ui, state, theme);
-        queued_indicator(ui, state, theme);
-        lane_view_tabs(ui, state, theme);
-        // M10: the lane and the roll edit this track.
-        head_track_tag(ui, state, theme);
-        if state.lane_view == LaneView::Roll && state.roll_popped {
-            // The roll is in its own window: the pill that brings it back stays reachable.
-            if neu::toggle_button(ui, theme, POP_OUT_LABEL, true)
-                .on_hover_text("The roll is in its own window; click to bring it back")
-                .clicked()
-            {
-                state.set_roll_popped(false);
-            }
-        }
-        controls::right_aligned(ui, "sequencer_head", |ui| {
-            ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
-            length_group(ui, state, theme);
-            if neu::toggle_button(ui, theme, "Follow", state.follow)
-                .on_hover_text("Follow the playing bar")
-                .clicked()
-            {
-                state.toggle_follow();
-            }
-            if neu::button(ui, theme, "Copy")
-                .on_hover_text("Copy this pattern")
-                .clicked()
-            {
-                state.copy_pattern();
-            }
-            let paste = ui
-                .add_enabled_ui(state.clipboard.is_some(), |ui| {
-                    neu::button(ui, theme, "Paste")
-                        .on_hover_text("Paste the copied pattern here")
-                        .clicked()
-                })
-                .inner;
-            if paste {
-                state.paste_pattern();
-            }
-            neu::lamp(ui, theme, state.is_recording(), "Rec");
-        });
-    });
-}
-
-/// Narrowest name worth showing beside the head's chip; below it the name is the tooltip.
-const TAG_NAME_MIN_WIDTH: f32 = 24.0;
-
-/// The edit track's tag in the head (M10): the colour chip (`controls::track_chip`,
-/// accessible as `"<name> colour"`), then the name as a caps label into the room beside the
-/// right group, cut with an ellipsis (the full name is the tooltip; it is also in the SYNTH
-/// head and the TRACKS panel); below [`TAG_NAME_MIN_WIDTH`] of room only the chip shows. The
-/// right group's width is what [`controls::right_aligned`] measured last frame under
-/// `"sequencer_head"` ([`HEAD_RIGHT_GROUP_SEED`] on the first frame), so the head never
-/// grows past the panel and pushes the right-hand column off the window. At 1280 x 1140 the
-/// name has about 82 pt in either view (`"SIXTEEN CHARS…"`).
-fn head_track_tag(ui: &mut Ui, state: &AppState, theme: &Theme) {
-    let right_width: f32 = ui
-        .data(|d| d.get_temp(ui.scope_id().with("sequencer_head")))
-        .unwrap_or(HEAD_RIGHT_GROUP_SEED);
-    let gap = ui.spacing().item_spacing.x;
-    let room = ui.available_width() - right_width - gap;
-    let name_room = room - controls::TRACK_CHIP - controls::TRACK_CHIP_GAP;
+pub fn header_sub(state: &AppState) -> String {
     let track = state.edit_track_ui();
-    let tooltip = format!(
-        "Edits track {} (Alt+Up / Alt+Down select another track)",
-        track.name
-    );
-    // The chip and the name are laid straight into the head (no nested `horizontal`: a
-    // nested row keeps the previous frame's width for one frame when the name changes,
-    // which pushed the right group past the panel on that frame), the kit's chip gap
-    // between them.
-    controls::track_chip(ui, theme, track.colour, &track.name).on_hover_text(&tooltip);
-    if name_room < TAG_NAME_MIN_WIDTH {
-        return;
-    }
-    ui.add_space(controls::TRACK_CHIP_GAP - gap);
-    let mut job = LayoutJob::single_section(
-        TextKind::Label.display_string(&track.name),
-        TextKind::Label.format(theme.text_secondary),
-    );
-    job.wrap.max_width = name_room;
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let galley = ui.painter().layout_job(job);
-    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        ui.painter().galley(rect.min, galley, theme.text_secondary);
-    }
-    let name = tag_name(&track.name);
-    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &name));
-    response.on_hover_text(tooltip);
+    format!(
+        "Pattern {} · {} · {} · {}",
+        state.current_letter(),
+        state.pattern().pattern_length().label(),
+        track.name,
+        track.preset_name()
+    )
 }
 
-/// Accessible name of the head's track-tag name label: `"Track: Synth"` (the chip beside
-/// it is `"Synth colour"`).
+/// The lane cell of track `slot` at `step`: the edit track's derived lane, or the lowest
+/// note starting at the step of another track's notes.
 #[must_use]
-pub fn tag_name(name: &str) -> String {
-    format!("Track: {name}")
+pub fn lane_cell(state: &AppState, slot: TrackId, step: usize) -> SynthStep {
+    if slot == state.edit_track {
+        return state.pattern().synth[step % engine::MAX_STEPS];
+    }
+    let mut cell = SynthStep::default();
+    for note in state.track_notes(slot) {
+        if usize::from(note.start) == step && cell.note.is_none_or(|p| note.pitch < p) {
+            cell = note.lane_step();
+        }
+    }
+    cell
 }
 
-/// The A..H tabs: the selected item is the edit pattern; a click selects (and, while playing
-/// in pattern mode, queues) that pattern.
-fn pattern_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let before = usize::from(state.current()) % PATTERN_COUNT;
-    let mut selected = before;
-    neu::segmented_padded(ui, theme, &mut selected, &PATTERN_TABS, PATTERN_TAB_PADDING)
-        .on_hover_text("Pattern (switches at the next bar while playing)");
-    if selected != before {
-        state.select_pattern(selected as u8);
+/// Height of the body's content for `state` (the rows, heads, ruler and add row), so a
+/// caller can size the window.
+#[must_use]
+pub fn body_height(state: &AppState) -> f32 {
+    let rows = (DrumRow::COUNT + state.active_track_count()) as f32;
+    BODY_PAD_TOP + RULER_HEIGHT + 2.0 * SECTION_HEAD + rows * ROW_PITCH + ADD_ROW
+}
+
+/// Renders the CHANNEL RACK window into the available rect (collapsed to its 28 pt header
+/// while `!state.rack_open`; the caller gives it 28 points then) and applies any edit to
+/// `state`.
+pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let size = ui.available_size_before_wrap();
+    let open = state.rack_open;
+    let height = if open { size.y } else { neu::WINDOW_HEADER };
+    let compact = is_compact(size.x);
+    let sub = header_sub(state);
+    // The header and the body both edit the state; the frame runs them one after the other.
+    let cell = std::cell::RefCell::new(state);
+    neu::window_frame_sized(
+        ui,
+        theme,
+        vec2(size.x, height),
+        TITLE,
+        Some(&sub),
+        |ui| header_right(ui, &mut cell.borrow_mut(), theme, compact),
+        |ui| {
+            if open {
+                let state = &mut **cell.borrow_mut();
+                toolbar(ui, state, theme, compact);
+                body(ui, state, theme, compact);
+            }
+        },
+    );
+}
+
+/// The header's right slot (right-to-left): close, the chevron, the F5 keycap.
+fn header_right(ui: &mut Ui, state: &mut AppState, theme: &Theme, compact: bool) {
+    let close = neu::header_button(ui, theme, Icon::Clear);
+    close.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLOSE_LABEL));
+    if close
+        .on_hover_text("Hide the rack (F5 brings it back)")
+        .clicked()
+    {
+        state.rack_open = false;
+    }
+    let (icon, name, tip) = if state.rack_open {
+        (Icon::ChevronUp, COLLAPSE_LABEL, "Collapse to the header")
+    } else {
+        (Icon::ChevronDown, EXPAND_LABEL, "Expand the rack (F5)")
+    };
+    let chevron = neu::header_button(ui, theme, icon);
+    chevron.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), name));
+    if chevron.on_hover_text(tip).clicked() {
+        state.toggle_rack();
+    }
+    if !compact {
+        neu::keycap(ui, theme, "F5");
     }
 }
 
-/// `GRID | ROLL` (M7): what the panel shows under the head. Not an edit.
-fn lane_view_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let before = match state.lane_view {
-        LaneView::Grid => 0,
-        LaneView::Roll => 1,
-    };
-    let mut selected = before;
-    neu::segmented(ui, theme, &mut selected, &LANE_VIEW_TABS)
-        .on_hover_text("Grid: one note per step. Roll: chords and held notes");
-    if selected != before {
-        state.set_lane_view(if selected == 0 {
-            LaneView::Grid
+// ---------------------------------------------------------------------------------------------
+// Toolbar.
+
+fn toolbar(ui: &mut Ui, state: &mut AppState, theme: &Theme, compact: bool) {
+    neu::toolbar(ui, theme, |ui| {
+        if compact {
+            pattern_dropdown(ui, state, theme);
+            queued_indicator(ui, state, theme);
+            length_dropdown(ui, state, theme);
         } else {
-            LaneView::Roll
+            pattern_tiles(ui, state, theme);
+            queued_indicator(ui, state, theme);
+            neu::label(ui, theme, LEN_LABEL);
+            length_group(ui, state, theme);
+        }
+        bar_selector(ui, state, theme);
+        if neu::button_kind(
+            ui,
+            theme,
+            FOLLOW_LABEL,
+            ButtonKind::Toggle(state.follow),
+            ButtonSize::Small,
+        )
+        .on_hover_text("Follow the playing bar (the roll scrolls with the playhead too)")
+        .clicked()
+        {
+            state.toggle_follow();
+        }
+        // The icons flush right.
+        let width_id = ui.scope_id().with("rack_toolbar_right");
+        let known: Option<f32> = ui.data(|d| d.get_temp(width_id));
+        if let Some(width) = known {
+            let pad = ui.available_width() - width;
+            if pad > 0.0 {
+                ui.add_space(pad);
+            }
+        }
+        let group = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if compact {
+                more_menu(ui, state, theme);
+            } else {
+                edit_icons(ui, state, theme);
+            }
         });
+        ui.data_mut(|d| d.insert_temp(width_id, group.response.rect.width()));
+    });
+}
+
+/// The A..H tiles: the current one lit, the ones with content in `text`.
+fn pattern_tiles(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let current = state.current();
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (i, letter) in PATTERN_TABS.iter().enumerate() {
+            let has_notes = !state.bank.patterns[i].is_empty();
+            if neu::pattern_tile(ui, theme, letter, has_notes, i as u8 == current)
+                .on_hover_text(format!(
+                    "Pattern {letter} (switches at the next bar while playing)"
+                ))
+                .clicked()
+            {
+                clicked = Some(i as u8);
+            }
+        }
+    });
+    if let Some(index) = clicked
+        && index != current
+    {
+        state.select_pattern(index);
+    }
+}
+
+/// The compact toolbar's pattern dropdown ("Pattern A").
+fn pattern_dropdown(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let names: Vec<String> = (0..PATTERN_COUNT as u8).map(tile_name).collect();
+    let items: Vec<&str> = names.iter().map(String::as_str).collect();
+    let value = tile_name(state.current());
+    if let Some(picked) = neu::dropdown(
+        ui,
+        theme,
+        PATTERN_DROPDOWN,
+        &value,
+        &items,
+        96.0,
+        true,
+        None,
+    ) && picked as u8 != state.current()
+    {
+        state.select_pattern(picked as u8);
+    }
+}
+
+/// The compact toolbar's length dropdown ("2 bars").
+fn length_dropdown(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let items = length_items();
+    let value = state.pattern().pattern_length().label();
+    if let Some(picked) = neu::dropdown(ui, theme, LENGTH_DROPDOWN, value, &items, 72.0, true, None)
+    {
+        set_length_item(state, picked);
     }
 }
 
@@ -934,10 +434,8 @@ fn queued_indicator(ui: &mut Ui, state: &AppState, theme: &Theme) {
     };
     let text = pattern_letter(queued).to_string();
     let galley = neu::text::layout(ui.painter(), &text, TextKind::Title, theme.accent);
-    let (rect, response) = ui.allocate_exact_size(
-        vec2(galley.size().x.max(12.0), controls::ROW_HEIGHT),
-        Sense::hover(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x.max(12.0), ROW_HEIGHT), Sense::hover());
     let visible = queued_blink_visible(ui.input(|i| i.time));
     if visible && ui.is_rect_visible(rect) {
         neu::text::paint_galley(
@@ -957,240 +455,1038 @@ fn queued_indicator(ui: &mut Ui, state: &AppState, theme: &Theme) {
         .request_repaint_after(std::time::Duration::from_millis(50));
 }
 
-/// LENGTH: a `-` stepper, the length read-out (`1 bar`, `2 bars`, `4 bars`: the labels of
-/// [`length_items`]) and a `+` stepper, the transport's `(-) 120 (+)` shape. `+` doubles the
-/// edit pattern (copying the loop into the new half), `-` halves it (hidden steps are kept);
-/// they grey out at 64 and 16 steps. The M5 three-item segmented did not fit the head at
-/// 1280 wide, nor (M10 review) did the QOL `/2` / `x2` pills beside the track tag's name, so
-/// the 28 pt kit steppers *are* the length control (two clicks of `+` reach 4 bars).
-/// Accessible as [`HALVE_LABEL`] / [`DOUBLE_LABEL`] (the transport's steppers keep the
-/// kit's "Decrease" / "Increase").
+/// LEN: the small segmented `1 bar | 2 bars | 4 bars`.
 fn length_group(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let len = state.pattern().len();
-    ui.spacing_mut().item_spacing.x = KNOB_GAP;
-    let halve = ui
-        .add_enabled_ui(len > STEPS, |ui| {
-            let response = neu::stepper_button(ui, theme, Icon::Minus);
-            response
-                .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), HALVE_LABEL));
-            response
-                .on_hover_text("Halve the pattern length (the hidden steps are kept)")
-                .clicked()
-        })
-        .inner;
-    if halve {
-        state.halve_pattern_length();
+    let items = length_items();
+    let before = PatternLength::ALL
+        .iter()
+        .position(|l| *l == state.pattern().pattern_length())
+        .unwrap_or(0);
+    let mut selected = before;
+    neu::segmented_small(ui, theme, &mut selected, &items)
+        .on_hover_text("Pattern length: doubling copies the loop into the new half");
+    if selected != before {
+        set_length_item(state, selected);
     }
-    let text = state.pattern().pattern_length().label();
-    let galley = neu::text::layout(ui.painter(), text, TextKind::Value, theme.text_primary);
-    let (rect, response) = ui.allocate_exact_size(
-        vec2(
-            galley.size().x.max(LENGTH_TEXT_MIN_WIDTH),
-            controls::ROW_HEIGHT,
-        ),
-        Sense::hover(),
-    );
-    if ui.is_rect_visible(rect) {
-        neu::text::paint_galley(
-            ui.painter(),
-            rect.center(),
-            Align2::CENTER_CENTER,
-            galley,
-            TextKind::Value,
-            theme.text_primary,
-        );
-    }
-    response
-        .on_hover_text("Pattern length: - halves it, + doubles it")
-        .widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
-    let double = ui
-        .add_enabled_ui(len < engine::MAX_STEPS, |ui| {
-            let response = neu::stepper_button(ui, theme, Icon::Plus);
-            response
-                .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), DOUBLE_LABEL));
-            response
-                .on_hover_text("Double the pattern length (the loop is copied into the new half)")
-                .clicked()
-        })
-        .inner;
-    if double {
-        state.double_pattern_length();
-    }
-    ui.spacing_mut().item_spacing.x = HEAD_ITEM_GAP;
 }
 
-/// The row of beat numbers over the first cell of each group, counted through the pattern
-/// (bar 2 shows 5 6 7 8), with the VOL / TUNE legends over the row knobs.
-fn beat_numbers(ui: &mut Ui, state: &AppState, theme: &Theme) {
-    let height = label_row_height(ui);
-    let first_beat = state.shown_bar * 4;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(NAME_WIDTH + COLUMN_GAP);
-        for (i, legend) in KNOB_LEGENDS.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(KNOB_GAP);
-            }
-            let (rect, response) = ui.allocate_exact_size(vec2(SM_KNOB, height), Sense::hover());
-            if ui.is_rect_visible(rect) {
-                neu::text::paint_text(
-                    ui.painter(),
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    legend,
-                    TextKind::Label,
-                    theme.text_secondary,
-                );
-            }
-            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, *legend));
+/// Sets the edit pattern's length to item `index` of [`length_items`] by doubling (the loop
+/// is copied into the new half) or halving (hidden steps are kept) step by step.
+fn set_length_item(state: &mut AppState, index: usize) {
+    let Some(target) = PatternLength::ALL.get(index) else {
+        return;
+    };
+    let target = target.steps() as usize;
+    let mut guard = 0;
+    while state.pattern().len() < target && guard < 4 {
+        if !state.double_pattern_length() {
+            break;
         }
-        ui.add_space(COLUMN_GAP);
-        for beat in 0..4 {
-            if beat > 0 {
-                ui.add_space(cell_x(beat * 4) - cell_x((beat - 1) * 4) - STEP_CELL);
-            }
-            let (rect, response) = ui.allocate_exact_size(vec2(STEP_CELL, height), Sense::hover());
-            let text = (first_beat + beat + 1).to_string();
-            if ui.is_rect_visible(rect) {
-                neu::text::paint_text(
-                    ui.painter(),
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    &text,
-                    TextKind::Label,
-                    theme.text_secondary,
-                );
-            }
-            response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+        guard += 1;
+    }
+    while state.pattern().len() > target && guard < 8 {
+        if !state.halve_pattern_length() {
+            break;
         }
+        guard += 1;
+    }
+}
+
+/// `BAR 1 | 2 | ..` for a pattern of more than one bar; nothing for a one-bar pattern.
+fn bar_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let bars = state.pattern().bars();
+    if bars <= 1 {
+        return;
+    }
+    let names: Vec<String> = (1..=bars).map(|b| b.to_string()).collect();
+    let items: Vec<&str> = names.iter().map(String::as_str).collect();
+    let before = state.shown_bar.min(bars - 1);
+    let mut selected = before;
+    neu::label(ui, theme, BAR_LABEL);
+    neu::segmented_small(ui, theme, &mut selected, &items).on_hover_text("Bar shown in the grid");
+    if selected != before {
+        state.show_bar(selected);
+    }
+}
+
+/// Copy · paste · clear as small ghost icons.
+fn edit_icons(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let small = vec2(22.0, 22.0);
+    let copy = neu::icon_button_kind(ui, theme, Icon::Copy, small, ButtonKind::Ghost);
+    copy.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), COPY_LABEL));
+    if copy.on_hover_text("Copy this pattern").clicked() {
+        state.copy_pattern();
+    }
+    let paste = ui
+        .add_enabled_ui(state.clipboard.is_some(), |ui| {
+            let paste = neu::icon_button_kind(ui, theme, Icon::Paste, small, ButtonKind::Ghost);
+            paste.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), PASTE_LABEL));
+            paste
+                .on_hover_text("Paste the copied pattern here")
+                .clicked()
+        })
+        .inner;
+    if paste {
+        state.paste_pattern();
+    }
+    let clear = neu::icon_button_kind(ui, theme, Icon::Clear, small, ButtonKind::Ghost);
+    clear.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLEAR_PATTERN_LABEL));
+    if clear
+        .on_hover_text("Clear every step of this pattern")
+        .clicked()
+    {
+        state.clear_pattern();
+    }
+}
+
+/// The compact toolbar's dots menu: Copy · Paste · Clear pattern.
+fn more_menu(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let button = neu::icon_button_kind(ui, theme, Icon::Dots, vec2(22.0, 22.0), ButtonKind::Ghost);
+    button.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), MORE_LABEL));
+    let items = [
+        MenuItem::item(COPY_LABEL),
+        if state.clipboard.is_some() {
+            MenuItem::item(PASTE_LABEL)
+        } else {
+            MenuItem::disabled(PASTE_LABEL, None)
+        },
+        MenuItem::item(CLEAR_PATTERN_LABEL),
+    ];
+    match neu::menu_popup(ui, theme, &button, &items) {
+        Some(0) => state.copy_pattern(),
+        Some(1) => {
+            state.paste_pattern();
+        }
+        Some(2) => state.clear_pattern(),
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Body.
+
+/// One line of the body, drawn by both column blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Ruler,
+    DrumsHead,
+    Drum(DrumRow),
+    TracksHead,
+    Track(usize, TrackId),
+    AddRow,
+}
+
+impl Line {
+    fn height(self) -> f32 {
+        match self {
+            Line::Ruler => RULER_HEIGHT,
+            Line::DrumsHead | Line::TracksHead => SECTION_HEAD,
+            Line::Drum(_) | Line::Track(..) => ROW_PITCH,
+            Line::AddRow => ADD_ROW,
+        }
+    }
+}
+
+fn lines(state: &AppState) -> Vec<Line> {
+    let mut lines = vec![Line::Ruler, Line::DrumsHead];
+    lines.extend(DrumRow::ALL.into_iter().map(Line::Drum));
+    lines.push(Line::TracksHead);
+    lines.extend(
+        state
+            .active_tracks()
+            .enumerate()
+            .map(|(i, slot)| Line::Track(i, slot)),
+    );
+    lines.push(Line::AddRow);
+    lines
+}
+
+/// The body: a vertical scroll area holding the fixed left columns beside the steps' own
+/// horizontal scroll area.
+fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme, compact: bool) {
+    // A paint stroke lives as long as a button is down.
+    if !ui.input(|i| i.pointer.any_down()) {
+        state.end_paint();
+    }
+    // A confirm for a track that went away (undo, a load) is dropped.
+    if tracks::pending_delete(ui).is_some_and(|slot| !state.track_active(slot)) {
+        tracks::set_pending_delete(ui, None);
+    }
+    let lines = lines(state);
+    let left = left_width(compact);
+    neu::scroll_vertical("rack_body").show(ui, |ui| {
+        ui.add_space(BODY_PAD_TOP);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            ui.allocate_ui_with_layout(vec2(left, 0.0), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(left);
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                for line in &lines {
+                    left_line(ui, state, theme, *line, compact);
+                }
+            });
+            let steps_width = GRID_WIDTH + ROW_PAD;
+            let viewport = if compact {
+                STEPS_VIEWPORT_COMPACT
+            } else {
+                ui.available_width().max(steps_width)
+            };
+            ui.allocate_ui_with_layout(vec2(viewport, 0.0), Layout::top_down(Align::Min), |ui| {
+                ui.set_width(viewport);
+                let out = ScrollArea::horizontal()
+                    .id_salt("rack_steps")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::ZERO;
+                        ui.set_min_width(steps_width);
+                        for line in &lines {
+                            steps_line(ui, state, theme, *line, steps_width);
+                        }
+                    });
+                ui.data_mut(|d| {
+                    d.insert_temp(
+                        steps_scroll_id(),
+                        StepsScroll {
+                            content: out.content_size.x,
+                            viewport: out.inner_rect.width(),
+                        },
+                    )
+                });
+            });
+        });
     });
 }
 
-/// Lays `add` out as one `height`-tall row with its items vertically centred.
-fn grid_row(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui)) {
+/// What the steps' horizontal scroll area measured last frame (tests read it through
+/// [`steps_scroll`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepsScroll {
+    /// Width of the sixteen cells and their gaps.
+    pub content: f32,
+    /// Width of the viewport the cells scroll in.
+    pub viewport: f32,
+}
+
+impl StepsScroll {
+    /// Whether the cells overflow the viewport (the horizontal scrollbar has a thumb shorter
+    /// than its track).
+    #[must_use]
+    pub fn scrolls(self) -> bool {
+        self.content > self.viewport + 0.5
+    }
+}
+
+fn steps_scroll_id() -> egui::Id {
+    egui::Id::NULL.with("rack_steps_scroll")
+}
+
+/// The steps scroll area's measurement from the last frame, if the rack was drawn.
+#[must_use]
+pub fn steps_scroll(ctx: &egui::Context) -> Option<StepsScroll> {
+    ctx.data(|d| d.get_temp(steps_scroll_id()))
+}
+
+/// Whether the playhead sits on grid column `column`: the transport runs, the edit pattern is
+/// the one playing, its playing bar is the shown bar and the step matches.
+fn is_current(state: &AppState, column: usize) -> bool {
+    let pos = state.playhead;
+    pos.playing
+        && pos.pattern == state.current()
+        && usize::from(pos.bar) == state.shown_bar
+        && usize::from(pos.step) == column
+}
+
+/// Absolute step index of grid column `column` in the shown bar.
+fn step_of(state: &AppState, column: usize) -> usize {
+    state.shown_bar * STEPS + column
+}
+
+/// The gap before cell `step` (none before the first, a wider one at group boundaries).
+fn cell_gap(ui: &mut Ui, step: usize) {
+    if step > 0 {
+        ui.add_space(cell_x(step) - cell_x(step - 1) - STEP_CELL);
+    }
+}
+
+/// Paints the selected row's accent wash (and the bar when `bar`) over `rect`.
+fn paint_row_wash(ui: &Ui, rect: Rect, theme: &Theme, bar: bool) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, theme.accent_wash);
+    if bar {
+        painter.rect_filled(
+            Rect::from_min_size(rect.min, vec2(2.0, rect.height())),
+            0.0,
+            theme.accent,
+        );
+    }
+}
+
+// ---- The steps block.
+
+fn steps_line(ui: &mut Ui, state: &mut AppState, theme: &Theme, line: Line, width: f32) {
+    match line {
+        Line::Ruler => ruler(ui, state, theme, width),
+        Line::DrumsHead | Line::TracksHead | Line::AddRow => {
+            ui.allocate_exact_size(vec2(width, line.height()), Sense::hover());
+        }
+        Line::Drum(row) => drum_cells(ui, state, theme, row, width),
+        Line::Track(_, slot) => track_cells(ui, state, theme, slot, width),
+    }
+}
+
+/// The ruler over the steps: a 24 x 16 cell per column with the beat number (counted through
+/// the pattern) over every fourth column and a dot over the others; the playhead triangle
+/// under the current column.
+fn ruler(ui: &mut Ui, state: &AppState, theme: &Theme, width: f32) {
+    let first_beat = state.shown_bar * 4;
     ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), height),
-        Layout::left_to_right(Align::Center),
+        vec2(width, RULER_HEIGHT),
+        Layout::left_to_right(Align::Max),
         |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            add(ui);
+            for column in 0..STEPS {
+                cell_gap(ui, column);
+                let (rect, response) =
+                    ui.allocate_exact_size(vec2(STEP_CELL, RULER_HEIGHT), Sense::hover());
+                let current = is_current(state, column);
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter();
+                    let centre = pos2(rect.center().x, rect.min.y + 8.0);
+                    if column % 4 == 0 {
+                        let text = (first_beat + column / 4 + 1).to_string();
+                        neu::text::paint_text(
+                            painter,
+                            centre,
+                            Align2::CENTER_CENTER,
+                            &text,
+                            TextKind::Micro,
+                            theme.text_2,
+                        );
+                    } else {
+                        painter.circle_filled(centre, 1.0, theme.text_3);
+                    }
+                    if current {
+                        neu::step_cell::paint_playhead_triangle(
+                            painter,
+                            pos2(rect.center().x, rect.max.y - 3.0),
+                            theme,
+                        );
+                    }
+                }
+                if column % 4 == 0 {
+                    let text = (first_beat + column / 4 + 1).to_string();
+                    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+                }
+            }
         },
     );
 }
 
-/// Size of the mixer insert number box at the right end of a row's name cell (M11).
-pub const ROW_BOX_SIZE: Vec2 = vec2(20.0, 14.0);
-
-/// Accessible name of a row's insert number box: `"Row insert Kick"` (the TRACKS panel's
-/// box for the same track is `"Insert box <name>"`).
-#[must_use]
-pub fn row_box_name(text: &str) -> String {
-    format!("Row insert {text}")
-}
-
-/// The caps row name, vertically centred in a [`NAME_WIDTH`] column, with the row's mixer
-/// insert number box ([`ROW_BOX_SIZE`], M11: a click opens the picker) at the column's
-/// right end. A double-click on the name mutes the row's mixer channel (shift +
-/// double-click: solo); a muted row's name dims to [`MUTED_ALPHA`], a soloed row gets a
-/// [`SOLO_DOT`] in the accent colour after its name.
-fn name_cell(ui: &mut Ui, state: &mut AppState, theme: &Theme, text: &str, row: PaintRow) {
-    let (rect, response) = ui.allocate_exact_size(vec2(NAME_WIDTH, ROW_HEIGHT), Sense::click());
-    let box_rect = egui::Rect::from_min_size(
-        egui::pos2(
-            rect.max.x - ROW_BOX_SIZE.x,
-            rect.center().y - ROW_BOX_SIZE.y * 0.5,
-        ),
-        ROW_BOX_SIZE,
+/// A row of sixteen cells, `ROW_PITCH` tall, with the wash when `selected`.
+fn cells_row(
+    ui: &mut Ui,
+    theme: &Theme,
+    width: f32,
+    selected: bool,
+    mut cell: impl FnMut(&mut Ui, usize),
+) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, ROW_PITCH), Sense::hover());
+    if selected && ui.is_rect_visible(rect) {
+        paint_row_wash(ui, rect, theme, false);
+    }
+    let inner = Rect::from_min_max(
+        pos2(rect.min.x, rect.min.y + (ROW_PITCH - STEP_CELL) * 0.5),
+        pos2(rect.max.x, rect.max.y - (ROW_PITCH - STEP_CELL) * 0.5),
     );
-    if response.double_clicked() {
-        if press_modifiers(ui).shift {
-            state.toggle_row_solo(row);
-        } else {
-            state.toggle_row_mute(row);
-        }
-    }
-    let muted = state.row_muted(row);
-    let soloed = state.row_soloed(row);
-    if ui.is_rect_visible(rect) {
-        let color = if muted {
-            theme.text_secondary.gamma_multiply(MUTED_ALPHA)
-        } else if response.hovered() {
-            theme.text_primary
-        } else {
-            theme.text_secondary
-        };
-        let text_rect = neu::text::paint_text(
-            ui.painter(),
-            rect.left_center(),
-            Align2::LEFT_CENTER,
-            text,
-            TextKind::Label,
-            color,
-        );
-        if soloed {
-            let dot = egui::pos2(
-                (text_rect.max.x + KNOB_GAP).min(box_rect.min.x - SOLO_DOT),
-                rect.center().y,
-            );
-            ui.painter()
-                .circle_filled(dot, SOLO_DOT * 0.5, theme.accent);
-        }
-    }
-    let state_text = match (muted, soloed) {
-        (true, true) => "Muted, solo · ",
-        (true, false) => "Muted · ",
-        (false, true) => "Solo · ",
-        (false, false) => "",
-    };
-    response
-        .on_hover_text(format!(
-            "{state_text}Double-click: mute · Shift + double-click: solo"
-        ))
-        .widget_info(|| WidgetInfo::labeled(Role::Button, true, text));
-
-    // The insert number box (M11), added after the cell so it is on top of it.
-    let channel = crate::qol::row_channel(row, state.edit_track);
-    let route = state.mixer.route(channel);
-    let box_response = ui
-        .scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(box_rect)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                neu::toggle_button_sized(
-                    ui,
-                    theme,
-                    &crate::ui::mixer::box_text(route),
-                    false,
-                    ROW_BOX_SIZE,
-                )
-            },
-        )
-        .inner;
-    let box_label = row_box_name(text);
-    box_response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), &box_label));
-    let box_response = box_response
-        .on_hover_text(format!(
-            "Mixer insert: {} · click to pick",
-            state.route_name(route)
-        ))
-        .on_hover_cursor(CursorIcon::PointingHand);
-    if let Some(picked) = crate::ui::mixer::route_picker(
-        theme,
-        &box_response,
-        state,
-        route,
-        &crate::ui::mixer::source_route_choices(),
-    ) {
-        state.set_route(channel, picked);
-        state.select_insert(picked, false);
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(inner)
+            .layout(Layout::left_to_right(Align::Center))
+            .id_salt((rect.min.y as i32, "cells")),
+    );
+    row.spacing_mut().item_spacing.x = 0.0;
+    for column in 0..STEPS {
+        cell_gap(&mut row, column);
+        cell(&mut row, column);
     }
 }
+
+fn drum_cells(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow, width: f32) {
+    cells_row(ui, theme, width, false, |ui, column| {
+        let step = step_of(state, column);
+        let cell = state.pattern().drums[row.index()][step];
+        let spec = StepCellSpec {
+            on: cell.on,
+            accent: cell.accent,
+            current: is_current(state, column),
+            selected: false,
+            label: None,
+        };
+        let name = cell_name(row_name(row), step);
+        let response = neu::step_cell_at(ui, theme, &spec, &name, column, None);
+        // Right-click clears the cell; a primary press starts the drag-paint stroke (Ctrl:
+        // accent, Shift: shift-toggle); a running stroke paints the cell it reaches.
+        let paint_row = PaintRow::Drum(row);
+        if response.secondary_clicked() {
+            state.clear_drum_step(row, step);
+        } else if press_on(ui, &response) {
+            let mods = press_modifiers(ui);
+            if mods.command || mods.ctrl {
+                state.toggle_drum_accent(row, step);
+            } else if mods.shift {
+                state.toggle_drum_step(row, step, true);
+            } else {
+                state.begin_paint(paint_row, !cell.on, step);
+            }
+        } else if stroke_reaches(ui, state, &response) {
+            state.paint_step(paint_row, step);
+        }
+        response.on_hover_text("Click toggles · Shift-click accents · drag paints");
+    });
+}
+
+fn track_cells(ui: &mut Ui, state: &mut AppState, theme: &Theme, slot: TrackId, width: f32) {
+    let track = state.track(slot).clone();
+    let colour = theme.track_colour(track.colour);
+    let is_edit = slot == state.edit_track;
+    cells_row(ui, theme, width, is_edit, |ui, column| {
+        let step = step_of(state, column);
+        let cell = lane_cell(state, slot, step);
+        let text = cell.note.map(neu::note_name);
+        let spec = StepCellSpec {
+            on: cell.note.is_some(),
+            accent: cell.accent,
+            current: is_current(state, column),
+            selected: is_edit && state.selected_step == Some(step),
+            label: text.as_deref(),
+        };
+        let name = cell_name(&track.name, step);
+        let response = neu::step_cell_at(ui, theme, &spec, &name, column, Some(colour));
+        if response.secondary_clicked() {
+            if !is_edit {
+                state.select_track(slot);
+            }
+            state.clear_synth_step(step);
+        } else if press_on(ui, &response) {
+            if !is_edit {
+                state.select_track(slot);
+            }
+            let mods = press_modifiers(ui);
+            if mods.command || mods.ctrl {
+                state.toggle_synth_accent(step);
+            } else {
+                state.click_synth_step(step, mods.shift);
+            }
+        }
+        response.on_hover_text("Click selects the step (keys set its note) · Shift-click accents");
+    });
+}
+
+// ---- The left block.
+
+fn left_line(ui: &mut Ui, state: &mut AppState, theme: &Theme, line: Line, compact: bool) {
+    match line {
+        Line::Ruler => {
+            ui.allocate_exact_size(vec2(ui.available_width(), RULER_HEIGHT), Sense::hover());
+        }
+        Line::DrumsHead => section_head(ui, theme, DRUMS_TITLE, None, "Vol Tune", compact),
+        Line::TracksHead => {
+            let count = format!("{} / {}", state.active_track_count(), engine::MAX_TRACKS);
+            section_head(ui, theme, TRACKS_TITLE, Some(&count), "Vol Pan", compact);
+        }
+        Line::Drum(row) => drum_controls(ui, state, theme, row, compact),
+        Line::Track(index, slot) => track_controls(ui, state, theme, index, slot, compact),
+        Line::AddRow => add_row(ui, state, theme),
+    }
+}
+
+/// A section head: the title in section type (the count in `text_3` after it) and the
+/// column legends over the knob columns and the INS column.
+fn section_head(
+    ui: &mut Ui,
+    theme: &Theme,
+    title: &str,
+    count: Option<&str>,
+    knob_legend: &str,
+    compact: bool,
+) {
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), SECTION_HEAD), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, title));
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
+    let title_rect = neu::text::paint_text(
+        painter,
+        pos2(rect.min.x + ROW_PAD, rect.center().y),
+        Align2::LEFT_CENTER,
+        &TextKind::Section.display_string(title),
+        TextKind::Section,
+        theme.text_3,
+    );
+    if let Some(count) = count {
+        neu::text::paint_text(
+            painter,
+            pos2(title_rect.max.x + 6.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            count,
+            TextKind::Small,
+            theme.text_3,
+        );
+    }
+    // Legends: over the two knobs (wide only) and over INS, right-aligned to their columns.
+    let knobs_right = rect.min.x
+        + ROW_PAD
+        + LED_WIDTH
+        + COL_GAP
+        + SOLO_WIDTH
+        + COL_GAP
+        + KNOB_WIDTH
+        + COL_GAP
+        + KNOB_WIDTH;
+    let ins_right = if compact {
+        rect.min.x + ROW_PAD + LED_WIDTH + COL_GAP + SOLO_WIDTH + COL_GAP + INS_WIDTH
+    } else {
+        knobs_right + COL_GAP + INS_WIDTH
+    };
+    if !compact {
+        neu::text::paint_text(
+            painter,
+            pos2(knobs_right, rect.center().y),
+            Align2::RIGHT_CENTER,
+            &TextKind::Hint.display_string(knob_legend),
+            TextKind::Hint,
+            theme.text_3,
+        );
+    }
+    neu::text::paint_text(
+        painter,
+        pos2(ins_right, rect.center().y),
+        Align2::RIGHT_CENTER,
+        "INS",
+        TextKind::Hint,
+        theme.text_3,
+    );
+}
+
+/// Allocates a `ROW_PITCH` row across the left block and lays `add` out left to right on its
+/// 28 pt centre line with the row padding and gaps. `selected` paints the wash and the bar.
+fn left_row(ui: &mut Ui, theme: &Theme, selected: bool, add: impl FnOnce(&mut Ui)) -> Rect {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_PITCH), Sense::hover());
+    if selected && ui.is_rect_visible(rect) {
+        paint_row_wash(ui, rect, theme, true);
+    }
+    let inner = Rect::from_min_max(
+        pos2(
+            rect.min.x + ROW_PAD,
+            rect.min.y + (ROW_PITCH - ROW_HEIGHT) * 0.5,
+        ),
+        pos2(rect.max.x, rect.max.y - (ROW_PITCH - ROW_HEIGHT) * 0.5),
+    );
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(inner)
+            .layout(Layout::left_to_right(Align::Center))
+            .id_salt((rect.min.y as i32, "controls")),
+    );
+    row.spacing_mut().item_spacing = vec2(COL_GAP, 0.0);
+    add(&mut row);
+    rect
+}
+
+/// A mini knob (22) bound to `value`: returns the new value when it moved and whether this
+/// frame started a drag. Named `name`; the tooltip reads `note: value`.
+#[allow(clippy::too_many_arguments)]
+fn row_knob(
+    ui: &mut Ui,
+    theme: &Theme,
+    value: f32,
+    min: f32,
+    max: f32,
+    default: f32,
+    bipolar: bool,
+    fmt: fn(f32) -> String,
+    name: &str,
+    note: &str,
+) -> Option<(f32, bool)> {
+    let spec = KnobSpec {
+        label: "",
+        min,
+        max,
+        default,
+        log: false,
+        bipolar,
+        size: KnobSize::Sm,
+        fmt,
+    };
+    let mut v = value;
+    let tip = format!("{note}: {}", fmt(value));
+    let response = neu::knob_noted(ui, theme, &mut v, &spec, Some(&tip));
+    let shown = f64::from(v);
+    response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), shown, name));
+    (response.changed() || v != value).then_some((v, response.drag_started()))
+}
+
+/// The 22 x 22 insert number box reading `box_text(route)`; a click opens the route picker.
+fn insert_box(ui: &mut Ui, theme: &Theme, route: u8, name: &str) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(INS_WIDTH, INS_WIDTH), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = neu::control_painter(ui);
+        let fill = if response.hovered() {
+            theme.panel_3
+        } else {
+            theme.panel_2
+        };
+        neu::paint_control(&painter, rect, 3.0, fill, theme.border_2);
+        neu::text::paint_text(
+            &painter,
+            rect.center(),
+            Align2::CENTER_CENTER,
+            &crate::ui::mixer::box_text(route),
+            TextKind::Small,
+            theme.text,
+        );
+    }
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), name));
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The LED: on while audible; a click mutes / unmutes, a right-click solos.
+fn row_led(ui: &mut Ui, theme: &Theme, audible: bool, name: &str, tip: &str) -> Response {
+    neu::led_named(ui, theme, audible, LedKind::Ok, name).on_hover_text(tip)
+}
+
+fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow, compact: bool) {
+    let label = row_label(row);
+    let paint_row = PaintRow::Drum(row);
+    let channel = crate::qol::row_channel(paint_row, state.edit_track);
+    let muted = state.row_muted(paint_row);
+    let soloed = state.row_soloed(paint_row);
+    let volume = state.pattern().drum_volume[row.index()];
+    let tune = state.pattern().drum_tune[row.index()];
+    left_row(ui, theme, false, |ui| {
+        let tip = format!(
+            "{} · {} · {}{}",
+            row_name(row),
+            fmt_row_db(volume),
+            fmt_semitones(tune),
+            if muted { " · muted" } else { "" }
+        );
+        let led = row_led(ui, theme, !muted, &tracks::led_name(label), &tip);
+        if led.clicked() {
+            state.toggle_row_mute(paint_row);
+        } else if led.secondary_clicked() {
+            state.toggle_row_solo(paint_row);
+        }
+        let solo = neu::button_kind(ui, theme, "S", ButtonKind::Solo(soloed), ButtonSize::Small);
+        let solo_name = tracks::drum_solo_name(label);
+        solo.widget_info(|| {
+            WidgetInfo::selected(Role::Button, ui.is_enabled(), soloed, &solo_name)
+        });
+        if solo.on_hover_text("Solo").clicked() {
+            state.toggle_row_solo(paint_row);
+        }
+        if !compact {
+            if let Some((db, drag_started)) = row_knob(
+                ui,
+                theme,
+                volume,
+                -24.0,
+                6.0,
+                0.0,
+                false,
+                fmt_row_db,
+                &tracks::drum_volume_name(label),
+                "Vol",
+            ) {
+                if drag_started {
+                    state.begin_continuous_edit(EditKey::DrumVolume(row), true);
+                }
+                state.set_drum_volume(row, db);
+            }
+            if let Some((st, drag_started)) = row_knob(
+                ui,
+                theme,
+                tune,
+                -12.0,
+                12.0,
+                0.0,
+                true,
+                fmt_semitones,
+                &tracks::drum_tune_name(label),
+                "Tune",
+            ) {
+                if drag_started {
+                    state.begin_continuous_edit(EditKey::DrumTune(row), true);
+                }
+                state.set_drum_tune(row, st);
+            }
+        }
+        let route = state.mixer.route(channel);
+        let box_response = insert_box(ui, theme, route, &row_box_name(label)).on_hover_text(
+            format!("Mixer insert: {} · click to pick", state.route_name(route)),
+        );
+        if let Some(picked) = crate::ui::mixer::route_picker(
+            theme,
+            &box_response,
+            state,
+            route,
+            &crate::ui::mixer::source_route_choices(),
+        ) {
+            state.set_route(channel, picked);
+            state.select_insert(picked, false);
+        }
+        let name_size = vec2(
+            if compact {
+                NAME_WIDTH_COMPACT
+            } else {
+                NAME_WIDTH
+            },
+            24.0,
+        );
+        let name = neu::name_button_sized(ui, theme, label, None, false, muted, name_size);
+        let state_text = match (muted, soloed) {
+            (true, true) => "Muted, solo · ",
+            (true, false) => "Muted · ",
+            (false, true) => "Solo · ",
+            (false, false) => "",
+        };
+        let name = name.on_hover_text(format!(
+            "{state_text}Double-click: mute · Shift + double-click: solo · right-click: menu"
+        ));
+        if name.double_clicked() {
+            if press_modifiers(ui).shift {
+                state.toggle_row_solo(paint_row);
+            } else {
+                state.toggle_row_mute(paint_row);
+            }
+        }
+        let items = [
+            MenuItem::item(if muted {
+                tracks::UNMUTE_LABEL
+            } else {
+                tracks::MUTE_LABEL
+            }),
+            MenuItem::item(if soloed {
+                tracks::UNSOLO_LABEL
+            } else {
+                tracks::SOLO_LABEL
+            }),
+            MenuItem::Separator,
+            MenuItem::item(tracks::CLEAR_ROW_LABEL),
+        ];
+        match context_menu(ui, theme, &name, &items) {
+            Some(0) => state.toggle_row_mute(paint_row),
+            Some(1) => state.toggle_row_solo(paint_row),
+            Some(3) => state.clear_row(row),
+            _ => {}
+        }
+    });
+}
+
+fn track_controls(
+    ui: &mut Ui,
+    state: &mut AppState,
+    theme: &Theme,
+    index: usize,
+    slot: TrackId,
+    compact: bool,
+) {
+    let track = state.track(slot).clone();
+    let channel = Channel::from_track(slot);
+    let selected = slot == state.edit_track;
+    let muted = state.mixer.strip(channel).mute;
+    let soloed = state.mixer.strip(channel).solo;
+    let level = state.mixer.get(channel, ChannelParam::Level);
+    let pan = state.mixer.get(channel, ChannelParam::Pan);
+    let colour = theme.track_colour(track.colour);
+    left_row(ui, theme, selected, |ui| {
+        let tip = format!(
+            "{} · {} · {} · {}{}",
+            track.name,
+            track.preset_name(),
+            fmt_level_db(level),
+            fmt_pan(pan),
+            if muted { " · muted" } else { "" }
+        );
+        let led = row_led(ui, theme, !muted, &tracks::led_name(&track.name), &tip);
+        if led.clicked() {
+            state.toggle_mute(channel);
+        } else if led.secondary_clicked() {
+            state.toggle_solo(channel);
+        }
+        let solo = neu::button_kind(ui, theme, "S", ButtonKind::Solo(soloed), ButtonSize::Small);
+        let solo_name = tracks::solo_name(&track.name);
+        solo.widget_info(|| {
+            WidgetInfo::selected(Role::Button, ui.is_enabled(), soloed, &solo_name)
+        });
+        if solo.on_hover_text(format!("Solo {}", track.name)).clicked() {
+            state.toggle_solo(channel);
+        }
+        if !compact {
+            let level_range = ChannelParam::Level.range();
+            if let Some((db, drag_started)) = row_knob(
+                ui,
+                theme,
+                level,
+                *level_range.start(),
+                *level_range.end(),
+                ChannelParam::Level.default_value(channel),
+                false,
+                fmt_level_db,
+                &tracks::level_name(&track.name),
+                "Vol",
+            ) {
+                state.edit_mixer(channel, ChannelParam::Level, db, drag_started);
+            }
+            let pan_range = ChannelParam::Pan.range();
+            if let Some((p, drag_started)) = row_knob(
+                ui,
+                theme,
+                pan,
+                *pan_range.start(),
+                *pan_range.end(),
+                ChannelParam::Pan.default_value(channel),
+                true,
+                fmt_pan,
+                &tracks::pan_name(&track.name),
+                "Pan",
+            ) {
+                state.edit_mixer(channel, ChannelParam::Pan, p, drag_started);
+            }
+        }
+        let route = state.mixer.route(channel);
+        let box_response = insert_box(ui, theme, route, &tracks::insert_box_name(&track.name))
+            .on_hover_text(format!(
+                "Mixer insert: {} · click to pick ({} links a free one)",
+                state.route_name(route),
+                Shortcut::LinkInsert.label()
+            ));
+        if let Some(picked) = crate::ui::mixer::route_picker(
+            theme,
+            &box_response,
+            state,
+            route,
+            &crate::ui::mixer::source_route_choices(),
+        ) {
+            state.set_route(channel, picked);
+            state.select_insert(picked, false);
+        }
+        // The NAME button: the row's button (selected = the edit track).
+        let name_size = vec2(
+            if compact {
+                NAME_WIDTH_COMPACT
+            } else {
+                NAME_WIDTH
+            },
+            24.0,
+        );
+        let name = neu::name_button_sized(
+            ui,
+            theme,
+            &track.name,
+            Some(colour),
+            selected,
+            muted,
+            name_size,
+        );
+        let row_name = tracks::row_name(index, &track.name);
+        name.widget_info(|| {
+            WidgetInfo::selected(Role::Button, ui.is_enabled(), selected, &row_name)
+        });
+        let name = name
+            .on_hover_text(format!(
+                "{} · {}\nClick selects · double-click renames · right-click: menu",
+                track.name,
+                track.preset_name()
+            ))
+            .on_hover_cursor(CursorIcon::PointingHand);
+        if name.double_clicked() {
+            if press_modifiers(ui).shift {
+                state.toggle_solo(channel);
+            } else {
+                neu::begin_edit(ui, tracks::rename_id(slot), &track.name);
+            }
+        } else if name.clicked() {
+            state.select_track(slot);
+        }
+        // The inline rename editor over the name.
+        let font = egui::FontId::proportional(12.0);
+        match neu::show_edit(
+            ui,
+            theme,
+            tracks::rename_id(slot),
+            name.rect,
+            font,
+            Align::Min,
+        ) {
+            ValueEditOutput::Committed(typed) => {
+                state.rename_track(slot, &typed);
+            }
+            ValueEditOutput::Editing | ValueEditOutput::Idle | ValueEditOutput::Cancelled => {}
+        }
+        // The row menu.
+        let slots: Vec<TrackId> = state.active_tracks().collect();
+        let position = slots.iter().position(|s| *s == slot).unwrap_or(0);
+        let can_up = position > 0;
+        let can_down = position + 1 < slots.len();
+        let can_delete = slots.len() > 1;
+        let can_dup = state.free_track_slot().is_some();
+        let enabled = |label, on| {
+            if on {
+                MenuItem::item(label)
+            } else {
+                MenuItem::disabled(label, None)
+            }
+        };
+        let items = [
+            MenuItem::item(tracks::RENAME_LABEL),
+            enabled(tracks::DUP_LABEL, can_dup),
+            enabled(tracks::DEL_LABEL, can_delete),
+            MenuItem::Separator,
+            enabled(tracks::MOVE_UP_NAME, can_up),
+            enabled(tracks::MOVE_DOWN_NAME, can_down),
+            MenuItem::item(tracks::COLOUR_LABEL),
+            MenuItem::Separator,
+            MenuItem::keyed(tracks::LINK_NAME, Shortcut::LinkInsert.label()),
+            MenuItem::item(tracks::CLEAR_NOTES_LABEL),
+        ];
+        match context_menu(ui, theme, &name, &items) {
+            Some(0) => neu::begin_edit(ui, tracks::rename_id(slot), &track.name),
+            Some(1) => {
+                state.duplicate_track(slot);
+            }
+            Some(2) => tracks::set_pending_delete(ui, Some(slot)),
+            Some(4) => {
+                state.move_track(slot, true);
+            }
+            Some(5) => {
+                state.move_track(slot, false);
+            }
+            Some(6) => {
+                state.set_track_colour(slot, (track.colour + 1) % COLOUR_COUNT);
+            }
+            Some(8) => {
+                if state.link_track_to_free_insert(slot).is_some() {
+                    state.set_view(View::Mixer);
+                }
+            }
+            Some(9) => {
+                state.select_track(slot);
+                state.clear_notes();
+            }
+            _ => {}
+        }
+    });
+}
+
+/// Opens `items` as a context menu under a right-click on `anchor`; returns the entry
+/// picked this frame.
+fn context_menu(
+    ui: &Ui,
+    theme: &Theme,
+    anchor: &Response,
+    items: &[MenuItem<'_>],
+) -> Option<usize> {
+    let _ = ui;
+    egui::Popup::context_menu(anchor)
+        .frame(Frame::NONE)
+        .gap(4.0)
+        .show(|ui| neu::menu(ui, theme, items))
+        .and_then(|r| r.inner)
+}
+
+/// The add row: the small plus icon, "Add track" and the Ctrl+T keycap, or the pending
+/// "Delete <name>?" confirm with YES / NO.
+fn add_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ADD_ROW), Sense::hover());
+    let inner = Rect::from_min_max(pos2(rect.min.x + ROW_PAD, rect.min.y), rect.max);
+    let mut row = ui.new_child(
+        UiBuilder::new()
+            .max_rect(inner)
+            .layout(Layout::left_to_right(Align::Center))
+            .id_salt("rack_add_row"),
+    );
+    row.spacing_mut().item_spacing = vec2(COL_GAP, 0.0);
+    let ui = &mut row;
+    if let Some(slot) = tracks::pending_delete(ui) {
+        let question = tracks::delete_question(&state.track(slot).name);
+        neu::text_widget(ui, &question, TextKind::Label, theme.text);
+        if neu::button_kind(
+            ui,
+            theme,
+            tracks::YES_LABEL,
+            ButtonKind::Primary,
+            ButtonSize::Small,
+        )
+        .on_hover_text("Delete the track and its notes (Ctrl+Z brings it back)")
+        .clicked()
+        {
+            state.remove_track(slot);
+            tracks::set_pending_delete(ui, None);
+        }
+        if neu::button_kind(
+            ui,
+            theme,
+            tracks::NO_LABEL,
+            ButtonKind::Secondary,
+            ButtonSize::Small,
+        )
+        .on_hover_text("Keep the track")
+        .clicked()
+        {
+            tracks::set_pending_delete(ui, None);
+        }
+        return;
+    }
+    let add = neu::icon_button_kind(
+        ui,
+        theme,
+        Icon::Plus,
+        vec2(22.0, 22.0),
+        ButtonKind::Secondary,
+    );
+    add.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), tracks::ADD_NAME));
+    if add
+        .on_hover_text(format!(
+            "New track with the default preset ({}) · {}",
+            Shortcut::AddTrack.label(),
+            tracks::HINT
+        ))
+        .clicked()
+    {
+        state.add_track();
+    }
+    // Painted, not a widget: the button already carries the accessible name.
+    let galley = neu::text::layout(
+        ui.painter(),
+        tracks::ADD_LABEL,
+        TextKind::Label,
+        theme.text_2,
+    );
+    let (text_rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    if ui.is_rect_visible(text_rect) {
+        neu::text::paint_galley(
+            ui.painter(),
+            text_rect.center(),
+            Align2::CENTER_CENTER,
+            galley,
+            TextKind::Label,
+            theme.text_2,
+        );
+    }
+    neu::keycap(ui, theme, Shortcut::AddTrack.label());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input helpers.
 
 /// The modifiers of a press this frame: the raw modifier state, or the modifiers carried by
 /// this frame's pointer-button events (synthetic clicks under `egui_kittest` deliver them
 /// only on the event).
-fn press_modifiers(ui: &Ui) -> Modifiers {
+pub fn press_modifiers(ui: &Ui) -> Modifiers {
     ui.input(|i| {
         let mut mods = i.modifiers;
         for e in &i.events {
@@ -1213,237 +1509,45 @@ fn stroke_reaches(ui: &Ui, state: &AppState, response: &Response) -> bool {
     state.paint.is_some() && response.contains_pointer() && ui.input(|i| i.pointer.any_down())
 }
 
-/// A small, unlabelled knob (value shown as a tooltip) for one row setting. Returns the new
-/// value when it moved, and whether this frame started a drag (a fresh undo step).
-fn row_knob(
-    ui: &mut Ui,
-    theme: &Theme,
-    value: f32,
-    min: f32,
-    max: f32,
-    bipolar: bool,
-    fmt: fn(f32) -> String,
-) -> Option<(f32, bool)> {
-    let spec = KnobSpec {
-        label: "",
-        min,
-        max,
-        default: 0.0,
-        log: false,
-        bipolar,
-        size: KnobSize::Sm,
-        fmt,
-    };
-    let mut v = value;
-    let response = neu::knob(ui, theme, &mut v, &spec);
-    (response.changed() || v != value).then_some((v, response.drag_started()))
-}
-
-/// Absolute step index of grid column `column` in the shown bar.
-fn step_of(state: &AppState, column: usize) -> usize {
-    state.shown_bar * STEPS + column
-}
-
-fn drum_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow) {
-    grid_row(ui, ROW_HEIGHT, |ui| {
-        name_cell(ui, state, theme, row_label(row), PaintRow::Drum(row));
-        ui.add_space(COLUMN_GAP);
-
-        let volume = state.pattern().drum_volume[row.index()];
-        if let Some((db, drag_started)) = row_knob(ui, theme, volume, -24.0, 6.0, false, fmt_row_db)
-        {
-            if drag_started {
-                state.begin_continuous_edit(EditKey::DrumVolume(row), true);
-            }
-            state.set_drum_volume(row, db);
-        }
-        ui.add_space(KNOB_GAP);
-        let tune = state.pattern().drum_tune[row.index()];
-        if let Some((st, drag_started)) =
-            row_knob(ui, theme, tune, -12.0, 12.0, true, fmt_semitones)
-        {
-            if drag_started {
-                state.begin_continuous_edit(EditKey::DrumTune(row), true);
-            }
-            state.set_drum_tune(row, st);
-        }
-        ui.add_space(COLUMN_GAP);
-
-        for column in 0..STEPS {
-            cell_gap(ui, column);
-            let step = step_of(state, column);
-            let cell = state.pattern().drums[row.index()][step];
-            let spec = StepCellSpec {
-                on: cell.on,
-                accent: cell.accent,
-                current: is_current(state, column),
-                selected: false,
-                label: None,
-            };
-            let response = neu::step_cell(ui, theme, &spec);
-            let name = cell_name(row_name(row), step);
-            response.widget_info(|| {
-                WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.on, &name)
-            });
-            // Right-click clears the cell (test-feedback branch); a primary press starts the
-            // QOL drag-paint stroke (Ctrl: accent, Shift: shift-toggle); a running stroke
-            // paints the cell it reaches.
-            let paint_row = PaintRow::Drum(row);
-            if response.secondary_clicked() {
-                state.clear_drum_step(row, step);
-            } else if press_on(ui, &response) {
-                let mods = press_modifiers(ui);
-                if mods.command || mods.ctrl {
-                    state.toggle_drum_accent(row, step);
-                } else if mods.shift {
-                    state.toggle_drum_step(row, step, true);
-                } else {
-                    state.begin_paint(paint_row, !cell.on, step);
-                }
-            } else if stroke_reaches(ui, state, &response) {
-                state.paint_step(paint_row, step);
-            }
-        }
-        ui.add_space(COLUMN_GAP);
-
-        if clear_pill(ui, theme).clicked() {
-            state.clear_row(row);
-        }
-    });
-}
-
-fn bass_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    grid_row(ui, ROW_HEIGHT, |ui| {
-        name_cell(ui, state, theme, BASS_NAME, PaintRow::Bass);
-        ui.add_space(COLUMN_GAP + CONTROLS_WIDTH + COLUMN_GAP);
-
-        for column in 0..STEPS {
-            cell_gap(ui, column);
-            let step = step_of(state, column);
-            let cell = state.pattern().synth[step];
-            let text = cell.note.map_or_else(|| "–".to_owned(), neu::note_name);
-            let spec = StepCellSpec {
-                on: cell.note.is_some(),
-                accent: cell.accent,
-                current: is_current(state, column),
-                selected: state.selected_step == Some(step),
-                label: Some(&text),
-            };
-            let response = neu::step_cell(ui, theme, &spec);
-            let name = cell_name(BASS_NAME, step);
-            response.widget_info(|| {
-                WidgetInfo::selected(Role::Button, ui.is_enabled(), cell.note.is_some(), &name)
-            });
-            if response.secondary_clicked() {
-                state.clear_synth_step(step);
-            } else if press_on(ui, &response) {
-                let mods = press_modifiers(ui);
-                if mods.command || mods.ctrl {
-                    state.toggle_synth_accent(step);
-                } else {
-                    state.click_synth_step(step, mods.shift);
-                }
-            }
-        }
-        ui.add_space(COLUMN_GAP);
-
-        if clear_pill(ui, theme).clicked() {
-            state.clear_synth();
-        }
-    });
-}
-
-/// The bottom row: BAR selector (patterns longer than a bar) under the name column, the
-/// playhead dots under the grid (accent dot on the current column while this bar plays) and
-/// the pattern CLEAR circle under the row CLEAR circles.
-fn bottom_row(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    grid_row(ui, BOTTOM_ROW, |ui| {
-        let left = ui.cursor().min.x;
-        bar_selector(ui, state, theme);
-        // Whatever the selector took, the dots start at the grid's left edge.
-        let used = ui.cursor().min.x - left;
-        ui.add_space((GRID_LEFT - used).max(0.0));
-        for column in 0..STEPS {
-            cell_gap(ui, column);
-            neu::playhead_dot(ui, theme, is_current(state, column));
-        }
-        ui.add_space(COLUMN_GAP);
-        let response = clear_pill(ui, theme).on_hover_text("Clear every step of this pattern");
-        response.widget_info(|| {
-            WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLEAR_PATTERN_LABEL)
-        });
-        if response.clicked() {
-            state.clear_pattern();
-        }
-    });
-}
-
-/// `BAR 1 | 2 | ..` for a pattern of more than one bar; nothing for a one-bar pattern.
-fn bar_selector(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let bars = state.pattern().bars();
-    if bars <= 1 {
-        return;
-    }
-    let names: Vec<String> = (1..=bars).map(|b| b.to_string()).collect();
-    let items: Vec<&str> = names.iter().map(String::as_str).collect();
-    let before = state.shown_bar.min(bars - 1);
-    let mut selected = before;
-    ui.spacing_mut().item_spacing.x = KNOB_GAP;
-    neu::label(ui, theme, BAR_LABEL);
-    neu::segmented(ui, theme, &mut selected, &items).on_hover_text("Bar shown in the grid");
-    ui.spacing_mut().item_spacing.x = 0.0;
-    if selected != before {
-        state.show_bar(selected);
-    }
-}
-
-/// The gap before cell `step` (none before the first, a wider one at group boundaries).
-fn cell_gap(ui: &mut Ui, step: usize) {
-    if step > 0 {
-        ui.add_space(cell_x(step) - cell_x(step - 1) - STEP_CELL);
-    }
-}
-
-/// Whether the playhead sits on grid column `column`: the transport runs, the edit pattern is
-/// the one playing, its playing bar is the shown bar and the step matches.
-fn is_current(state: &AppState, column: usize) -> bool {
-    let pos = state.playhead;
-    pos.playing
-        && pos.pattern == state.current()
-        && usize::from(pos.bar) == state.shown_bar
-        && usize::from(pos.step) == column
-}
-
-/// The CLEAR control of a row and of the pattern: the kit's 28 pt stepper circle with the
-/// `x` glyph (accessible as "Clear"). The QOL "Clear" pill (73 pt) made the grid rows 947 pt,
-/// 33 more than the sequencer's slot at 1280 x 1140, which pushed the right-hand column 33 pt
-/// past the page (M10 review); the rows are 902 pt with the circle.
-fn clear_pill(ui: &mut Ui, theme: &Theme) -> Response {
-    neu::stepper_button(ui, theme, Icon::Clear)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cell_positions_follow_the_mock_maths() {
+    fn cell_positions_follow_the_deck_maths() {
         assert_eq!(cell_x(0), 0.0);
-        assert_eq!(cell_x(1), 40.0);
-        assert_eq!(cell_x(3), 120.0);
-        assert_eq!(cell_x(4), 180.0);
-        assert_eq!(cell_x(15), 15.0 * 40.0 + 3.0 * 20.0);
+        assert_eq!(cell_x(1), 26.0);
+        assert_eq!(cell_x(3), 78.0);
+        assert_eq!(cell_x(4), 108.0);
         assert_eq!(cell_x(15) + STEP_CELL, GRID_WIDTH);
-        assert_eq!(SM_KNOB, KnobSize::Sm.block_width());
+        assert_eq!(GRID_WIDTH, 426.0);
+    }
+
+    #[test]
+    fn the_row_budget_matches_winner() {
+        // LED 10 · S 22 · knob 22 · knob 22 · INS 22 · NAME 76 · STEPS 426 with padding 8 and
+        // gaps 6: 652 content; 10 scrollbar + 2 border = 664.
+        assert_eq!(CONTENT_WIDTH, 652.0);
+        assert_eq!(
+            CONTENT_WIDTH + neu::SCROLLBAR_WIDTH + 2.0,
+            crate::app::DEFAULT_RACK_WIDTH
+        );
+        // Compact: no knobs, name 64, a 210 steps viewport: inside the 400 narrow rack.
+        let compact = CONTENT_WIDTH_COMPACT + neu::SCROLLBAR_WIDTH + 2.0;
+        let narrow_rack = crate::app::MIN_RACK_WIDTH;
+        assert!(compact <= narrow_rack, "{compact} inside {narrow_rack}");
+        assert!(is_compact(400.0) && !is_compact(664.0));
     }
 
     #[test]
     fn names_and_formatters() {
         assert_eq!(cell_name("Kick", 0), "Kick step 1");
-        assert_eq!(cell_name(BASS_NAME, 15), "Bass step 16");
+        assert_eq!(cell_name("Synth", 15), "Synth step 16");
         assert_eq!(cell_name("Kick", 16), "Kick step 17");
         assert_eq!(queued_name(1), "Queued B");
+        assert_eq!(tile_name(2), "Pattern C");
         assert_eq!(row_name(DrumRow::ClosedHat), "Closed hat");
+        assert_eq!(row_box_name("Kick"), "Row insert Kick");
         assert_eq!(fmt_row_db(0.0), "0 dB");
         assert_eq!(fmt_row_db(-6.0), "-6 dB");
         assert_eq!(fmt_row_db(3.0), "+3 dB");
@@ -1451,5 +1555,20 @@ mod tests {
         assert_eq!(fmt_semitones(-3.0), "-3 st");
         assert_eq!(length_items(), ["1 bar", "2 bars", "4 bars"]);
         assert_eq!(PATTERN_TABS.len(), PATTERN_COUNT);
+    }
+
+    #[test]
+    fn the_lane_cell_of_another_track_is_its_lowest_note() {
+        let (mut state, _engine) = AppState::headless(neu::ThemeMode::Dark);
+        state.add_track();
+        // Track 2 is the edit track; track 1 keeps the demo bass line.
+        assert_eq!(state.edit_track, 1);
+        let demo = engine::Pattern::demo();
+        for step in 0..STEPS {
+            assert_eq!(lane_cell(&state, 0, step), demo.synth[step], "step {step}");
+        }
+        assert_eq!(lane_cell(&state, 1, 0), SynthStep::default());
+        assert!(body_height(&state) > 7.0 * ROW_PITCH);
+        assert!(header_sub(&state).starts_with("Pattern A · 1 bar · Track 2 · "));
     }
 }

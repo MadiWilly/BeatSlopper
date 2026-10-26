@@ -63,13 +63,20 @@
 //! mixer is part of the [`Snapshot`], the project file (v4) and `resend_all`
 //! ([`mixer_messages`]: 36 values). The engine's block peaks are read every frame
 //! ([`AppState::update_meters`]) and shown with a [`METER_DECAY_DB_PER_S`] fall
-//! ([`decay_meter`]); the UI keeps repainting while a meter is still falling. The top row's
-//! right slot shows the FX rack or the MIXER ([`AppState::right_panel`], persisted).
+//! ([`decay_meter`]); the UI keeps repainting while a meter is still falling.
+//!
+//! Shell (M12, `design/round3/WINNER.md`): the window is the Deck shell (`crate::ui::shell`):
+//! the toolbar, the BROWSER column, the CHANNEL RACK window, one main [`View`] (piano roll,
+//! mixer, synth & fx, song, visualizer) behind a tab strip and the F5..F9 keys, the mixer
+//! bar, the KEYBOARD strip and the hint bar. [`AppState::view`], [`AppState::browser_open`],
+//! [`AppState::keyboard_open`], [`AppState::mixer_drawer_open`], [`AppState::rack_open`],
+//! [`AppState::rack_width`] and the browser sections are the [`ShellLayout`], persisted
+//! under [`SHELL_LAYOUT_KEY`]. The rack (the step grid) and the roll are both on screen in the
+//! roll view, so the grid's bass selection always takes keyboard notes.
 //!
 //! Piano roll (M7): the synth part of a pattern is its note list (`Pattern::notes`, chords and
-//! held notes); the grid's bass lane is the derived one-note-per-step view of it. The
-//! SEQUENCER panel shows the step GRID or the piano ROLL ([`AppState::lane_view`], persisted
-//! with the roll's bottom pitch [`AppState::roll_low_pitch`]). Roll edits go through
+//! held notes); the rack's track lane is the derived one-note-per-step view of it. The roll's
+//! bottom pitch [`AppState::roll_low_pitch`] is persisted. Roll edits go through
 //! [`AppState::add_note`] / [`AppState::set_note`] / [`AppState::remove_note`] /
 //! [`AppState::clear_notes`]: each is one undo step, marks the project dirty, mutates the
 //! mirror through the `Pattern` note API (which re-sorts and rebuilds the lane) and replays
@@ -148,11 +155,9 @@ pub const EXPORT_REPEATS_KEY: &str = "export_repeats";
 /// eframe storage key for the chosen MIDI input port name.
 pub const MIDI_PORT_KEY: &str = "midi_port";
 
-/// eframe storage key for the right-hand top panel choice (FX rack or MIXER).
-pub const RIGHT_PANEL_KEY: &str = "right_panel";
-
-/// eframe storage key for the sequencer's lane view (step GRID or piano ROLL, M7).
-pub const LANE_VIEW_KEY: &str = "lane_view";
+/// eframe storage key for the shell layout ([`ShellLayout`]: the view, the open docks, the
+/// rack width, the browser sections; M12).
+pub const SHELL_LAYOUT_KEY: &str = "shell_layout";
 
 /// eframe storage key for the piano roll's bottom visible pitch (M7).
 pub const ROLL_LOW_PITCH_KEY: &str = "roll_low_pitch";
@@ -229,37 +234,160 @@ pub enum PendingAction {
     OpenRecent,
 }
 
-/// Which panel the right-hand column shows (M5): the PROJECT panel, the RECENT projects
-/// list (QOL, a sub-view under the PROJECT tab), the SONG CHAIN panel, the VISUALIZER
-/// panel or the TRACKS panel (M10). The column has room for one at a time; switching the
-/// play mode switches the tab too, and adding or duplicating a track by shortcut shows
-/// the TRACKS panel so the new track is visible.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RightTab {
-    #[default]
-    Project,
-    Recent,
-    Chain,
-    Visual,
-    Tracks,
-}
-
-/// Which panel the top row's right-hand slot shows (M6): the FX rack or the MIXER. Both heads
-/// carry the `FX | Mixer` tab; the choice is persisted under [`RIGHT_PANEL_KEY`].
+/// What the main window shows (M12, WINNER section 5 "View switcher"): the PIANO ROLL (F5),
+/// the MIXER (F6; the drawer in M13), SYNTH & FX (F7), SONG (F8) or the VISUALIZER (the
+/// SONG workspace's side window in WINNER; its own tab until M14). The tab strip over the
+/// main window mirrors the toolbar's view buttons. Part of the persisted [`ShellLayout`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RightPanel {
+pub enum View {
     #[default]
-    Fx,
-    Mixer,
-}
-
-/// What the SEQUENCER panel shows under its head (M7): the step GRID (drum rows and the bass
-/// lane) or the piano ROLL of the edit pattern's notes. Persisted under [`LANE_VIEW_KEY`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LaneView {
-    #[default]
-    Grid,
     Roll,
+    Mixer,
+    Synth,
+    Song,
+    Visual,
+}
+
+impl View {
+    /// Every view, in tab order.
+    pub const ALL: [View; 5] = [
+        View::Roll,
+        View::Mixer,
+        View::Synth,
+        View::Song,
+        View::Visual,
+    ];
+
+    /// The window title (title case; the tab strip and the window header set it in caps).
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            View::Roll => "Piano roll",
+            View::Mixer => "Mixer",
+            View::Synth => "Synth & FX",
+            View::Song => "Song",
+            View::Visual => "Visualizer",
+        }
+    }
+
+    /// The tab strip label (caps, so it never shares an accessible name with the view's
+    /// own widgets: the roll is "Piano roll").
+    #[must_use]
+    pub fn tab_label(self) -> &'static str {
+        match self {
+            View::Roll => "PIANO ROLL",
+            View::Mixer => "MIXER",
+            View::Synth => "SYNTH & FX",
+            View::Song => "SONG",
+            View::Visual => "VISUALIZER",
+        }
+    }
+
+    /// The F-key that selects the view (the visualizer has none: F11 is its full-screen).
+    #[must_use]
+    pub fn key(self) -> Option<&'static str> {
+        match self {
+            View::Roll => Some("F5"),
+            View::Mixer => Some("F6"),
+            View::Synth => Some("F7"),
+            View::Song => Some("F8"),
+            View::Visual => None,
+        }
+    }
+
+    /// Accessible name of the toolbar's view button: `"Piano roll view"`.
+    #[must_use]
+    pub fn button_name(self) -> &'static str {
+        match self {
+            View::Roll => "Piano roll view",
+            View::Mixer => "Mixer view",
+            View::Synth => "Synth & FX view",
+            View::Song => "Song view",
+            View::Visual => "Visualizer view",
+        }
+    }
+
+    /// The toolbar icon.
+    #[must_use]
+    pub fn icon(self) -> neu::Icon {
+        match self {
+            View::Roll => neu::Icon::Roll,
+            View::Mixer => neu::Icon::Mixer,
+            View::Synth => neu::Icon::Synth,
+            View::Song => neu::Icon::Song,
+            View::Visual => neu::Icon::Fullscreen,
+        }
+    }
+
+    /// Whether the CHANNEL RACK window collapses to its header when this view opens (WINNER:
+    /// SYNTH & FX and SONG replace the roll; the roll and the mixer keep the rack).
+    #[must_use]
+    pub fn collapses_rack(self) -> bool {
+        matches!(self, View::Synth | View::Song | View::Visual)
+    }
+}
+
+/// Default width of the CHANNEL RACK window (WINNER: 664 = 652 content + 10 scrollbar + 2
+/// border).
+pub const DEFAULT_RACK_WIDTH: f32 = 664.0;
+/// Narrowest the rack can be dragged (the narrow layout's width).
+pub const MIN_RACK_WIDTH: f32 = 400.0;
+/// Widest the rack can be dragged.
+pub const MAX_RACK_WIDTH: f32 = 1200.0;
+
+/// The shell's layout state, persisted as one value under [`SHELL_LAYOUT_KEY`] (M12). Every
+/// field has a sensible default, so an older or missing value falls back field by field.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShellLayout {
+    /// The main window's view.
+    pub view: View,
+    /// The BROWSER column is open (208 wide) rather than the 28 pt rail.
+    pub browser_open: bool,
+    /// The KEYBOARD strip shows its keys (96 tall) rather than its header only.
+    pub keyboard_open: bool,
+    /// The mixer drawer is up (M12: the MIXER view is showing; the real drawer is M13).
+    pub mixer_drawer_open: bool,
+    /// The CHANNEL RACK window is expanded rather than collapsed to its header.
+    pub rack_open: bool,
+    /// Width of the CHANNEL RACK window in the wide layout (the rack | main split).
+    pub rack_width: f32,
+    /// The browser's PROJECT section is expanded.
+    pub project_open: bool,
+    /// The browser's RECENT section is expanded.
+    pub recent_open: bool,
+    /// The piano roll draws the other tracks' notes as ghosts.
+    pub roll_ghosts: bool,
+}
+
+impl Default for ShellLayout {
+    fn default() -> Self {
+        Self {
+            view: View::Roll,
+            browser_open: true,
+            keyboard_open: true,
+            mixer_drawer_open: false,
+            rack_open: true,
+            rack_width: DEFAULT_RACK_WIDTH,
+            project_open: true,
+            recent_open: false,
+            roll_ghosts: true,
+        }
+    }
+}
+
+impl ShellLayout {
+    /// A copy with every value inside its range (a hand-edited or stale file never breaks
+    /// the layout).
+    #[must_use]
+    pub fn sanitised(mut self) -> Self {
+        if !self.rack_width.is_finite() {
+            self.rack_width = DEFAULT_RACK_WIDTH;
+        }
+        self.rack_width = self.rack_width.clamp(MIN_RACK_WIDTH, MAX_RACK_WIDTH);
+        self.mixer_drawer_open = self.view == View::Mixer;
+        self
+    }
 }
 
 /// The decayed level a meter shows one frame on: a new peak replaces the shown level at once,
@@ -647,12 +775,31 @@ pub struct AppState {
     pub shown_bar: usize,
     /// While playing the edit pattern, the grid follows the playing bar.
     pub follow: bool,
-    /// Which panel the right-hand column shows.
-    pub right_tab: RightTab,
-    /// Which panel the top row's right slot shows: the FX rack or the MIXER (persisted).
-    pub right_panel: RightPanel,
-    /// What the SEQUENCER panel shows: the step GRID or the piano ROLL (M7, persisted).
-    pub lane_view: LaneView,
+    // ---- Shell layout (M12; persisted together as a `ShellLayout`) ----
+    /// What the main window shows ([`View`]).
+    pub view: View,
+    /// The view the mixer bar's chevron returns to when the MIXER view closes (not
+    /// persisted; the last non-mixer view).
+    pub last_main_view: View,
+    /// The BROWSER column is open (F9 toggles; the rail otherwise).
+    pub browser_open: bool,
+    /// The KEYBOARD strip shows its keys.
+    pub keyboard_open: bool,
+    /// The mixer drawer is up (M12: the MIXER view is showing).
+    pub mixer_drawer_open: bool,
+    /// The CHANNEL RACK window is expanded (false: collapsed to its header).
+    pub rack_open: bool,
+    /// Width of the CHANNEL RACK window in the wide layout (the rack | main drag handle).
+    pub rack_width: f32,
+    /// The browser's PROJECT section is expanded.
+    pub project_open: bool,
+    /// The browser's RECENT section is expanded.
+    pub recent_open: bool,
+    /// The piano roll draws the other tracks' notes as ghosts (the GHOSTS toggle).
+    pub roll_ghosts: bool,
+    /// Set once the narrow layout's defaults (browser rail, keyboard bar) were applied to a
+    /// window at or under 1000 points wide (not persisted).
+    pub narrow_applied: bool,
     /// MIDI pitch of the piano roll's bottom row (M7, persisted; the wheel scrolls it).
     pub roll_low_pitch: u8,
     /// Index into [`Pattern::notes`] of the note selected on the piano roll, if any.
@@ -819,8 +966,9 @@ pub struct AppState {
     pub visual_updated: Option<Instant>,
     /// When a drum hit was last seen (the visuals keep repainting for [`VISUAL_HIT_TAIL`]).
     pub visual_last_hit: Option<Instant>,
-    /// Where the SYNTH | FX row was drawn last frame (the full overlay covers it).
-    pub top_row_rect: Option<egui::Rect>,
+    /// Where the workspace (the rack and the main window, between the browser and the mixer
+    /// bar) was drawn last frame: the full visualizer overlay covers it.
+    pub workspace_rect: Option<egui::Rect>,
     // ---- QOL pass (see `crate::qol`) ----
     /// Tap-tempo taps.
     pub tap: TapTempo,
@@ -878,9 +1026,17 @@ impl AppState {
             clipboard: None,
             shown_bar: 0,
             follow: true,
-            right_tab: RightTab::Project,
-            right_panel: RightPanel::Fx,
-            lane_view: LaneView::Grid,
+            view: View::Roll,
+            last_main_view: View::Roll,
+            browser_open: true,
+            keyboard_open: true,
+            mixer_drawer_open: false,
+            rack_open: true,
+            rack_width: DEFAULT_RACK_WIDTH,
+            project_open: true,
+            recent_open: false,
+            roll_ghosts: true,
+            narrow_applied: false,
             roll_low_pitch: DEFAULT_ROLL_LOW_PITCH,
             roll_selected: None,
             roll_extra_rows: 0,
@@ -947,7 +1103,7 @@ impl AppState {
             visual_hits: 0,
             visual_updated: None,
             visual_last_hit: None,
-            top_row_rect: None,
+            workspace_rect: None,
             tap: TapTempo::new(),
             paint: None,
             recent: RecentList::new(),
@@ -1835,10 +1991,12 @@ impl AppState {
         }
     }
 
-    /// Opens the preset browser over the SYNTH panel's body; with `focus_search` the search
+    /// Opens the BROWSER column's PRESETS section; with `focus_search` the search
     /// field takes the keyboard once it is drawn (Ctrl+Shift+P).
     pub fn open_preset_browser(&mut self, focus_search: bool) {
         self.preset_browser_open = true;
+        // The section lives in the BROWSER column (M12): a collapsed column opens too.
+        self.browser_open = true;
         if focus_search {
             self.preset_search_focus = true;
         }
@@ -1915,16 +2073,115 @@ impl AppState {
     }
 
     /// Switches between pattern and song mode: the bank mirror, the engine (`SetPlayMode`) and
-    /// the right-hand column's tab (SONG CHAIN in song mode, PROJECT in pattern mode). Not an
-    /// undo step, like the transport.
+    /// the main view (SONG in song mode, the PIANO ROLL in pattern mode). Not an undo step,
+    /// like the transport.
     pub fn set_play_mode(&mut self, mode: PlayMode) {
         self.bank.mode = mode;
         self.engine_mode = mode;
         self.send(Message::SetPlayMode(mode));
-        self.right_tab = match mode {
-            PlayMode::Song => RightTab::Chain,
-            PlayMode::Pattern => RightTab::Project,
+        self.set_view(match mode {
+            PlayMode::Song => View::Song,
+            PlayMode::Pattern => View::Roll,
+        });
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Shell layout (M12).
+
+    /// Shows `view` in the main window. The SYNTH & FX, SONG and VISUALIZER views collapse
+    /// the rack to its header and the PIANO ROLL re-expands it (WINNER section 5); the
+    /// MIXER keeps it. Leaving the roll drops the roll selection. Not an edit.
+    pub fn set_view(&mut self, view: View) {
+        if view != View::Roll && self.view == View::Roll {
+            self.clear_roll_selection();
+        }
+        if view != View::Mixer {
+            self.last_main_view = view;
+        }
+        self.view = view;
+        self.mixer_drawer_open = view == View::Mixer;
+        match view {
+            View::Roll => self.rack_open = true,
+            View::Mixer => {}
+            _ => self.rack_open = false,
+        }
+    }
+
+    /// The mixer bar's chevron / F6: opens the MIXER view, or returns to the view it
+    /// replaced when the mixer is already showing.
+    pub fn toggle_mixer_drawer(&mut self) {
+        if self.view == View::Mixer {
+            self.set_view(self.last_main_view);
+        } else {
+            self.set_view(View::Mixer);
+        }
+    }
+
+    /// F9 / the rail: shows or hides the BROWSER column.
+    pub fn toggle_browser(&mut self) {
+        self.browser_open = !self.browser_open;
+    }
+
+    /// The KEYBOARD strip's chevron: shows or hides its keys.
+    pub fn toggle_keyboard(&mut self) {
+        self.keyboard_open = !self.keyboard_open;
+    }
+
+    /// The CHANNEL RACK's chevron: expands it or collapses it to its header.
+    pub fn toggle_rack(&mut self) {
+        self.rack_open = !self.rack_open;
+    }
+
+    /// Sets the rack | main split (clamped to `MIN_RACK_WIDTH..=MAX_RACK_WIDTH`).
+    pub fn set_rack_width(&mut self, width: f32) {
+        if width.is_finite() {
+            self.rack_width = width.clamp(MIN_RACK_WIDTH, MAX_RACK_WIDTH);
+        }
+    }
+
+    /// The persisted layout.
+    #[must_use]
+    pub fn layout(&self) -> ShellLayout {
+        ShellLayout {
+            view: self.view,
+            browser_open: self.browser_open,
+            keyboard_open: self.keyboard_open,
+            mixer_drawer_open: self.mixer_drawer_open,
+            rack_open: self.rack_open,
+            rack_width: self.rack_width,
+            project_open: self.project_open,
+            recent_open: self.recent_open,
+            roll_ghosts: self.roll_ghosts,
+        }
+    }
+
+    /// Applies a persisted layout (sanitised).
+    pub fn apply_layout(&mut self, layout: ShellLayout) {
+        let layout = layout.sanitised();
+        self.view = layout.view;
+        self.last_main_view = if layout.view == View::Mixer {
+            View::Roll
+        } else {
+            layout.view
         };
+        self.browser_open = layout.browser_open;
+        self.keyboard_open = layout.keyboard_open;
+        self.mixer_drawer_open = layout.mixer_drawer_open;
+        self.rack_open = layout.rack_open;
+        self.rack_width = layout.rack_width;
+        self.project_open = layout.project_open;
+        self.recent_open = layout.recent_open;
+        self.roll_ghosts = layout.roll_ghosts;
+    }
+
+    /// The first frame at or under 1000 points wide applies the narrow defaults once (the
+    /// browser becomes the rail, the keyboard a bar); the user may open them again.
+    pub fn apply_narrow_defaults(&mut self, narrow: bool) {
+        if narrow && !self.narrow_applied {
+            self.narrow_applied = true;
+            self.browser_open = false;
+            self.keyboard_open = false;
+        }
     }
 
     /// The transport's position read-out: `"A · bar 2/4"` in pattern mode, `"SONG 3/5 · B"`
@@ -2286,18 +2543,6 @@ impl AppState {
         let track = self.edit_track;
         for msg in note_messages(self.pattern(), index, track) {
             self.send(msg);
-        }
-    }
-
-    /// Switches the SEQUENCER panel between the step GRID and the piano ROLL. Not an edit.
-    /// The grid's bass selection is dropped on the way to the roll (in ROLL mode the computer
-    /// keyboard only plays, unless record armed).
-    pub fn set_lane_view(&mut self, view: LaneView) {
-        self.lane_view = view;
-        if view == LaneView::Roll {
-            self.selected_step = None;
-        } else {
-            self.clear_roll_selection();
         }
     }
 
@@ -3155,12 +3400,9 @@ impl AppState {
     pub fn note_on_from(&mut self, note: u8, velocity: f32, source: NoteSource) {
         let note = note.min(127);
         let velocity = velocity.clamp(0.0, 1.0);
-        // The grid's bass selection takes the note only while the grid is showing; on the
-        // roll the keyboard just plays (overdub below still records length-1 notes).
-        if let Some(step) = self
-            .selected_step
-            .filter(|_| self.lane_view == LaneView::Grid)
-        {
+        // A selected rack cell takes the note (the rack is always on screen, M12); otherwise
+        // the keyboard just plays (overdub below still records length-1 notes).
+        if let Some(step) = self.selected_step {
             let accent = self.pattern().synth[step % self.pattern().len()].accent;
             self.set_synth_step(step, Some(note), accent);
         } else if self.is_recording() {
@@ -3227,7 +3469,7 @@ impl AppState {
             if escape {
                 self.escape();
             }
-            if self.selected_step.is_some() && self.lane_view == LaneView::Grid {
+            if self.selected_step.is_some() {
                 let clear = ctx.input(|i| {
                     i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)
                 });
@@ -3824,12 +4066,9 @@ impl BeatSlopperApp {
             .storage
             .and_then(|s| eframe::get_value::<Option<String>>(s, MIDI_PORT_KEY))
             .flatten();
-        let right_panel: Option<RightPanel> = cc
+        let layout: Option<ShellLayout> = cc
             .storage
-            .and_then(|s| eframe::get_value::<RightPanel>(s, RIGHT_PANEL_KEY));
-        let lane_view: Option<LaneView> = cc
-            .storage
-            .and_then(|s| eframe::get_value::<LaneView>(s, LANE_VIEW_KEY));
+            .and_then(|s| eframe::get_value::<ShellLayout>(s, SHELL_LAYOUT_KEY));
         let roll_low_pitch: Option<u8> = cc
             .storage
             .and_then(|s| eframe::get_value::<u8>(s, ROLL_LOW_PITCH_KEY));
@@ -3849,8 +4088,7 @@ impl BeatSlopperApp {
         }
         state.theme_override = theme_override;
         state.recent = recent.unwrap_or_default();
-        state.right_panel = right_panel.unwrap_or_default();
-        state.set_lane_view(lane_view.unwrap_or_default());
+        state.apply_layout(layout.unwrap_or_default());
         state.set_roll_low_pitch(roll_low_pitch.unwrap_or(DEFAULT_ROLL_LOW_PITCH));
         let roll_extra_rows: Option<usize> = cc
             .storage
@@ -4094,12 +4332,12 @@ impl BeatSlopperApp {
             Shortcut::BpmDown => state.nudge_bpm(-1),
             Shortcut::AddTrack => {
                 if state.add_track().is_some() {
-                    state.right_tab = RightTab::Tracks;
+                    state.rack_open = true;
                 }
             }
             Shortcut::DuplicateTrack => {
                 if state.duplicate_track(state.edit_track).is_some() {
-                    state.right_tab = RightTab::Tracks;
+                    state.rack_open = true;
                 }
             }
             Shortcut::PrevTrack => {
@@ -4117,9 +4355,15 @@ impl BeatSlopperApp {
             Shortcut::FindPreset => state.open_preset_browser(true),
             Shortcut::LinkInsert => {
                 if state.link_track_to_free_insert(state.edit_track).is_some() {
-                    state.right_panel = RightPanel::Mixer;
+                    state.set_view(View::Mixer);
                 }
             }
+            Shortcut::ViewRoll => state.set_view(View::Roll),
+            Shortcut::ViewMixer => state.toggle_mixer_drawer(),
+            Shortcut::ViewSynth => state.set_view(View::Synth),
+            Shortcut::ViewSong => state.set_view(View::Song),
+            Shortcut::ToggleBrowser => state.toggle_browser(),
+            Shortcut::VisualFull => state.toggle_visual_full(),
         }
     }
 
@@ -4138,9 +4382,11 @@ impl BeatSlopperApp {
         }
     }
 
-    /// Once, on the first frame that reports a monitor: if the window opened clearly smaller
-    /// than [`window::REQUESTED_INNER_SIZE`] (a stale persisted size, a scaling quirk), ask
-    /// for the size that fits the monitor. See [`crate::window`] for the investigation.
+    /// Once, on the first frame that reports a monitor: the window's actual inner size (what
+    /// eframe restored from the persisted geometry, or what the OS gave the request) is kept
+    /// only while it fits the monitor's work area and is at least the minimum; otherwise the
+    /// work-area rule ([`window::initial_inner_size`]) picks the size and one
+    /// `InnerSize` command asks for it. See [`crate::window`].
     fn check_window_size(&mut self, ctx: &egui::Context) {
         if self.size_checked {
             return;
@@ -4154,11 +4400,7 @@ impl BeatSlopperApp {
             return;
         };
         self.size_checked = true;
-        let target = window::fit_inner_size(
-            window::REQUESTED_INNER_SIZE,
-            window::MIN_INNER_SIZE,
-            Some(monitor),
-        );
+        let target = window::initial_inner_size(Some(inner.size()), Some(monitor));
         if window::needs_resize(inner.size(), target) {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target));
         }
@@ -4191,8 +4433,7 @@ impl App for BeatSlopperApp {
         eframe::set_value(storage, PROJECT_PATH_KEY, &self.state.project_path);
         eframe::set_value(storage, EXPORT_REPEATS_KEY, &self.state.export_repeats);
         eframe::set_value(storage, MIDI_PORT_KEY, &self.state.midi_port);
-        eframe::set_value(storage, RIGHT_PANEL_KEY, &self.state.right_panel);
-        eframe::set_value(storage, LANE_VIEW_KEY, &self.state.lane_view);
+        eframe::set_value(storage, SHELL_LAYOUT_KEY, &self.state.layout());
         eframe::set_value(storage, ROLL_LOW_PITCH_KEY, &self.state.roll_low_pitch);
         eframe::set_value(storage, ROLL_EXTRA_ROWS_KEY, &self.state.roll_extra_rows);
         eframe::set_value(
@@ -5331,12 +5572,13 @@ mod tests {
         state.bank = Bank::demo();
         state.send_bank();
         engine.process_messages();
-        assert_eq!(state.right_tab, RightTab::Project);
+        assert_eq!(state.view, View::Roll);
         assert_eq!(state.position_text(), "A · bar 1/1");
 
         state.set_play_mode(PlayMode::Song);
         assert_eq!(state.bank.mode, PlayMode::Song);
-        assert_eq!(state.right_tab, RightTab::Chain);
+        assert_eq!(state.view, View::Song, "song mode shows the SONG view");
+        assert!(!state.rack_open, "the SONG view collapses the rack");
         assert!(!state.dirty, "the mode is transport state");
         engine.process_messages();
         assert_eq!(engine.play_mode(), PlayMode::Song);
@@ -5358,7 +5600,88 @@ mod tests {
         assert_eq!(state.engine_mode, PlayMode::Pattern);
 
         state.set_play_mode(PlayMode::Pattern);
-        assert_eq!(state.right_tab, RightTab::Project);
+        assert_eq!(state.view, View::Roll);
+        assert!(state.rack_open, "the roll re-expands the rack");
+    }
+
+    #[test]
+    fn views_docks_and_the_layout_round_trip() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert_eq!(state.layout(), ShellLayout::default());
+        assert!(state.browser_open && state.keyboard_open && state.rack_open);
+        assert_eq!(state.rack_width, DEFAULT_RACK_WIDTH);
+
+        // Synth / song / visualizer collapse the rack; the roll re-expands it; the mixer
+        // keeps whatever it was.
+        state.set_view(View::Synth);
+        assert!(!state.rack_open && !state.mixer_drawer_open);
+        state.set_view(View::Mixer);
+        assert!(!state.rack_open && state.mixer_drawer_open);
+        assert_eq!(state.last_main_view, View::Synth);
+        state.toggle_mixer_drawer();
+        assert_eq!(
+            state.view,
+            View::Synth,
+            "the chevron returns to the view it replaced"
+        );
+        state.set_view(View::Roll);
+        assert!(state.rack_open);
+        state.toggle_mixer_drawer();
+        assert_eq!(state.view, View::Mixer);
+        assert!(state.rack_open, "the mixer keeps the rack as it was");
+        state.toggle_rack();
+        assert!(!state.rack_open);
+        state.toggle_browser();
+        state.toggle_keyboard();
+        assert!(!state.browser_open && !state.keyboard_open);
+        state.set_rack_width(100.0);
+        assert_eq!(state.rack_width, MIN_RACK_WIDTH);
+        state.set_rack_width(f32::NAN);
+        assert_eq!(state.rack_width, MIN_RACK_WIDTH, "NaN ignored");
+        state.set_rack_width(720.0);
+        assert_eq!(state.rack_width, 720.0);
+        assert!(!state.dirty && state.undo.is_empty(), "view state only");
+
+        // The layout round-trips through its persisted form, sanitised.
+        let layout = state.layout();
+        assert_eq!(layout.view, View::Mixer);
+        assert_eq!(layout.rack_width, 720.0);
+        let (mut fresh, _engine) = AppState::headless(ThemeMode::Dark);
+        fresh.apply_layout(ShellLayout {
+            rack_width: f32::INFINITY,
+            mixer_drawer_open: true,
+            ..layout
+        });
+        assert_eq!(fresh.view, View::Mixer);
+        assert_eq!(fresh.rack_width, DEFAULT_RACK_WIDTH, "a bad width resets");
+        assert!(!fresh.browser_open && !fresh.keyboard_open && !fresh.rack_open);
+        let json = serde_json::to_string(&layout).unwrap();
+        let back: ShellLayout = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, layout);
+        // A partial (older) value fills the rest with the defaults.
+        let partial: ShellLayout = serde_json::from_str(r#"{"view":"Song"}"#).unwrap();
+        assert_eq!(partial.view, View::Song);
+        assert_eq!(partial.rack_width, DEFAULT_RACK_WIDTH);
+        assert!(partial.browser_open);
+
+        // The narrow defaults apply once.
+        let (mut narrow, _engine) = AppState::headless(ThemeMode::Dark);
+        narrow.apply_narrow_defaults(false);
+        assert!(narrow.browser_open);
+        narrow.apply_narrow_defaults(true);
+        assert!(!narrow.browser_open && !narrow.keyboard_open);
+        narrow.browser_open = true;
+        narrow.apply_narrow_defaults(true);
+        assert!(narrow.browser_open, "only once");
+
+        // Every view has a tab label, a button name and an icon; four have keys.
+        for view in View::ALL {
+            assert!(!view.title().is_empty() && !view.tab_label().is_empty());
+            assert!(view.button_name().ends_with(" view"));
+        }
+        assert_eq!(View::ALL.iter().filter(|v| v.key().is_some()).count(), 4);
+        assert_eq!(View::Roll.key(), Some("F5"));
+        assert_eq!(View::Song.key(), Some("F8"));
     }
 
     #[test]
@@ -5780,21 +6103,28 @@ mod tests {
     #[test]
     fn lane_view_and_roll_playhead() {
         let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
-        assert_eq!(state.lane_view, LaneView::Grid);
+        assert_eq!(state.view, View::Roll);
         assert_eq!(state.roll_low_pitch, DEFAULT_ROLL_LOW_PITCH);
         assert_eq!(state.roll_playhead(), None, "stopped");
 
-        // Switching to the roll drops the grid selection and is not an edit; the keyboard
-        // then only plays (no note lands in the pattern).
+        // A selected rack cell takes the keyboard's note in every view (M12: the rack is
+        // always on screen); Escape deselects, then the keyboard only plays.
         state.click_synth_step(2, false);
-        state.set_lane_view(LaneView::Roll);
-        assert_eq!(state.selected_step, None);
+        state.set_view(View::Synth);
+        assert_eq!(state.selected_step, Some(2));
         assert!(!state.dirty);
+        state.note_on(67, 0.8);
+        state.note_off(67);
+        assert_eq!(state.pattern().synth[2].note, Some(67));
+        assert!(state.undo());
+        state.escape();
+        assert_eq!(state.selected_step, None);
         let demo = Pattern::demo();
         state.note_on(67, 0.8);
         state.note_off(67);
         assert_eq!(state.pattern().clone(), demo);
-        assert_eq!(state.note_on_count, 1, "it still sounds");
+        assert_eq!(state.note_on_count, 2, "it still sounds");
+        state.set_view(View::Roll);
         // ... unless record armed and playing: overdub writes a length-1 note as before.
         state.play();
         state.toggle_arm();
@@ -5817,10 +6147,11 @@ mod tests {
         state.playhead = Position::stopped(0);
         assert_eq!(state.roll_playhead(), None);
 
-        // Back to the grid drops the roll selection; the bottom pitch is clamped to MIDI.
+        // Leaving the roll view drops the roll selection; the bottom pitch is clamped to MIDI.
         state.roll_selected = Some(0);
-        state.set_lane_view(LaneView::Grid);
+        state.set_view(View::Song);
         assert_eq!(state.roll_selected, None);
+        state.set_view(View::Roll);
         state.set_roll_low_pitch(200);
         assert_eq!(state.roll_low_pitch, 127);
         // Selecting another pattern or undoing past the notes clears a stale selection.
@@ -6014,9 +6345,9 @@ mod tests {
         assert!(state.roll_selection.is_empty() && state.roll_selected.is_none());
         state.select_pattern(0);
         state.roll_selection = vec![0];
-        state.set_lane_view(LaneView::Grid);
+        state.set_view(View::Mixer);
         assert!(state.roll_selection.is_empty());
-        state.set_lane_view(LaneView::Roll);
+        state.set_view(View::Roll);
         state.roll_selection = vec![0, 1];
         state.clear_notes();
         assert!(state.roll_selection.is_empty());

@@ -2,7 +2,7 @@
 //! the sidechain pump.
 //!
 //! Layout follows `design/preview-a.html` `<section class="panel fx">`: a panel head ("FX"
-//! left, the `FX | Mixer` tab right, M6: it swaps this slot for the MIXER panel) over
+//! left, the plugin pills right; M12 rehosts it in the SYNTH & FX view) over
 //! `.fx-body`. The body is a vertical `ScrollArea`; the M2 rows always fit the top row of the
 //! page unscrolled, the M8 rows scroll into view:
 //!
@@ -64,7 +64,7 @@ const SIDE_PAD_TOP: f32 = 18.0;
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::panel(ui, theme, |ui| {
         ui.set_min_size(ui.available_size());
-        controls::right_panel_head(ui, state, theme, "FX");
+        controls::plugins_head(ui, theme, "FX");
         ui.add_space(PANEL_HEAD_GAP);
         body(ui, state, theme);
     });

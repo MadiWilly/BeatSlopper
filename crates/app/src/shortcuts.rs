@@ -19,6 +19,9 @@
 //! | Ctrl+PageUp / PageDown   | previous / next preset (M9)              |
 //! | Ctrl+Shift+P             | open the preset browser, focus search    |
 //! | Ctrl+L                   | link the edit track to a free insert (M11)|
+//! | F5 / F6 / F7 / F8        | piano roll / mixer / synth & fx / song view (M12) |
+//! | F9                       | toggle the BROWSER column (M12)          |
+//! | F11                      | the visualizer over the workspace (M12)  |
 //!
 //! Home (rewind while playing), Escape (deselect / test tone off; twice = panic; closes the
 //! preset browser) and the Up / Down / PageUp / PageDown note nudges of a selected bass
@@ -76,11 +79,23 @@ pub enum Shortcut {
     FindPreset,
     /// Ctrl+L: route the edit track to the first free mixer insert (M11, FL's Ctrl+L).
     LinkInsert,
+    /// F5: the PIANO ROLL view (and the rack re-expands) (M12).
+    ViewRoll,
+    /// F6: the MIXER view (M12; the drawer in M13).
+    ViewMixer,
+    /// F7: the SYNTH & FX view (M12).
+    ViewSynth,
+    /// F8: the SONG view (M12).
+    ViewSong,
+    /// F9: show / hide the BROWSER column (M12).
+    ToggleBrowser,
+    /// F11: the visualizer over the workspace until Escape (M12).
+    VisualFull,
 }
 
 impl Shortcut {
     /// Every shortcut, in check order.
-    pub const ALL: [Shortcut; 20] = [
+    pub const ALL: [Shortcut; 26] = [
         Shortcut::SaveAs,
         Shortcut::OpenRecent,
         Shortcut::Redo,
@@ -101,6 +116,12 @@ impl Shortcut {
         Shortcut::NextPreset,
         Shortcut::FindPreset,
         Shortcut::LinkInsert,
+        Shortcut::ViewRoll,
+        Shortcut::ViewMixer,
+        Shortcut::ViewSynth,
+        Shortcut::ViewSong,
+        Shortcut::ToggleBrowser,
+        Shortcut::VisualFull,
     ];
 
     /// The key combinations that trigger this shortcut.
@@ -135,6 +156,12 @@ impl Shortcut {
             Shortcut::NextPreset => &[(Modifiers::COMMAND, Key::PageDown)],
             Shortcut::FindPreset => &[(COMMAND_SHIFT, Key::P)],
             Shortcut::LinkInsert => &[(Modifiers::COMMAND, Key::L)],
+            Shortcut::ViewRoll => &[(Modifiers::NONE, Key::F5)],
+            Shortcut::ViewMixer => &[(Modifiers::NONE, Key::F6)],
+            Shortcut::ViewSynth => &[(Modifiers::NONE, Key::F7)],
+            Shortcut::ViewSong => &[(Modifiers::NONE, Key::F8)],
+            Shortcut::ToggleBrowser => &[(Modifiers::NONE, Key::F9)],
+            Shortcut::VisualFull => &[(Modifiers::NONE, Key::F11)],
         }
     }
 
@@ -162,6 +189,12 @@ impl Shortcut {
             Shortcut::NextPreset => "Ctrl+PageDown",
             Shortcut::FindPreset => "Ctrl+Shift+P",
             Shortcut::LinkInsert => "Ctrl+L",
+            Shortcut::ViewRoll => "F5",
+            Shortcut::ViewMixer => "F6",
+            Shortcut::ViewSynth => "F7",
+            Shortcut::ViewSong => "F8",
+            Shortcut::ToggleBrowser => "F9",
+            Shortcut::VisualFull => "F11",
         }
     }
 

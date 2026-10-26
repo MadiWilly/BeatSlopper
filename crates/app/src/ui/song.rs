@@ -1,11 +1,10 @@
 //! SONG CHAIN panel (M5): the song chain as a list of entries, with the controls for the
 //! selected entry.
 //!
-//! Sits in the right-hand column in place of the PROJECT panel (the column holds one of the
-//! two; the head's `Project | Chain` tab switches, and so does the transport's MODE: song mode
-//! shows this panel). Built from the kit, top to bottom:
+//! The SONG view's panel since M12 (rehosted in the SONG window until its M14 timeline; the
+//! transport's Pattern | Song switch shows the view). Built from the kit, top to bottom:
 //!
-//! - head row: title, the `Project | Chain` tab (`neu::segmented`) flush right;
+//! - head row: the title;
 //! - the chain: one pill per entry ("A ×2", wrapping, scrolling when long). The entry the
 //!   engine is playing (song mode, transport running) is the ON pill (OnGlow); the selected
 //!   entry has an accent ring. A click selects;
@@ -58,7 +57,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         ui.set_min_size(ui.available_size());
         // The gaps below are explicit (the row pitch must fit the sequencer row beside it).
         ui.spacing_mut().item_spacing.y = 0.0;
-        controls::panel_head(ui, state, theme, "Song chain");
+        ui.horizontal(|ui| {
+            ui.set_min_height(controls::ROW_HEIGHT);
+            neu::title(ui, theme, "Song chain");
+        });
         ui.add_space(PANEL_HEAD_GAP);
         let chain_height = (ui.available_height() - CONTROLS_HEIGHT).max(controls::ROW_HEIGHT);
         chain_list(ui, state, theme, chain_height);
