@@ -501,7 +501,7 @@ fn mixer_bar(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::text_widget(ui, "16 inserts · master", TextKind::Label, theme.text_2);
     ui.spacing_mut().item_spacing.x = 4.0;
     for n in 1..=5u8 {
-        let name = state.insert_ui(n).name.clone();
+        let name = state.insert_display_name(n);
         insert_chip(ui, theme, &n.to_string(), &name);
     }
     insert_chip(ui, theme, "…", "16");

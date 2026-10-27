@@ -17,7 +17,9 @@
 //!   panel: a mix's sends live on the inserts now.
 //! - **Inserts** ([`INSERTS_DOCK_WIDTH`]): the sixteen [`INSERT_STRIP_WIDTH`] (108) pt insert
 //!   strips in a horizontal `ScrollArea` (two fit at a time; the dock scrolls to the rest):
-//!   the head (colour chip, `N · name` caps label, pencil; a click selects the insert,
+//!   the head (colour chip, `N · name` caps label, pencil; an insert still on its default
+//!   name shows the track routed to it, `Kick` or `Kick +2`, via
+//!   `AppState::insert_display_name`; a click selects the insert,
 //!   Shift-click extends the selection, a double-click or the pencil renames inline), three
 //!   **slot pills** (`- - -` when empty, else the kind's name; a click opens the kind menu
 //!   Off / Comp / Drive / Lo-fi / Chorus / EQ3; a loaded slot has a 16 pt knob-glyph square
@@ -674,7 +676,7 @@ pub fn route_picker(
                         WidgetInfo::selected(Role::Button, ui.is_enabled(), on, &label)
                     });
                     if response
-                        .on_hover_text(format!("{n} · {}", state.insert_ui(n).name))
+                        .on_hover_text(format!("{n} · {}", state.insert_display_name(n)))
                         .clicked()
                     {
                         picked = Some(n);
@@ -809,6 +811,7 @@ fn insert_head(
     selected: bool,
 ) {
     let ui_insert = state.insert_ui(insert).clone();
+    let shown_name = state.insert_display_name(insert);
     let visible = ui.is_rect_visible(rect);
     if visible && selected {
         paint_soft_rect(ui.painter(), rect, 6.0, Depth::InsetS, theme);
@@ -843,7 +846,7 @@ fn insert_head(
 
     // The name block: the insert's button.
     let block = ui.interact(name_rect, head_id(ui, insert, "head"), Sense::click());
-    let head_name = insert_head_name(insert, &ui_insert.name);
+    let head_name = insert_head_name(insert, &shown_name);
     block.widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), selected, &head_name));
     let sources: Vec<String> = state
         .insert_sources(insert)
@@ -862,7 +865,7 @@ fn insert_head(
         ))
         .on_hover_cursor(CursorIcon::PointingHand);
     if block.double_clicked() {
-        neu::begin_edit(ui, rename_id(insert), &ui_insert.name);
+        neu::begin_edit(ui, rename_id(insert), &shown_name);
     } else if block.clicked() {
         state.select_insert(insert, controls::click_shift(ui));
     }
@@ -916,7 +919,7 @@ fn insert_head(
                 paint_caps_truncated(
                     ui,
                     name_rect.left_center(),
-                    &insert_head_text(insert, &ui_insert.name),
+                    &insert_head_text(insert, &shown_name),
                     TextKind::Label,
                     colour,
                     name_rect.width(),
@@ -946,7 +949,7 @@ fn insert_head(
         .on_hover_cursor(CursorIcon::PointingHand)
         .clicked()
     {
-        neu::begin_edit(ui, rename_id(insert), &ui_insert.name);
+        neu::begin_edit(ui, rename_id(insert), &shown_name);
     }
 }
 

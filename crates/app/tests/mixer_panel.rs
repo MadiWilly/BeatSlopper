@@ -224,12 +224,12 @@ fn the_route_pill_offers_the_master_and_higher_inserts_only() {
 fn head_clicks_select_and_selected_faders_move_together() {
     let (mut harness, mut engine) = panel_harness(ThemeMode::Dark);
     harness
-        .get_by_label(&mixer::insert_head_name(1, "Insert 1"))
+        .get_by_label(&mixer::insert_head_name(1, "Kick"))
         .click();
     harness.run_steps(2);
     assert_eq!(harness.state().insert_selection, vec![1]);
     harness
-        .get_by_label(&mixer::insert_head_name(2, "Insert 2"))
+        .get_by_label(&mixer::insert_head_name(2, "Snare"))
         .click_modifiers(Modifiers::SHIFT);
     harness.run_steps(2);
     assert_eq!(harness.state().insert_selection, vec![1, 2]);
@@ -250,7 +250,7 @@ fn head_clicks_select_and_selected_faders_move_together() {
     assert_eq!(engine.mixer().insert(2).level_db, one);
     // A plain click on insert 3's head replaces the selection.
     harness
-        .get_by_label(&mixer::insert_head_name(3, "Insert 3"))
+        .get_by_label(&mixer::insert_head_name(3, "Clap"))
         .click();
     harness.run_steps(2);
     assert_eq!(harness.state().insert_selection, vec![3]);
@@ -453,4 +453,16 @@ fn the_mixer_stays_inside_the_main_window() {
     // The panel's sources scroll: the fourth track's strip sits past the dock.
     let last = harness.get_by_label("Track 4 level").rect();
     assert!(last.min.x >= kick.min.x + mixer::SOURCE_DOCK_WIDTH);
+}
+
+#[test]
+fn routing_a_track_names_the_insert_head_after_it() {
+    let (mut harness, _engine) = panel_harness(ThemeMode::Dark);
+    harness.get_by_label(&mixer::insert_head_name(15, "Insert 15"));
+    harness.state_mut().set_route(Channel::Kick, 15);
+    harness.run_steps(2);
+    harness.get_by_label(&mixer::insert_head_name(15, "Kick"));
+    // Kick left insert 1, which falls back to its default name.
+    harness.get_by_label(&mixer::insert_head_name(1, "Insert 1"));
+    assert_eq!(harness.state().insert_ui(15).name, "Insert 15", "derived, not stored");
 }

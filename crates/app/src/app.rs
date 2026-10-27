@@ -1566,13 +1566,36 @@ impl AppState {
         &self.insert_ui[engine::inserts::insert_index(insert)]
     }
 
-    /// The display name of a route target: `"MASTER"` for `0`, else the insert's name.
+    /// What the panels show as insert `insert`'s name. A name the user typed always wins; an
+    /// insert still on its default `"Insert N"` takes the name of the source routed to it
+    /// (`"Kick"`, or `"Kick +2"` for three), so a routed insert says what it is for. Derived
+    /// on every call: nothing is stored, so re-routing or renaming a track updates it, and
+    /// an insert nothing is routed to shows its default name again.
+    #[must_use]
+    pub fn insert_display_name(&self, insert: u8) -> String {
+        let stored = &self.insert_ui(insert).name;
+        if *stored != default_insert_name(insert) {
+            return stored.clone();
+        }
+        let sources = self.insert_sources(insert);
+        let Some(first) = sources.first() else {
+            return stored.clone();
+        };
+        let first = crate::ui::mixer::strip_label(self, *first);
+        match sources.len() {
+            1 => first,
+            n => format!("{first} +{}", n - 1),
+        }
+    }
+
+    /// The display name of a route target: `"MASTER"` for `0`, else the insert's display
+    /// name ([`AppState::insert_display_name`]).
     #[must_use]
     pub fn route_name(&self, insert: u8) -> String {
         if insert == MASTER || insert > MAX_INSERT {
             "MASTER".to_owned()
         } else {
-            self.insert_ui(insert).name.clone()
+            self.insert_display_name(insert)
         }
     }
 
@@ -7656,8 +7679,40 @@ mod insert_tests {
             "0 wraps to the last insert"
         );
         assert_eq!(state.route_name(0), "MASTER");
-        assert_eq!(state.route_name(6), "Insert 6");
+        assert_eq!(state.route_name(6), "Synth", "the default route names the insert");
+        assert_eq!(state.route_name(14), "Insert 14", "nothing routed: the default name");
         assert_eq!(state.route_name(17), "MASTER");
+    }
+
+    #[test]
+    fn a_routed_insert_takes_the_name_of_its_source_until_the_user_names_it() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        // The default one-to-one routing: the drums first, then the instrument track.
+        assert_eq!(state.insert_display_name(1), "Kick");
+        assert_eq!(state.insert_display_name(4), "C.Hat");
+        assert_eq!(state.insert_display_name(14), "Insert 14");
+        // Routing a second source adds a count; a third and fourth too.
+        state.set_route(Channel::ALL[1], 1);
+        assert_eq!(state.insert_display_name(1), "Kick +1");
+        assert_eq!(state.insert_display_name(2), "Insert 2", "its source moved away");
+        state.set_route(Channel::ALL[2], 1);
+        assert_eq!(state.insert_display_name(1), "Kick +2");
+        // Straight to the master: the insert is free again.
+        for channel in &Channel::ALL[..3] {
+            state.set_route(*channel, 0);
+        }
+        assert_eq!(state.insert_display_name(1), "Insert 1");
+        // Renaming a track renames the insert it feeds.
+        let synth = Channel::ALL[5];
+        state.set_route(synth, 14);
+        assert_eq!(state.insert_display_name(14), "Synth");
+        assert!(state.rename_track(synth.track().unwrap(), "Lead"));
+        assert_eq!(state.insert_display_name(14), "Lead");
+        // A typed name wins, and derived names are never stored.
+        assert_eq!(state.insert_ui(14).name, "Insert 14");
+        assert!(state.rename_insert(14, "Bus"));
+        assert_eq!(state.insert_display_name(14), "Bus");
+        assert_eq!(state.route_name(14), "Bus");
     }
 
     #[test]

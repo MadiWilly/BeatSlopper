@@ -497,3 +497,13 @@ of a full app like FL or Ableton. A just for fun project to make beats and have 
   shell (gestures checked in the code, not the older summaries).
 - Making the GitHub repo public is left to the user (outward-facing; the brief's "never make
   the repo public" rule still binds the agent).
+
+## 2026-10-27: Inserts take the name of the track routed to them
+- An insert still on its default `"Insert N"` shows its source's name (`Kick`, `Kick +2` for
+  three) in the head, the route picker, the number-box tooltips and the Deck mixer bar
+  (`AppState::insert_display_name`). A name the user typed always wins.
+- **Derived, not stored.** Writing the name into `insert_ui` on every route change would add
+  undo steps and a dirty flag per route, change the saved sidecar, and leave a stale name
+  behind after a re-route or a deleted track. Derived on every call, it follows track
+  renames and routes for free and an unrouted insert falls back to `Insert N`.
+- The head's accessible name follows the displayed name; the rename editor starts from it.

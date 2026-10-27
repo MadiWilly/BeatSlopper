@@ -1150,7 +1150,8 @@ fn mixer_panel_renders_in_both_themes_without_editing() {
         harness.get_by_label("Limit");
         // M11: sixteen insert strips, laid out whether or not they are scrolled into view.
         for n in 1..=16u8 {
-            harness.get_by_label(&ui::mixer::insert_head_name(n, &format!("Insert {n}")));
+            let shown = harness.state().insert_display_name(n);
+            harness.get_by_label(&ui::mixer::insert_head_name(n, &shown));
             harness.get_by_label(&ui::mixer::insert_control_name(
                 n,
                 engine::InsertParam::Level,
