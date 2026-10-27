@@ -3,7 +3,7 @@ name = "neu"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-license-file.workspace = true
+license.workspace = true
 description = "Neumorphic egui widget kit and theme tokens for BeatSlopper (design/WINNER.md)."
 
 [dependencies]

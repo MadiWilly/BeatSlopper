@@ -1,5 +1,17 @@
 # Project BeatSlopper: Autonomous Build Brief (Rust, Desktop)
 
+> **Scope update (2026-10-27), supersedes the scope lines below.** BeatSlopper is now an
+> **open-source audio toy**: a just-for-fun project that grows, a piece at a time, every bell
+> and whistle of a full DAW like FL Studio or Ableton Live. The "first beat" goal, the "Out of
+> scope, do NOT start" list, the "Don't add features beyond M3" rule and the Phase 0
+> proprietary LICENSE line no longer bind. The code is dual-licensed `MIT OR Apache-2.0`
+> (`LICENSE-MIT`, `LICENSE-APACHE`). The current target does not change: finish the Phase 5
+> brief (M13, then M14) before starting anything new. Bigger features (audio clips, sampler,
+> recording, arrangement timeline, automation, plugin hosting, ...) are listed in `README.md`
+> "Roadmap"; each gets its own dated brief here when the user picks it. Changing the GitHub
+> repo's visibility stays the user's step ("Never make the repo public" under Rules still holds
+> for the agent). See DECISIONS.md 2026-10-27.
+
 > **Before you send this (do these yourself, once):**
 > 0. **Windows Smart App Control must be Off** (Windows Security → App & browser control → Smart App Control). Otherwise it blocks the Rust installer and every unsigned program Cargo compiles, including the app itself.
 > 1. Install Rust: https://rustup.rs (default MSVC toolchain).
@@ -19,6 +31,8 @@
 You are the **lead engineer and orchestrator** for **BeatSlopper**, a desktop beat-making app written in **Rust**. You plan, delegate to subagents (Agent tool), integrate their work, run the test gate, fix failures, commit, and keep going without checking in with me. I am not going to monitor you. Only stop when this brief says to stop.
 
 ## Product goal (scope ends at "first beat")
+
+*Superseded 2026-10-27 by the scope update at the top of this file; kept as history.*
 
 I want to make my first beat:
 - Play a synth with my **computer keyboard as a piano**.
@@ -51,7 +65,7 @@ I want to make my first beat:
 Do these steps in order:
 
 1. `git init`. Create `README.md`, a `.gitignore` for Rust (`/target`, etc.), and `LICENSE`.
-   - **LICENSE:** proprietary, "Copyright (c) 2026 Madison. All Rights Reserved." State that no permission is granted to use, copy, modify, or distribute without written permission.
+   - **LICENSE:** (superseded 2026-10-27: now `MIT OR Apache-2.0`) proprietary, "Copyright (c) 2026 Madison. All Rights Reserved." State that no permission is granted to use, copy, modify, or distribute without written permission.
 2. Create the private GitHub repo and push: `gh repo create BeatSlopper --private --source . --remote origin --push`. If `gh` isn't authenticated, write that to `BLOCKERS.md`, tell me, and stop. Do not try to log in yourself.
 3. Create the state files (see "State files"): `PROGRESS.md`, `DECISIONS.md`, `BLOCKERS.md`, `docs/PLAN.md` (a copy of this brief).
 4. **Design previews:** spawn **3 subagents in parallel**. Each one writes one file, so there are no conflicts:
@@ -207,7 +221,7 @@ Context gets summarized between iterations, so **all state lives in files**:
 
 - Never commit secrets. Never print or handle tokens. Never make the repo public. Never force-push.
 - Keep commits small and meaningful; push after every green gate.
-- Don't add features beyond M3. Ideas go in `PROGRESS.md` under "Later".
+- Don't add features beyond the current brief (superseded 2026-10-27: was "beyond M3"; see the scope update at the top). Ideas go in `PROGRESS.md` under "Later".
 - Windows is the target platform (WASAPI via cpal default host). Keep code cross-platform where it's free.
 
 ---

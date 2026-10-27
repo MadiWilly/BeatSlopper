@@ -6,7 +6,7 @@ members = ["crates/engine", "crates/neu", "crates/app"]
 version = "0.1.0"
 edition = "2024"
 publish = false
-license-file = "LICENSE"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 engine = { path = "crates/engine" }

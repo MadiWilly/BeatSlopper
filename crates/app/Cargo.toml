@@ -3,7 +3,7 @@ name = "app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-license-file.workspace = true
+license.workspace = true
 description = "BeatSlopper desktop app: eframe UI, cpal audio output, keyboard input."
 
 # The crate is a library (so `tests/` and the UI tests can drive the app state without a

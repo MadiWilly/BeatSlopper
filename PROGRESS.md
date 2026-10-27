@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current milestone:** Phase 5 UI overhaul (design B "Deck" picked 2026-10-25; M12-M14); M8-M11 built, m11 tag pending its smoke test; see docs/PLAN.md "Phase 4 brief". M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
+**Scope (2026-10-27):** open-source audio toy growing toward a full DAW; see docs/PLAN.md "Scope update". **Current milestone:** Phase 5 UI overhaul (design B "Deck" picked 2026-10-25; M12-M14); M8-M11 built, m11 tag pending its smoke test; see docs/PLAN.md "Phase 4 brief". M0-M7 tagged. Phase 3 brief: docs/PLAN.md. M0-M3 tagged. Phase 2 brief: docs/PLAN.md "Phase 2 brief" (M4-M7). design/WINNER.md is the token source of truth.
 
 ## Phase 0: Repo + design previews
 - [x] git init, README.md, .gitignore, LICENSE
@@ -145,8 +145,8 @@ Engine side (after the M11 engine merge, in tests/tracks.rs + engine_alloc.rs):
   `app/src/ui/{mod,controls,transport_bar}.rs`, `app/tests/ui_renders.rs`,
   `neu/examples/gallery.rs`, docs
 
-## Later (ideas beyond M9, do not start)
-- MIDI hardware input (optional stretch only after M3 is green)
+## Later (ideas; README.md "Roadmap" has the full list, each needs a brief in docs/PLAN.md first)
+- Audio clips + sampler, audio/mic recording, arrangement timeline, session view, automation, VST3/CLAP hosting, MIDI import/export, stem export (scope opened 2026-10-27, see DECISIONS.md)
 
 ## Final summary (M3 done, 2026-10-24)
 

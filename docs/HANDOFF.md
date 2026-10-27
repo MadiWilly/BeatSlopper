@@ -138,3 +138,7 @@ then dropped the neumorphic design: **Phase 5 = UI overhaul** (docs/PLAN.md "Pha
 - **Update 20:30:** the M12 shell LANDED and is tagged **m12** (2f0d6ac, 900 tests, pushed).
   Next is M13; start with the two capture findings listed under PROGRESS.md "Phase 5"
   (toolbar overflow + hidden main window at 853 logical points; TRACKS header label overlap).
+- **Scope update 2026-10-27:** the project is now an open-source audio toy aiming at full-DAW
+  features (docs/PLAN.md "Scope update" at the top, DECISIONS.md 2026-10-27). The old "first
+  beat" out-of-scope list no longer binds, but the loop target is unchanged: M13, then M14.
+  License is now `MIT OR Apache-2.0`.

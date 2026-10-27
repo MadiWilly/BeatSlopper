@@ -479,3 +479,21 @@ selection. A fresh track 0 keeps the pre-M10 convention (preset 0 highlighted, n
 - **The hint bar stays beside the toolbar's hint panel**: WINNER folds the status line into
   the toolbar, the brief asks for a bottom hint bar with the audio line; the toolbar panel
   shows the status / default hint, the bar the keycap pairs.
+
+## 2026-10-27: Scope is now "open-source audio toy with full-DAW ambitions"
+The user: "I want to build an opensource audio toy in Rust that has all the bells and whistles
+of a full app like FL or Ableton. A just for fun project to make beats and have fun." So:
+- The "first beat" scope and its out-of-scope list (docs/PLAN.md) are superseded. Piano roll,
+  mixer and MIDI were already built; arrangement, recording, audio clips, automation and plugin
+  hosting are now allowed future work, listed in README.md "Roadmap". Each still needs its own
+  dated brief in docs/PLAN.md before a loop starts it; M13 and M14 stay the current target.
+- **License: `MIT OR Apache-2.0`** (the Rust ecosystem's usual pair, and in line with the
+  permissive-only dependency policy in deny.toml). `LICENSE` (proprietary) is replaced by
+  `LICENSE-MIT` (copyright Madison Williams, 2026, the name from 0e0c842) and
+  `LICENSE-APACHE` (the Apache-2.0 terms copied verbatim from the serde crate's
+  `LICENSE-APACHE`). The workspace manifest uses
+  `license = "MIT OR Apache-2.0"` and the three crates inherit it.
+- README.md is now a public-facing readme with a usage guide written against the M12 Deck
+  shell (gestures checked in the code, not the older summaries).
+- Making the GitHub repo public is left to the user (outward-facing; the brief's "never make
+  the repo public" rule still binds the agent).
