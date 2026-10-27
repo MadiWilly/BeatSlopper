@@ -445,6 +445,82 @@ fn the_mixer_bar_opens_the_mixer_view() {
     harness.get_by_label(ui::shell::MIXER_METER_NAME);
 }
 
+/// The accessibility `selected` flag of the node labelled `label` (the first button).
+fn selected(harness: &Harness<'_, BeatSlopperApp>, label: &str) -> Option<bool> {
+    harness
+        .get_all_by_label(label)
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .unwrap_or_else(|| panic!("no button {label}"))
+        .accesskit_node()
+        .toggled()
+        .map(|t| t == egui::accesskit::Toggled::True)
+}
+
+#[test]
+fn a_rack_row_click_highlights_its_mixer_insert() {
+    use ui::shell::mixer_chip_name;
+    use ui::tracks;
+    let mut harness = app_harness(Vec2::new(1280.0, 800.0));
+    // At first the edit track's insert (6) has the lit chip, after chips 1..=5.
+    assert_eq!(selected(&harness, &mixer_chip_name(6)), Some(true));
+    assert_eq!(selected(&harness, &mixer_chip_name(2)), Some(false));
+    // One click on a drum NAME focuses the row: its insert is selected, its chip lit, and
+    // the rack's INS boxes routed to it are lit.
+    harness
+        .get_all_by_label("Snare")
+        .find(|n| n.accesskit_node().role() == Role::Button)
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    assert_eq!(state(&harness).drum_focus, Some(engine::DrumRow::Snare));
+    assert_eq!(state(&harness).insert_selection, vec![2]);
+    assert_eq!(selected(&harness, &mixer_chip_name(2)), Some(true));
+    assert!(
+        harness.query_by_label(&mixer_chip_name(6)).is_none(),
+        "1..=5 only"
+    );
+    assert_eq!(
+        selected(&harness, &ui::sequencer::row_box_name("Snare")),
+        Some(true)
+    );
+    assert_eq!(
+        selected(&harness, &tracks::insert_box_name("Synth")),
+        Some(false)
+    );
+    // The track's NAME takes the focus back.
+    harness.get_by_label(&tracks::row_name(0, "Synth")).click();
+    harness.run_steps(2);
+    assert_eq!(state(&harness).drum_focus, None);
+    assert_eq!(state(&harness).insert_selection, vec![6]);
+    assert_eq!(
+        selected(&harness, &tracks::insert_box_name("Synth")),
+        Some(true)
+    );
+    // The lit chip opens the mixer scrolled to its insert (6 is past the dock's first two).
+    harness.get_by_label(&mixer_chip_name(6)).click();
+    harness.run_steps(3);
+    assert_eq!(state(&harness).view, View::Mixer);
+    assert_eq!(state(&harness).insert_selection, vec![6]);
+    let in_dock = |harness: &Harness<'_, BeatSlopperApp>, n: u8, name: &str| {
+        let head = harness
+            .get_by_label(&ui::mixer::insert_head_name(n, name))
+            .rect();
+        let master = harness.get_by_label("Stereo level").rect();
+        let first_source = harness
+            .get_by_label(&ui::mixer::source_focus_name("Kick"))
+            .rect();
+        head.min.x >= first_source.min.x + ui::mixer::SOURCE_DOCK_WIDTH
+            && head.max.x <= master.min.x
+    };
+    assert!(in_dock(&harness, 6, "Synth"), "insert 6 in view");
+    // Another chip moves the view to its insert.
+    harness.get_by_label(&mixer_chip_name(1)).click();
+    harness.run_steps(3);
+    assert_eq!(state(&harness).insert_selection, vec![1]);
+    assert_eq!(selected(&harness, &mixer_chip_name(1)), Some(true));
+    assert!(in_dock(&harness, 1, "Kick"), "insert 1 in view");
+}
+
 #[test]
 fn the_narrow_layout_keeps_everything_reachable() {
     // The 150 % case: 1280 physical pixels = 853 logical points.

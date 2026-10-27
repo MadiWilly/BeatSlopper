@@ -10,11 +10,13 @@
 //! - **Sources** ([`SOURCE_DOCK_WIDTH`]): one compact [`SOURCE_STRIP_WIDTH`] (36) pt strip
 //!   per source channel (the five drums, then every *active* instrument track:
 //!   [`visible_channels`]) in a horizontal `ScrollArea` that shows four at a time: the
-//!   track's colour chip, the caps label, the insert **number box** (`6`, or `M` for straight
+//!   track's colour chip, the caps label (a click focuses the source in the CHANNEL RACK,
+//!   [`source_focus_name`]), the insert **number box** (`6`, or `M` for straight
 //!   to the master; a click selects that insert in the middle dock and opens the picker, the
 //!   wheel steps it), the LEVEL and PAN `Sm` knobs (FL's channel-rack knobs; neutral by
 //!   default since M11) and the 28 pt `M` / `S` squares. The source sends are gone from the
-//!   panel: a mix's sends live on the inserts now.
+//!   panel: a mix's sends live on the inserts now. The rack's focused source
+//!   (`AppState::rack_focus`) sits on the accent wash with an accent bar across its top.
 //! - **Inserts** ([`INSERTS_DOCK_WIDTH`]): the sixteen [`INSERT_STRIP_WIDTH`] (108) pt insert
 //!   strips in a horizontal `ScrollArea` (two fit at a time; the dock scrolls to the rest):
 //!   the head (colour chip, `N · name` caps label, pencil; an insert still on its default
@@ -30,9 +32,14 @@
 //!   number of a higher insert; the picker only offers what the engine accepts), and the
 //!   fader row: the `M` / `S` squares, the level fader (its track fitted to the room left),
 //!   the post-fader peak meter and, when a compressor is loaded, a thin gain-reduction bar.
-//!   The insert the edit track routes to (or the primary selection) carries an accent bar in
-//!   its head; selected inserts sit on an inset well and their faders move together; an
-//!   insert nothing is routed to with every slot off is drawn dimmed.
+//!   The insert the rack's focused source routes to (or the primary selection) carries an
+//!   accent bar in its head; selected inserts sit on an inset well and their faders move
+//!   together; an insert nothing is routed to with every slot off is drawn dimmed. Moving
+//!   the rack focus scrolls the source dock to its strip and selects its insert; any insert
+//!   selected alone (that one, a head, a number box, a picker, the mixer bar's chips,
+//!   Ctrl+L) and opening the view on the highlighted insert scroll the inserts dock to it.
+//!   Each scroll moves just far enough ([`reveal_offset`]) and happens once, the next time
+//!   the panel is drawn (`AppState::mixer_reveal` / `AppState::insert_reveal`).
 //! - **Master** ([`MASTER_WIDTH`]): pinned at the panel's right edge outside both scroll
 //!   areas: the MASTER gain knob (`Sm`, `MasterGain` in dB), the LIMIT toggle (`LimiterOn`)
 //!   and the [`neu::stereo_meter`] down to the faders' bottom.
@@ -207,6 +214,13 @@ pub fn control_name(state: &AppState, channel: Channel, param: ChannelParam) -> 
 #[must_use]
 pub fn source_box_name(name: &str) -> String {
     format!("Insert of {name}")
+}
+
+/// Accessible name of a source strip's caps label (a button that focuses the source in the
+/// rack): `"Focus Kick"`.
+#[must_use]
+pub fn source_focus_name(name: &str) -> String {
+    format!("Focus {name}")
 }
 
 /// Visible text of a number box: `"M"` for the master, else the insert number.
@@ -413,12 +427,14 @@ fn place<R>(ui: &mut Ui, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> InnerRes
 }
 
 /// A horizontal `ScrollArea` filling `rect` whose content is `content_width` wide, with
-/// `add` placing everything by hand from the content's origin.
+/// `add` placing everything by hand from the content's origin. `reveal` (an `x` range of
+/// the content) scrolls the dock just far enough to show that range this frame.
 fn dock<R>(
     ui: &mut Ui,
     rect: Rect,
     id_salt: &str,
     content_width: f32,
+    reveal: Option<(f32, f32)>,
     add: impl FnOnce(&mut Ui, Pos2) -> R,
 ) -> R {
     ui.scope_builder(
@@ -426,23 +442,47 @@ fn dock<R>(
             .max_rect(rect)
             .layout(Layout::top_down(Align::Min)),
         |ui| {
-            ScrollArea::horizontal()
+            let offset_id = ui.scope_id().with((id_salt, "offset"));
+            let mut area = ScrollArea::horizontal()
                 .id_salt(id_salt)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let origin = ui.cursor().min;
-                    // Claim the content size up front so the scroll area knows how wide the
-                    // strips are; everything is placed from `origin` by hand.
-                    ui.allocate_rect(
-                        Rect::from_min_size(origin, vec2(content_width, rect.height())),
-                        Sense::hover(),
-                    );
-                    add(ui, origin)
-                })
-                .inner
+                .auto_shrink([false, false]);
+            if let Some(range) = reveal {
+                let shown: f32 = ui.data(|d| d.get_temp(offset_id)).unwrap_or(0.0);
+                let target = reveal_offset(shown, range, rect.width(), content_width);
+                if target != shown {
+                    area = area.horizontal_scroll_offset(target);
+                }
+            }
+            let output = area.show(ui, |ui| {
+                let origin = ui.cursor().min;
+                // Claim the content size up front so the scroll area knows how wide the
+                // strips are; everything is placed from `origin` by hand.
+                ui.allocate_rect(
+                    Rect::from_min_size(origin, vec2(content_width, rect.height())),
+                    Sense::hover(),
+                );
+                add(ui, origin)
+            });
+            ui.data_mut(|d| d.insert_temp(offset_id, output.state.clamped_offset().x));
+            output.inner
         },
     )
     .inner
+}
+
+/// The scroll offset that shows the content range `(lo, hi)` in a `view` wide window onto
+/// `content` wide content, moving as little as possible from `shown` (a range already in
+/// view keeps `shown`; one wider than the view shows its start).
+#[must_use]
+pub fn reveal_offset(shown: f32, (lo, hi): (f32, f32), view: f32, content: f32) -> f32 {
+    let target = if lo < shown || hi - lo > view {
+        lo
+    } else if hi > shown + view {
+        hi - view
+    } else {
+        shown
+    };
+    target.clamp(0.0, (content - view).max(0.0))
 }
 
 /// The three docks. The sources and the inserts each scroll horizontally inside their dock;
@@ -454,6 +494,24 @@ fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let origin = ui.cursor().min;
     let inserts_room =
         (width - SOURCE_DOCK_WIDTH - DOCK_GAP - MASTER_WIDTH).max(INSERT_STRIP_WIDTH);
+    // A rack focus change or an insert selected alone since the last frame scrolls that
+    // source strip / insert strip into view.
+    let source_reveal = state
+        .mixer_reveal
+        .take()
+        .and_then(|c| channels.iter().position(|v| *v == c))
+        .map(|i| {
+            let x = i as f32 * SOURCE_STRIP_WIDTH;
+            (x, x + SOURCE_STRIP_WIDTH)
+        });
+    let insert_reveal = state
+        .insert_reveal
+        .take()
+        .filter(|n| (1..=MAX_INSERT).contains(n))
+        .map(|n| {
+            let x = f32::from(n - 1) * INSERT_STRIP_WIDTH;
+            (x, x + INSERT_STRIP_WIDTH)
+        });
 
     let sources_rect = Rect::from_min_size(origin, vec2(SOURCE_DOCK_WIDTH, height));
     dock(
@@ -461,10 +519,11 @@ fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         sources_rect,
         "mixer_sources",
         sources_width(channels.len()),
+        source_reveal,
         |ui, origin| {
             for (i, channel) in channels.iter().enumerate() {
                 let x = origin.x + i as f32 * SOURCE_STRIP_WIDTH;
-                source_strip(ui, state, theme, *channel, pos2(x, origin.y));
+                source_strip(ui, state, theme, *channel, pos2(x, origin.y), height);
             }
         },
     );
@@ -476,6 +535,7 @@ fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         inserts_rect,
         "mixer_inserts",
         inserts_width(),
+        insert_reveal,
         |ui, origin| {
             let mut last = None;
             for n in 1..=MAX_INSERT {
@@ -504,12 +564,32 @@ fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 // ---------------------------------------------------------------------------------------------
 // Source strips.
 
-/// One source strip at `origin`: chip, caps label, number box, LEVEL and PAN knobs, M / S.
-fn source_strip(ui: &mut Ui, state: &mut AppState, theme: &Theme, channel: Channel, origin: Pos2) {
+/// One source strip at `origin`, `height` tall: chip, caps label, number box, LEVEL and PAN
+/// knobs, M / S. The rack's focused source sits on the accent wash with an accent bar
+/// across its top; a click on the caps label focuses the source in the rack.
+fn source_strip(
+    ui: &mut Ui,
+    state: &mut AppState,
+    theme: &Theme,
+    channel: Channel,
+    origin: Pos2,
+    height: f32,
+) {
     let name = channel_name(state, channel);
     let label = strip_label(state, channel);
     let cx = origin.x + SOURCE_STRIP_WIDTH * 0.5;
     let mut y = origin.y;
+
+    let strip = Rect::from_min_size(origin, vec2(SOURCE_STRIP_WIDTH, height));
+    let focused = state.rack_focus() == channel;
+    if focused && ui.is_rect_visible(strip) {
+        ui.painter().rect_filled(strip, 3.0, theme.accent_wash);
+        ui.painter().rect_filled(
+            Rect::from_min_size(strip.min, vec2(SOURCE_STRIP_WIDTH, 2.0)),
+            1.0,
+            theme.accent,
+        );
+    }
 
     // The track's colour chip (drums leave the row empty so the labels line up).
     if let Some(slot) = channel.track() {
@@ -528,8 +608,23 @@ fn source_strip(ui: &mut Ui, state: &mut AppState, theme: &Theme, channel: Chann
         vec2(SOURCE_STRIP_WIDTH, KNOB_LABEL + 4.0),
     );
     place(ui, label_rect, |ui| {
-        controls::caps_label_truncated(ui, theme, &label, SOURCE_STRIP_WIDTH).on_hover_text(&name);
+        controls::caps_label_truncated(ui, theme, &label, SOURCE_STRIP_WIDTH);
     });
+    let focus = ui.interact(
+        label_rect,
+        ui.scope_id().with((channel.index(), "source_focus")),
+        Sense::click(),
+    );
+    let focus_label = source_focus_name(&name);
+    focus
+        .widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), focused, &focus_label));
+    if focus
+        .on_hover_text(format!("{name} · click to focus it in the rack"))
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .clicked()
+    {
+        state.focus_channel(channel);
+    }
     y += KNOB_LABEL + 4.0 + BLOCK_GAP;
 
     // The insert number box.
@@ -1529,6 +1624,46 @@ mod tests {
         // The default six sources overflow the four-strip dock; five do not.
         assert!(sources_width(DrumRow::COUNT + 1) > SOURCE_DOCK_WIDTH);
         assert!(sources_width(SOURCE_DOCK_STRIPS) <= SOURCE_DOCK_WIDTH);
+    }
+
+    #[test]
+    fn a_reveal_scrolls_as_little_as_it_can() {
+        // A 200 wide view onto 1000 of content, scrolled to 300 (showing 300..500).
+        assert_eq!(
+            reveal_offset(300.0, (350.0, 450.0), 200.0, 1000.0),
+            300.0,
+            "in view"
+        );
+        assert_eq!(
+            reveal_offset(300.0, (100.0, 200.0), 200.0, 1000.0),
+            100.0,
+            "left of it"
+        );
+        assert_eq!(
+            reveal_offset(300.0, (600.0, 700.0), 200.0, 1000.0),
+            500.0,
+            "right of it"
+        );
+        assert_eq!(
+            reveal_offset(300.0, (450.0, 550.0), 200.0, 1000.0),
+            350.0,
+            "half out"
+        );
+        assert_eq!(
+            reveal_offset(0.0, (100.0, 400.0), 200.0, 1000.0),
+            100.0,
+            "too wide"
+        );
+        assert_eq!(
+            reveal_offset(0.0, (950.0, 1000.0), 200.0, 1000.0),
+            800.0,
+            "the end"
+        );
+        assert_eq!(
+            reveal_offset(40.0, (0.0, 50.0), 200.0, 150.0),
+            0.0,
+            "content fits"
+        );
     }
 
     /// The vertical budget at the design size: head, three pills, the grid and the route

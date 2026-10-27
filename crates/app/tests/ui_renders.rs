@@ -3140,6 +3140,9 @@ fn mixer_shows_one_strip_per_active_track() {
     state.add_track();
     state.rename_track(1, "Pad");
     state.add_track();
+    // Measure the docks unscrolled (the new track's focus would scroll the panel to it).
+    state.mixer_reveal = None;
+    state.insert_reveal = None;
     let theme = Theme::for_mode(ThemeMode::Dark);
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(ui::mixer::WIDTH + 40.0, 420.0))
@@ -3385,6 +3388,9 @@ fn mixer_master_stays_pinned_with_eight_tracks() {
         for _ in 0..extra {
             state.add_track();
         }
+        // Measure the docks unscrolled (the new tracks' focus would scroll to the last).
+        state.mixer_reveal = None;
+        state.insert_reveal = None;
         let theme = Theme::for_mode(ThemeMode::Dark);
         let mut harness = Harness::builder()
             .with_size(egui::Vec2::new(ui::mixer::WIDTH + 40.0, 420.0))

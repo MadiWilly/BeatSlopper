@@ -35,7 +35,9 @@
 //!
 //! Accessible names: the tabs are [`crate::app::View::tab_label`] ("PIANO ROLL" ...), the
 //! rack | main splitter [`RACK_HANDLE_NAME`], the mixer bar [`MIXER_BAR_NAME`] (a button;
-//! its chevron [`MIXER_OPEN_NAME`] / [`MIXER_CLOSE_NAME`], its meter [`MIXER_METER_NAME`]),
+//! its chevron [`MIXER_OPEN_NAME`] / [`MIXER_CLOSE_NAME`], its meter [`MIXER_METER_NAME`],
+//! its insert chips [`mixer_chip_name`]: inserts 1..=5 plus the highlighted insert when it
+//! is further along, the highlighted one lit; a click opens the MIXER view on that insert),
 //! the hint bar's label (the keycap · label pairs of [`HINTS`] joined) and the audio line
 //! [`AUDIO_INFO_NAME`]. The persisted pieces are the [`crate::app::ShellLayout`].
 
@@ -81,6 +83,14 @@ pub const MIXER_OPEN_NAME: &str = "Open mixer";
 pub const MIXER_CLOSE_NAME: &str = "Close mixer";
 pub const MIXER_METER_NAME: &str = "Mixer bar meter";
 pub const AUDIO_INFO_NAME: &str = "Audio info";
+/// Inserts the mixer bar always shows a chip for (the highlighted insert gets one too).
+pub const BAR_CHIPS: u8 = 5;
+
+/// Accessible name of the mixer bar's chip for insert `insert`: `"Mixer bar insert 3"`.
+#[must_use]
+pub fn mixer_chip_name(insert: u8) -> String {
+    format!("Mixer bar insert {insert}")
+}
 /// The hint bar's keycap · label pairs.
 pub const HINTS: [(&str, &str); 7] = [
     ("Space", "Play / Stop"),
@@ -545,11 +555,36 @@ fn mixer_bar(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::title(ui, theme, "Mixer");
     neu::text_widget(ui, "16 inserts · master", TextKind::Label, theme.text_2);
     ui.spacing_mut().item_spacing.x = 4.0;
-    for n in 1..=5u8 {
-        let name = state.insert_display_name(n);
-        insert_chip(ui, theme, &n.to_string(), &name);
+    // Inserts 1..=5, then the highlighted insert when it is further along.
+    let highlighted = state.highlighted_insert();
+    let mut chips: Vec<u8> = (1..=BAR_CHIPS).collect();
+    if highlighted > BAR_CHIPS && highlighted <= engine::inserts::MAX_INSERT {
+        chips.push(highlighted);
     }
-    insert_chip(ui, theme, "…", "16");
+    let mut picked = None;
+    for n in chips {
+        let name = state.insert_display_name(n);
+        let chip = insert_chip(ui, theme, &n.to_string(), &name, n == highlighted, true);
+        chip.widget_info(|| {
+            WidgetInfo::selected(
+                Role::Button,
+                ui.is_enabled(),
+                n == highlighted,
+                mixer_chip_name(n),
+            )
+        });
+        if chip
+            .on_hover_text(format!(
+                "Insert {n}: {name} · click to open it in the mixer"
+            ))
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .clicked()
+        {
+            picked = Some(n);
+        }
+    }
+    insert_chip(ui, theme, "…", "16", false, false)
+        .on_hover_text("16 inserts · F6 opens the mixer");
     ui.spacing_mut().item_spacing.x = 8.0;
     // Right-aligned: the meter, the keycap and the chevron (measured last frame).
     let width_id = ui.scope_id().with("mixer_bar_right");
@@ -576,7 +611,10 @@ fn mixer_bar(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         chevron.on_hover_text("Mixer (F6)").clicked()
     });
     ui.data_mut(|d| d.insert_temp(width_id, group.response.rect.width()));
-    if group.inner {
+    if let Some(n) = picked {
+        state.select_insert(n, false);
+        state.set_view(View::Mixer);
+    } else if group.inner {
         state.toggle_mixer_drawer();
     } else if response.clicked() && !open {
         state.set_view(View::Mixer);
@@ -584,16 +622,36 @@ fn mixer_bar(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 }
 
 /// A mini insert chip: 20 h, padding 0 6, the number in `text_3` 600 and the name in
-/// `text_2`, `panel` fill with a `border`, radius 3.
-fn insert_chip(ui: &mut Ui, theme: &Theme, number: &str, name: &str) {
+/// `text_2`, `panel` fill with a `border` (`lit`: the accent wash and an accent border),
+/// radius 3. `clickable` senses clicks (the insert chips), else hover only.
+fn insert_chip(
+    ui: &mut Ui,
+    theme: &Theme,
+    number: &str,
+    name: &str,
+    lit: bool,
+    clickable: bool,
+) -> Response {
     let painter = ui.painter().clone();
     let shown = neu::ellipsise(&painter, name, TextKind::Small, 60.0);
     let num = neu::text::layout(&painter, number, TextKind::Small, theme.text_3);
     let text = neu::text::layout(&painter, &shown, TextKind::Small, theme.text_2);
     let width = 6.0 + num.size().x + 4.0 + text.size().x + 6.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 20.0), sense);
     if ui.is_rect_visible(rect) {
-        neu::paint_control(&painter, rect, 3.0, theme.panel, theme.border);
+        let (fill, border) = if lit {
+            (theme.accent_wash, theme.accent)
+        } else if clickable && response.hovered() {
+            (theme.panel_3, theme.border_2)
+        } else {
+            (theme.panel, theme.border)
+        };
+        neu::paint_control(&painter, rect, 3.0, fill, border);
         let num_rect = neu::text::paint_galley(
             &painter,
             pos2(rect.min.x + 6.0, rect.center().y),
@@ -611,7 +669,7 @@ fn insert_chip(ui: &mut Ui, theme: &Theme, number: &str, name: &str) {
             theme.text_2,
         );
     }
-    response.on_hover_text(format!("Insert {number}: {name}"));
+    response
 }
 
 /// The hint bar: the keycap · label pairs, the audio line at the right.
