@@ -112,8 +112,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 This builds a release, installs it to `%LOCALAPPDATA%\Programs\BeatSlopper` and adds
-BeatSlopper to the Desktop and the Start menu. Re-run it to update (close BeatSlopper first);
-pass `-NoDesktopShortcut` for the Start menu entry only. The icon's source is
+BeatSlopper to the Desktop and the Start menu. It also adds an **Update BeatSlopper** desktop
+shortcut: close BeatSlopper and double-click it to rebuild from the repo's current code and
+reinstall. Pass `-NoDesktopShortcut` for the Start menu entry only. The icon's source is
 `crates/app/assets/icon.svg`; after editing it, run `node scripts/make-icon.mjs` (needs Node
 and Microsoft Edge) to regenerate `icon.png` and `icon.ico`.
 
