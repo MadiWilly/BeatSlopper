@@ -1002,6 +1002,12 @@ fn slot_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, slot: 
             let label = kind_pick_name(candidate);
             response
                 .widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), on, &label));
+            let response = match candidate {
+                SlotKind::Eq3 => response.on_hover_text("Three-band EQ, three knobs"),
+                SlotKind::ParametricEq => response
+                    .on_hover_text("Seven-band parametric EQ in its own window, on this insert"),
+                _ => response,
+            };
             if response.clicked() {
                 picked = Some(candidate);
             }
