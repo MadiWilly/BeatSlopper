@@ -838,8 +838,19 @@ pub struct AppState {
     /// The inserts selected in the MIXER panel (M11; insert numbers, the primary first).
     /// View state: a click on an insert's head selects it alone, Shift-click adds / removes
     /// one, and a fader drag of a selected insert moves the whole selection together. Empty
-    /// means "the edit track's insert" is the one highlighted.
+    /// means "the rack focus's insert" ([`AppState::rack_focus`]) is the one highlighted.
     pub insert_selection: Vec<u8>,
+    /// The drum row the CHANNEL RACK has in focus (its NAME was clicked), or `None` when the
+    /// focus is the edit track. View state; [`AppState::select_track`] clears it, so the
+    /// focus never outlives a track. Read through [`AppState::rack_focus`].
+    pub drum_focus: Option<DrumRow>,
+    /// The source strip the MIXER panel scrolls into view the next time it is drawn: set
+    /// when the rack focus moves, taken by the panel. View state.
+    pub mixer_reveal: Option<Channel>,
+    /// The insert strip the MIXER panel scrolls into view the next time it is drawn: set by
+    /// every plain (not Shift) [`AppState::select_insert`] of an insert, taken by the panel.
+    /// View state.
+    pub insert_reveal: Option<u8>,
     /// The effect slot whose knobs the MIXER panel shows under its strip instead of the
     /// EQ3 / send knobs: `(insert, slot)` (M11). View state; `None` when nothing is open.
     pub open_slot: Option<(u8, u8)>,
@@ -1050,6 +1061,9 @@ impl AppState {
             mixer: MixerState::default(),
             insert_ui: default_insert_ui(),
             insert_selection: Vec::new(),
+            drum_focus: None,
+            mixer_reveal: None,
+            insert_reveal: None,
             open_slot: None,
             meters: Meters::SILENT,
             shown_meters: Meters::SILENT,
@@ -1800,18 +1814,64 @@ impl AppState {
         self.link_to_free_insert(Channel::from_track(slot))
     }
 
-    /// The insert the panel highlights: the primary selection, else the edit track's route
-    /// (`0` when that track goes straight to the master and nothing is selected).
+    /// The insert the panel highlights: the primary selection, else the rack focus's route
+    /// (`0` when that source goes straight to the master and nothing is selected).
     #[must_use]
     pub fn highlighted_insert(&self) -> u8 {
         self.insert_selection
             .first()
             .copied()
-            .unwrap_or_else(|| self.mixer.route(Channel::from_track(self.edit_track)))
+            .unwrap_or_else(|| self.mixer.route(self.rack_focus()))
+    }
+
+    /// The source the CHANNEL RACK has in focus: the drum row whose NAME was clicked last
+    /// ([`AppState::focus_drum`]), else the edit track. The rack draws its row on the accent
+    /// wash and the MIXER panel marks its source strip.
+    #[must_use]
+    pub fn rack_focus(&self) -> Channel {
+        match self.drum_focus {
+            Some(row) => Channel::ALL[row.index()],
+            None => Channel::from_track(self.edit_track),
+        }
+    }
+
+    /// Focuses drum row `row` in the rack (a click on its NAME). The edit track stays the
+    /// edit track; the mixer follows the focus ([`AppState::follow_focus`]). View state.
+    pub fn focus_drum(&mut self, row: DrumRow) {
+        let before = self.rack_focus();
+        self.drum_focus = Some(row);
+        self.follow_focus(before);
+    }
+
+    /// Focuses `channel`: a drum row through [`AppState::focus_drum`], a track through
+    /// [`AppState::select_track`] (`false` for an inactive track).
+    pub fn focus_channel(&mut self, channel: Channel) -> bool {
+        match channel.track() {
+            Some(slot) => self.select_track(slot),
+            None => {
+                self.focus_drum(DrumRow::ALL[channel.index()]);
+                true
+            }
+        }
+    }
+
+    /// After the rack focus moved off `before`: the MIXER panel selects the insert the new
+    /// focus routes to (or drops its selection for a route straight to the master) and
+    /// scrolls both into view on its next frame (FL's "selecting a channel selects its
+    /// insert"). Focusing the same source again keeps a Shift-built selection.
+    fn follow_focus(&mut self, before: Channel) {
+        let now = self.rack_focus();
+        if now == before {
+            return;
+        }
+        self.select_insert(self.mixer.route(now), false);
+        self.mixer_reveal = Some(now);
     }
 
     /// Selects insert `insert` in the panel (view state, no undo step): alone, or with
-    /// `extend` (Shift-click) toggled in or out of the current selection. `0` clears it.
+    /// `extend` (Shift-click) toggled in or out of the current selection. `0` clears it. A
+    /// selection alone also asks the panel to scroll the insert into view
+    /// ([`AppState::insert_reveal`]).
     pub fn select_insert(&mut self, insert: u8, extend: bool) {
         if insert == MASTER || insert > MAX_INSERT {
             self.insert_selection.clear();
@@ -1820,6 +1880,7 @@ impl AppState {
         if !extend {
             self.insert_selection.clear();
             self.insert_selection.push(insert);
+            self.insert_reveal = Some(insert);
         } else if let Some(at) = self.insert_selection.iter().position(|n| *n == insert) {
             self.insert_selection.remove(at);
         } else {
@@ -2120,6 +2181,13 @@ impl AppState {
         }
         if view != View::Mixer {
             self.last_main_view = view;
+        } else if self.view != View::Mixer {
+            // The mixer opens on the highlighted insert (a focus change made while it was
+            // closed has its source strip reveal pending already).
+            let insert = self.highlighted_insert();
+            if (1..=MAX_INSERT).contains(&insert) {
+                self.insert_reveal = Some(insert);
+            }
         }
         self.view = view;
         self.mixer_drawer_open = view == View::Mixer;
@@ -3144,11 +3212,14 @@ impl AppState {
         if slot != self.edit_track {
             self.release_held_notes();
         }
+        let before = self.rack_focus();
         self.edit_track = slot;
+        self.drum_focus = None;
         self.selected_step = None;
         self.clear_roll_selection();
         self.rebuild_lanes();
         self.send(Message::SetEditTrack(slot));
+        self.follow_focus(before);
         true
     }
 
@@ -7679,8 +7750,16 @@ mod insert_tests {
             "0 wraps to the last insert"
         );
         assert_eq!(state.route_name(0), "MASTER");
-        assert_eq!(state.route_name(6), "Synth", "the default route names the insert");
-        assert_eq!(state.route_name(14), "Insert 14", "nothing routed: the default name");
+        assert_eq!(
+            state.route_name(6),
+            "Synth",
+            "the default route names the insert"
+        );
+        assert_eq!(
+            state.route_name(14),
+            "Insert 14",
+            "nothing routed: the default name"
+        );
         assert_eq!(state.route_name(17), "MASTER");
     }
 
@@ -7694,7 +7773,11 @@ mod insert_tests {
         // Routing a second source adds a count; a third and fourth too.
         state.set_route(Channel::ALL[1], 1);
         assert_eq!(state.insert_display_name(1), "Kick +1");
-        assert_eq!(state.insert_display_name(2), "Insert 2", "its source moved away");
+        assert_eq!(
+            state.insert_display_name(2),
+            "Insert 2",
+            "its source moved away"
+        );
         state.set_route(Channel::ALL[2], 1);
         assert_eq!(state.insert_display_name(1), "Kick +2");
         // Straight to the master: the insert is free again.
@@ -7933,6 +8016,65 @@ mod insert_tests {
         assert_eq!(state.link_to_free_insert(Channel::Kick), Some(1));
         assert_eq!(state.mixer.route(Channel::Kick), 1);
         assert!(state.status_text().is_none());
+    }
+
+    #[test]
+    fn the_rack_focus_selects_its_insert_and_asks_the_mixer_to_reveal_it() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        // The edit track holds the focus at first; nothing is selected or pending.
+        assert_eq!(state.rack_focus(), Channel::Synth);
+        assert!(state.insert_selection.is_empty());
+        assert_eq!(state.highlighted_insert(), 6);
+        assert_eq!(state.mixer_reveal, None);
+        // A drum row takes the focus: its insert is selected and the mixer is asked to
+        // scroll to it. The edit track stays.
+        state.focus_drum(DrumRow::Snare);
+        assert_eq!(state.rack_focus(), Channel::Snare);
+        assert_eq!(state.edit_track, 0);
+        assert_eq!(state.insert_selection, vec![2]);
+        assert_eq!(state.highlighted_insert(), 2);
+        assert_eq!(state.mixer_reveal.take(), Some(Channel::Snare));
+        assert_eq!(state.insert_reveal.take(), Some(2));
+        // Focusing the same row again keeps a Shift-built selection and asks nothing; a
+        // Shift-click asks for no scrolling either.
+        state.select_insert(9, true);
+        state.focus_drum(DrumRow::Snare);
+        assert_eq!(state.insert_selection, vec![2, 9]);
+        assert_eq!(state.mixer_reveal, None);
+        assert_eq!(state.insert_reveal, None);
+        // Selecting the edit track moves the focus back to it (a change, though the edit
+        // track is the same), and a repeat selection is no change.
+        assert!(state.select_track(0));
+        assert_eq!(state.rack_focus(), Channel::Synth);
+        assert_eq!(state.drum_focus, None);
+        assert_eq!(state.insert_selection, vec![6]);
+        assert_eq!(state.mixer_reveal.take(), Some(Channel::Synth));
+        state.select_insert(11, true);
+        assert!(state.select_track(0));
+        assert_eq!(state.insert_selection, vec![6, 11], "a step click keeps it");
+        assert_eq!(state.mixer_reveal, None);
+        // A new track takes the focus with its home insert.
+        let fresh = state.add_track().unwrap();
+        assert_eq!(state.rack_focus(), Channel::from_track(fresh));
+        assert_eq!(
+            state.insert_selection,
+            vec![state.mixer.route(Channel::from_track(fresh))]
+        );
+        // A source straight to the master drops the selection; the highlight follows it.
+        state.set_route(Channel::Kick, 0);
+        assert!(state.focus_channel(Channel::Kick));
+        assert!(state.insert_selection.is_empty());
+        assert_eq!(state.highlighted_insert(), 0);
+        // An unused slot cannot take the focus.
+        assert!(!state.focus_channel(Channel::from_track(7)));
+        assert_eq!(state.rack_focus(), Channel::Kick);
+        // Opening the mixer asks it to show the highlighted insert.
+        state.select_insert(12, false);
+        state.mixer_reveal = None;
+        state.insert_reveal = None;
+        state.set_view(View::Mixer);
+        assert_eq!(state.insert_reveal, Some(12));
+        assert_eq!(state.mixer_reveal, None);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use app::ui::mixer;
 use app::{AppState, BeatSlopperApp};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use engine::{Channel, InsertParam, Meters, SlotKind};
 use neu::{Theme, ThemeMode};
 
@@ -423,6 +423,9 @@ fn the_mixer_stays_inside_the_main_window() {
     for _ in 0..3 {
         app.state_mut().add_track();
     }
+    // Each new track took the rack focus (and the mixer would scroll to it): measure from
+    // the kick's strip at the start of the source dock instead.
+    app.state_mut().focus_drum(engine::DrumRow::Kick);
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(1920.0, 1080.0))
         .build_ui_state(
@@ -464,5 +467,133 @@ fn routing_a_track_names_the_insert_head_after_it() {
     harness.get_by_label(&mixer::insert_head_name(15, "Kick"));
     // Kick left insert 1, which falls back to its default name.
     harness.get_by_label(&mixer::insert_head_name(1, "Insert 1"));
-    assert_eq!(harness.state().insert_ui(15).name, "Insert 15", "derived, not stored");
+    assert_eq!(
+        harness.state().insert_ui(15).name,
+        "Insert 15",
+        "derived, not stored"
+    );
+}
+
+/// The panel at its real width: two insert strips and four source strips in view.
+fn narrow_panel_harness() -> Harness<'static, AppState> {
+    let (state, _engine) = AppState::headless(ThemeMode::Dark);
+    let theme = Theme::for_mode(ThemeMode::Dark);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(mixer::WIDTH, 420.0))
+        .build_ui_state(
+            move |ui, state: &mut AppState| mixer::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(3);
+    harness
+}
+
+#[test]
+fn a_rack_focus_change_scrolls_the_mixer_to_its_strip_and_insert() {
+    let mut harness = narrow_panel_harness();
+    let head = |harness: &Harness<'_, AppState>, n: u8, name: &str| {
+        harness
+            .get_by_label(&mixer::insert_head_name(n, name))
+            .rect()
+    };
+    // The inserts dock's view: from insert 1's strip (unscrolled; the head sits a point in)
+    // to the pinned MASTER column.
+    let inserts_left = head(&harness, 1, "Kick").min.x - 1.0;
+    let inserts_right = harness.get_by_label("Master").rect().min.x;
+    assert!(inserts_right - inserts_left >= 2.0 * mixer::INSERT_STRIP_WIDTH);
+    let in_view = |rect: egui::Rect| rect.min.x >= inserts_left && rect.max.x <= inserts_right;
+    // Insert 15 starts far right of the dock's view.
+    assert!(head(&harness, 15, "Insert 15").min.x > inserts_right);
+    harness.state_mut().set_route(Channel::Clap, 15);
+    harness.state_mut().focus_drum(engine::DrumRow::Clap);
+    harness.run_steps(3);
+    assert_eq!(
+        harness.state().mixer_reveal,
+        None,
+        "the panel took the reveal"
+    );
+    assert_eq!(harness.state().insert_reveal, None);
+    let shown = head(&harness, 15, "Clap");
+    assert!(in_view(shown), "insert 15 scrolled into view: {shown:?}");
+    // A source on insert 14, already in view beside 15: the dock reads its offset back
+    // and does not move.
+    assert!(in_view(head(&harness, 14, "Insert 14")));
+    harness.state_mut().set_route(Channel::Snare, 14);
+    harness.state_mut().focus_drum(engine::DrumRow::Snare);
+    harness.run_steps(3);
+    assert_eq!(harness.state().insert_selection, vec![14]);
+    assert_eq!(
+        head(&harness, 15, "Clap"),
+        shown,
+        "no scroll for a strip in view"
+    );
+    // A plain head selection of an insert out of view (the chips, Ctrl+L, the pickers)
+    // scrolls to it too.
+    harness.state_mut().select_insert(3, false);
+    harness.run_steps(3);
+    let third = head(&harness, 3, "Insert 3");
+    assert!(
+        in_view(third),
+        "insert 3 scrolled back into view: {third:?}"
+    );
+    harness.get_by_label(&mixer::source_focus_name("Clap"));
+    // The sixth source (the synth) is out of the four-strip dock until the focus moves to it.
+    let dock_right = harness
+        .get_by_label(&mixer::source_focus_name("Kick"))
+        .rect()
+        .min
+        .x
+        + mixer::SOURCE_DOCK_WIDTH;
+    let synth = |harness: &Harness<'_, AppState>| {
+        harness
+            .get_by_label(&mixer::source_focus_name("Synth"))
+            .rect()
+    };
+    assert!(synth(&harness).min.x >= dock_right);
+    assert!(harness.state_mut().select_track(0));
+    harness.run_steps(3);
+    let strip = synth(&harness);
+    assert!(
+        strip.max.x <= dock_right + 1.0,
+        "the synth strip in view: {strip:?}"
+    );
+    // Without a focus change the user's own scrolling stays put: no reveal is pending.
+    harness.run_steps(3);
+    assert_eq!(synth(&harness), strip);
+}
+
+#[test]
+fn a_source_label_click_focuses_the_source_in_the_rack() {
+    let (mut harness, _engine) = panel_harness(ThemeMode::Dark);
+    assert_eq!(
+        harness
+            .get_by_label(&mixer::source_focus_name("Synth"))
+            .accesskit_node()
+            .toggled()
+            .map(|t| t == egui::accesskit::Toggled::True),
+        Some(true),
+        "the edit track"
+    );
+    harness
+        .get_by_label(&mixer::source_focus_name("Clap"))
+        .click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().drum_focus, Some(engine::DrumRow::Clap));
+    assert_eq!(harness.state().insert_selection, vec![3]);
+    assert_eq!(
+        harness
+            .get_by_label(&mixer::source_focus_name("Clap"))
+            .accesskit_node()
+            .toggled()
+            .map(|t| t == egui::accesskit::Toggled::True),
+        Some(true)
+    );
+    // Another strip in the dock's view (the synth is the sixth, scrolled out of it).
+    harness
+        .get_by_label(&mixer::source_focus_name("Kick"))
+        .click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().drum_focus, Some(engine::DrumRow::Kick));
+    assert_eq!(harness.state().insert_selection, vec![1]);
+    assert_eq!(harness.state().edit_track, 0, "the edit track stays");
 }

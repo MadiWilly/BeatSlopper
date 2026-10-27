@@ -22,9 +22,12 @@
 //!
 //! Row: 28 h on a 32 pitch, padding 0 8, gap 6, columns LED 10 · S 22 · VOL 22 · TUNE / PAN
 //! 22 · INS 22 · NAME 76 · STEPS 426 = 652 ([`CONTENT_WIDTH`]); compact rows drop the two
-//! knobs (the values live in the LED tooltip) and use a 64 name. The selected row (the edit
-//! track) sits on the accent wash with a 2 px accent bar; a muted row's LED is off and its
-//! name reads `text_2`.
+//! knobs (the values live in the LED tooltip) and use a 64 name. The focused row
+//! (`AppState::rack_focus`: the drum row whose NAME was clicked last, else the edit track)
+//! sits on the accent wash with a 2 px accent bar; a muted row's LED is off and its name
+//! reads `text_2`. Focusing a row selects the insert it routes to in the MIXER panel and
+//! scrolls the panel to it; an INS box whose insert is selected in the panel is lit (accent
+//! wash and border), so a mixer selection shows which rows feed it.
 //!
 //! The grid shows bar [`AppState::shown_bar`] of the edit pattern: cell `i` edits the
 //! absolute step `shown_bar * 16 + i` and the playhead column lights only when the playing
@@ -35,9 +38,10 @@
 //! Ctrl-click flips the accent; pressing a drum cell and dragging across its row paints every
 //! cell to the first cell's new state (one undo step per stroke, `crate::drag_paint`). A
 //! track cell click selects the step for note entry (click again to deselect; it selects
-//! the track first when it is another track's row), Shift-click flips its accent (or gives
+//! the track first when its row is out of focus), Shift-click flips its accent (or gives
 //! an empty step a note). Right-click clears a cell. The row LED: click mutes, right-click
-//! solos. A drum NAME button: double-click mutes (Shift: solo); a track NAME button: click
+//! solos. A drum NAME button: click focuses the row, double-click mutes (Shift: solo); a
+//! track NAME button: click
 //! selects, double-click renames inline, Shift + double-click solos; right-click opens the
 //! row menu (`crate::ui::tracks`). The state methods on `AppState` do the work and send the
 //! engine messages.
@@ -813,7 +817,8 @@ fn cells_row(
 }
 
 fn drum_cells(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow, width: f32) {
-    cells_row(ui, theme, width, false, |ui, column| {
+    let focused = state.drum_focus == Some(row);
+    cells_row(ui, theme, width, focused, |ui, column| {
         let step = step_of(state, column);
         let cell = state.pattern().drums[row.index()][step];
         let spec = StepCellSpec {
@@ -850,7 +855,8 @@ fn track_cells(ui: &mut Ui, state: &mut AppState, theme: &Theme, slot: TrackId, 
     let track = state.track(slot).clone();
     let colour = theme.track_colour(track.colour);
     let is_edit = slot == state.edit_track;
-    cells_row(ui, theme, width, is_edit, |ui, column| {
+    let focused = state.rack_focus() == Channel::from_track(slot);
+    cells_row(ui, theme, width, focused, |ui, column| {
         let step = step_of(state, column);
         let cell = lane_cell(state, slot, step);
         let text = cell.note.map(neu::note_name);
@@ -863,13 +869,15 @@ fn track_cells(ui: &mut Ui, state: &mut AppState, theme: &Theme, slot: TrackId, 
         };
         let name = cell_name(&track.name, step);
         let response = neu::step_cell_at(ui, theme, &spec, &name, column, Some(colour));
+        // A cell of a row out of focus focuses its track first (a drum may hold the focus
+        // while this row is still the edit track).
         if response.secondary_clicked() {
-            if !is_edit {
+            if !focused {
                 state.select_track(slot);
             }
             state.clear_synth_step(step);
         } else if press_on(ui, &response) {
-            if !is_edit {
+            if !focused {
                 state.select_track(slot);
             }
             let mods = press_modifiers(ui);
@@ -1030,16 +1038,20 @@ fn row_knob(
 }
 
 /// The 22 x 22 insert number box reading `box_text(route)`; a click opens the route picker.
-fn insert_box(ui: &mut Ui, theme: &Theme, route: u8, name: &str) -> Response {
+/// `lit` (the insert is selected in the MIXER panel) draws it on the accent wash with an
+/// accent border, so a mixer selection shows which rows feed it.
+fn insert_box(ui: &mut Ui, theme: &Theme, route: u8, lit: bool, name: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(INS_WIDTH, INS_WIDTH), Sense::click());
     if ui.is_rect_visible(rect) {
         let painter = neu::control_painter(ui);
-        let fill = if response.hovered() {
-            theme.panel_3
+        let (fill, border) = if lit {
+            (theme.accent_wash, theme.accent)
+        } else if response.hovered() {
+            (theme.panel_3, theme.border_2)
         } else {
-            theme.panel_2
+            (theme.panel_2, theme.border_2)
         };
-        neu::paint_control(&painter, rect, 3.0, fill, theme.border_2);
+        neu::paint_control(&painter, rect, 3.0, fill, border);
         neu::text::paint_text(
             &painter,
             rect.center(),
@@ -1049,7 +1061,7 @@ fn insert_box(ui: &mut Ui, theme: &Theme, route: u8, name: &str) -> Response {
             theme.text,
         );
     }
-    response.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), name));
+    response.widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), lit, name));
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -1066,7 +1078,8 @@ fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow,
     let soloed = state.row_soloed(paint_row);
     let volume = state.pattern().drum_volume[row.index()];
     let tune = state.pattern().drum_tune[row.index()];
-    left_row(ui, theme, false, |ui| {
+    let focused = state.drum_focus == Some(row);
+    left_row(ui, theme, focused, |ui| {
         let tip = format!(
             "{} · {} · {}{}",
             row_name(row),
@@ -1125,7 +1138,8 @@ fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow,
             }
         }
         let route = state.mixer.route(channel);
-        let box_response = insert_box(ui, theme, route, &row_box_name(label)).on_hover_text(
+        let lit = state.is_insert_selected(route);
+        let box_response = insert_box(ui, theme, route, lit, &row_box_name(label)).on_hover_text(
             format!("Mixer insert: {} · click to pick", state.route_name(route)),
         );
         if let Some(picked) = crate::ui::mixer::route_picker(
@@ -1146,7 +1160,7 @@ fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow,
             },
             24.0,
         );
-        let name = neu::name_button_sized(ui, theme, label, None, false, muted, name_size);
+        let name = neu::name_button_sized(ui, theme, label, None, focused, muted, name_size);
         let state_text = match (muted, soloed) {
             (true, true) => "Muted, solo · ",
             (true, false) => "Muted · ",
@@ -1154,7 +1168,8 @@ fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow,
             (false, false) => "",
         };
         let name = name.on_hover_text(format!(
-            "{state_text}Double-click: mute · Shift + double-click: solo · right-click: menu"
+            "{state_text}Click: focus (the mixer follows) · double-click: mute · Shift + \
+             double-click: solo · right-click: menu"
         ));
         if name.double_clicked() {
             if press_modifiers(ui).shift {
@@ -1162,6 +1177,8 @@ fn drum_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, row: DrumRow,
             } else {
                 state.toggle_row_mute(paint_row);
             }
+        } else if name.clicked() {
+            state.focus_drum(row);
         }
         let items = [
             MenuItem::item(if muted {
@@ -1197,12 +1214,13 @@ fn track_controls(
     let track = state.track(slot).clone();
     let channel = Channel::from_track(slot);
     let selected = slot == state.edit_track;
+    let focused = state.rack_focus() == channel;
     let muted = state.mixer.strip(channel).mute;
     let soloed = state.mixer.strip(channel).solo;
     let level = state.mixer.get(channel, ChannelParam::Level);
     let pan = state.mixer.get(channel, ChannelParam::Pan);
     let colour = theme.track_colour(track.colour);
-    left_row(ui, theme, selected, |ui| {
+    left_row(ui, theme, focused, |ui| {
         let tip = format!(
             "{} · {} · {} · {}{}",
             track.name,
@@ -1258,7 +1276,8 @@ fn track_controls(
             }
         }
         let route = state.mixer.route(channel);
-        let box_response = insert_box(ui, theme, route, &tracks::insert_box_name(&track.name))
+        let lit = state.is_insert_selected(route);
+        let box_response = insert_box(ui, theme, route, lit, &tracks::insert_box_name(&track.name))
             .on_hover_text(format!(
                 "Mixer insert: {} · click to pick ({} links a free one)",
                 state.route_name(route),
