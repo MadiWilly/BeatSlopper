@@ -5,7 +5,7 @@
 //! F-keys switch the views, the browser collapses to the rail and back, the keyboard strip
 //! collapses, the mixer bar opens the mixer view and the hint bar shows the shortcuts.
 
-use app::app::View;
+use app::app::{Panel, View};
 use app::ui;
 use app::ui::shell::{AUDIO_INFO_NAME, HINTS, MIXER_BAR_NAME, MIXER_OPEN_NAME, RACK_HANDLE_NAME};
 use app::ui::transport_bar::{BROWSER_NAME, HINT_NAME, MENU_NAME, MIDI_NAME};
@@ -585,4 +585,147 @@ fn the_overlay_covers_the_workspace_until_escape() {
             .query_by_label(ui::visualizer::CLOSE_LABEL)
             .is_none()
     );
+}
+
+/// Clicks `label` through accessibility (the embedded pop-out windows can cover a header in
+/// the headless harness) and lets the layout settle.
+fn press(harness: &mut Harness<'_, BeatSlopperApp>, label: &str) {
+    harness.get_by_label(label).click_accesskit();
+    harness.run_steps(3);
+}
+
+#[test]
+fn every_module_pops_out_and_dock_all_brings_them_back() {
+    let mut harness = app_harness(Vec2::new(1280.0, 800.0));
+    assert!(
+        harness.query_by_label(ui::popout::DOCK_ALL_LABEL).is_none(),
+        "DOCK ALL only while something is out"
+    );
+    // The rack, the roll, the browser and the keyboard are on screen at PIANO ROLL.
+    for panel in [Panel::Rack, Panel::Roll, Panel::Browser, Panel::Keyboard] {
+        press(&mut harness, panel.pop_out_label());
+        assert!(state(&harness).is_popped(panel), "{panel:?}");
+        harness.get_by_label(panel.window_title());
+        harness.get_by_label(panel.dock_label());
+    }
+    // The other views pop out from their own headers.
+    for (key, view) in [
+        (Key::F6, View::Mixer),
+        (Key::F7, View::Synth),
+        (Key::F8, View::Song),
+    ] {
+        harness.key_press(key);
+        harness.run_steps(3);
+        assert_eq!(state(&harness).view, view);
+        press(&mut harness, view.panel().pop_out_label());
+        assert!(state(&harness).is_popped(view.panel()), "{view:?}");
+        // The main window shows the placeholder meanwhile.
+        harness.get_by_label(view.panel().popped_label());
+    }
+    harness
+        .get_by_label(View::Visual.tab_label())
+        .click_accesskit();
+    harness.run_steps(3);
+    assert_eq!(state(&harness).view, View::Visual);
+    press(&mut harness, Panel::Visual.pop_out_label());
+    // Every window stays open whatever the main window shows.
+    for panel in Panel::ALL {
+        assert!(state(&harness).is_popped(panel), "{panel:?}");
+        harness.get_by_label(panel.window_title());
+    }
+    // One DOCK brings one back; DOCK ALL the rest.
+    press(&mut harness, Panel::Song.dock_label());
+    assert!(!state(&harness).is_popped(Panel::Song));
+    assert!(harness.query_by_label(Panel::Song.window_title()).is_none());
+    press(&mut harness, ui::popout::DOCK_ALL_LABEL);
+    assert!(!state(&harness).any_popped());
+    for panel in Panel::ALL {
+        assert!(
+            harness.query_by_label(panel.window_title()).is_none(),
+            "{panel:?}"
+        );
+    }
+    assert!(harness.query_by_label(ui::popout::DOCK_ALL_LABEL).is_none());
+    assert!(!state(&harness).dirty, "popping out is view state");
+}
+
+#[test]
+fn the_main_window_reflows_around_popped_out_modules() {
+    let mut harness = app_harness(Vec2::new(1280.0, 800.0));
+    let tab = harness.get_by_label(View::Roll.tab_label()).rect();
+    let mixer_bar = harness.get_by_label(MIXER_BAR_NAME).rect();
+    let roll = harness.get_by_label("Piano roll").rect();
+    assert!(tab.min.x > ui::browser::WIDTH, "{tab:?}");
+
+    // The browser's column goes to the workspace.
+    press(&mut harness, Panel::Browser.pop_out_label());
+    let tab_out = harness.get_by_label(View::Roll.tab_label()).rect();
+    assert!(
+        tab_out.min.x < tab.min.x - ui::browser::WIDTH + 1.0,
+        "{tab_out:?}"
+    );
+
+    // The keyboard's row goes to the body: the mixer bar moves down by the strip and a gap.
+    press(&mut harness, Panel::Keyboard.pop_out_label());
+    let bar_out = harness.get_by_label(MIXER_BAR_NAME).rect();
+    let moved = bar_out.min.y - mixer_bar.min.y;
+    assert!(
+        (moved - (ui::keyboard::HEIGHT + ui::shell::GAP)).abs() < 0.5,
+        "{moved}"
+    );
+
+    // The rack's width goes to the main window; its handle leaves.
+    press(&mut harness, Panel::Rack.pop_out_label());
+    assert!(harness.query_by_label(RACK_HANDLE_NAME).is_none());
+    let roll_out = harness
+        .get_all_by_label("Piano roll")
+        .map(|n| n.rect())
+        .find(|r| r.width() > roll.width())
+        .expect("the roll widens");
+    assert!(roll_out.min.x < roll.min.x);
+
+    press(&mut harness, ui::popout::DOCK_ALL_LABEL);
+    assert_eq!(harness.get_by_label(MIXER_BAR_NAME).rect(), mixer_bar);
+    harness.get_by_label(RACK_HANDLE_NAME);
+}
+
+#[test]
+fn a_popped_out_views_key_leaves_the_main_window_alone() {
+    let mut harness = app_harness(Vec2::new(1280.0, 800.0));
+    harness.key_press(Key::F6);
+    harness.run_steps(3);
+    press(&mut harness, Panel::Mixer.pop_out_label());
+    harness.key_press(Key::F5);
+    harness.run_steps(3);
+    assert_eq!(state(&harness).view, View::Roll);
+    // F6 and the mixer bar now point at the mixer's window, not the main window.
+    harness.key_press(Key::F6);
+    harness.run_steps(3);
+    assert_eq!(state(&harness).view, View::Roll);
+    harness.get_by_label(MIXER_BAR_NAME).click_accesskit();
+    harness.run_steps(3);
+    assert_eq!(state(&harness).view, View::Roll);
+    harness.get_by_label("Piano roll");
+    // The mixer still works in its window.
+    harness.get_by_label("Mute Kick");
+}
+
+#[test]
+fn dock_all_fits_the_toolbar_at_every_size() {
+    for size in SIZES {
+        let mut harness = app_harness(size);
+        press(&mut harness, Panel::Keyboard.pop_out_label());
+        let play = harness.get_by_label("Play").rect();
+        let dock_all = harness.get_by_label(ui::popout::DOCK_ALL_LABEL).rect();
+        assert!(
+            dock_all.min.x >= 0.0 && dock_all.max.x <= size.x + 0.5,
+            "{size:?}: {dock_all:?}"
+        );
+        assert!(
+            dock_all.min.y >= play.min.y - 6.5 && dock_all.max.y <= play.max.y + 6.5,
+            "{size:?}: {dock_all:?} in the bar"
+        );
+        press(&mut harness, ui::popout::DOCK_ALL_LABEL);
+        assert!(!state(&harness).any_popped(), "{size:?}");
+    }
 }

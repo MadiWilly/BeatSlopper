@@ -28,6 +28,11 @@
 //! items use the 8 pt padding and the toolbar drops its optional items. Every window body
 //! scrolls instead of clipping, so the layout works from 840 x 600 up.
 //!
+//! Pop-outs ([`crate::ui::popout`]): any module can be in a window of its own. The shell then
+//! lays out without it (a popped browser or rack gives its width to the workspace, a popped
+//! keyboard its row), shows a placeholder for a popped view, and draws every popped window
+//! after the main window each frame.
+//!
 //! Accessible names: the tabs are [`crate::app::View::tab_label`] ("PIANO ROLL" ...), the
 //! rack | main splitter [`RACK_HANDLE_NAME`], the mixer bar [`MIXER_BAR_NAME`] (a button;
 //! its chevron [`MIXER_OPEN_NAME`] / [`MIXER_CLOSE_NAME`], its meter [`MIXER_METER_NAME`]),
@@ -40,10 +45,10 @@ use egui::{
 };
 use neu::{Icon, TextKind, Theme};
 
-use crate::app::{AppState, MIN_RACK_WIDTH, View};
+use crate::app::{AppState, MIN_RACK_WIDTH, Panel, View};
 use crate::ui::{
-    browser, fx_rack, keyboard, mixer, roll_view, sequencer, song, synth_panel, transport_bar,
-    visualizer,
+    browser, fx_rack, keyboard, mixer, popout, roll_view, sequencer, song, synth_panel,
+    transport_bar, visualizer,
 };
 use crate::window;
 
@@ -104,12 +109,17 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     state.apply_narrow_defaults(narrow);
     let inner = full.shrink(FRAME_PAD);
 
-    let keyboard_height = if state.keyboard_open && !narrow {
+    // A popped-out keyboard gives its row (and its gap) to the body.
+    let keyboard_docked = !state.is_popped(Panel::Keyboard);
+    let keyboard_height = if !keyboard_docked {
+        0.0
+    } else if state.keyboard_open && !narrow {
         keyboard::HEIGHT
     } else {
         keyboard::COLLAPSED_HEIGHT
     };
-    let fixed = neu::APP_TOOLBAR + MIXER_BAR + keyboard_height + HINT_BAR + 4.0 * GAP;
+    let gaps = if keyboard_docked { 4.0 } else { 3.0 };
+    let fixed = neu::APP_TOOLBAR + MIXER_BAR + keyboard_height + HINT_BAR + gaps * GAP;
     let body_height = (inner.height() - fixed).max(120.0);
 
     let mut y = inner.min.y;
@@ -122,7 +132,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     y += MIXER_BAR + GAP;
     let keyboard_rect =
         Rect::from_min_size(pos2(inner.min.x, y), vec2(inner.width(), keyboard_height));
-    y += keyboard_height + GAP;
+    if keyboard_docked {
+        y += keyboard_height + GAP;
+    }
     let hint_rect = Rect::from_min_size(pos2(inner.min.x, y), vec2(inner.width(), HINT_BAR));
 
     region(ui, toolbar_rect, "toolbar", |ui| {
@@ -132,12 +144,14 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     region(ui, mixer_rect, "mixer_bar", |ui| {
         mixer_bar(ui, state, theme)
     });
-    region(ui, keyboard_rect, "keyboard", |ui| {
-        keyboard::show(ui, state, theme)
-    });
+    if keyboard_docked {
+        region(ui, keyboard_rect, "keyboard", |ui| {
+            keyboard::show(ui, state, theme)
+        });
+    }
     region(ui, hint_rect, "hint_bar", |ui| hint_bar(ui, state, theme));
 
-    if narrow && state.keyboard_open {
+    if narrow && state.keyboard_open && keyboard_docked {
         // The open keyboard floats over the bottom of the workspace at narrow.
         let float = Rect::from_min_size(
             pos2(body_rect.min.x, body_rect.max.y - keyboard::HEIGHT),
@@ -159,6 +173,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     if state.visual_full {
         visualizer::overlay(ui, state, theme);
     }
+    popout::show_windows(ui.ctx(), state, theme);
 }
 
 /// A child `Ui` confined to `rect` (top-down, clipped).
@@ -174,9 +189,17 @@ fn region<R>(ui: &mut Ui, rect: Rect, id: &str, add: impl FnOnce(&mut Ui) -> R) 
     add(&mut child)
 }
 
-/// The body: the browser column (or rail) beside the workspace.
+/// The body: the browser column (or rail) beside the workspace; the workspace alone while
+/// the browser is in its own window.
 fn body(ui: &mut Ui, state: &mut AppState, theme: &Theme, narrow: bool) {
     let rect = ui.max_rect();
+    if state.is_popped(Panel::Browser) {
+        state.workspace_rect = Some(rect);
+        region(ui, rect, "workspace", |ui| {
+            workspace_contents(ui, state, theme, narrow)
+        });
+        return;
+    }
     let browser_width = if state.browser_open {
         browser::WIDTH
     } else {
@@ -206,7 +229,10 @@ fn workspace_contents(ui: &mut Ui, state: &mut AppState, theme: &Theme, narrow: 
         view_tabs(ui, state, theme, narrow)
     });
     let rect = Rect::from_min_max(pos2(whole.min.x, strip_rect.max.y + GAP), whole.max);
-    if state.rack_open {
+    if state.is_popped(Panel::Rack) {
+        // The rack is in its own window: the main window takes the whole width.
+        region(ui, rect, "main", |ui| main_window(ui, state, theme, narrow));
+    } else if state.rack_open {
         let max_rack = (rect.width() - SPLIT_HIT - MAIN_MIN_WIDTH).max(MIN_RACK_WIDTH);
         let rack_width = if narrow {
             NARROW_RACK_WIDTH.min(max_rack)
@@ -285,15 +311,33 @@ fn view_tabs(ui: &mut Ui, state: &mut AppState, theme: &Theme, narrow: bool) {
     }
 }
 
-/// The main window: the view's window.
+/// The main window: the view's window, or its placeholder while that view is in its own
+/// window.
 fn main_window(ui: &mut Ui, state: &mut AppState, theme: &Theme, _narrow: bool) {
-    match state.view {
+    let view = state.view;
+    if state.is_popped(view.panel()) {
+        popout::placeholder(ui, state, theme, view);
+    } else {
+        view_window(ui, state, theme, view);
+    }
+}
+
+/// `view`'s window filling `ui` (in the main window, or in the view's own window).
+pub fn view_window(ui: &mut Ui, state: &mut AppState, theme: &Theme, view: View) {
+    match view {
         View::Roll => roll_view::show(ui, state, theme),
         View::Mixer => mixer_window(ui, state, theme),
         View::Synth => synth_window(ui, state, theme),
         View::Song => song_window(ui, state, theme),
         View::Visual => visual_window(ui, state, theme),
     }
+}
+
+/// A view window's header controls (right-to-left): POP OUT (DOCK in its own window), then
+/// the view's keycap.
+fn view_header(ui: &mut Ui, state: &mut AppState, theme: &Theme, view: View, key: &str) {
+    popout::header_control(ui, state, theme, view.panel());
+    neu::keycap(ui, theme, key);
 }
 
 /// The MIXER view: the M11 panel in a two-way scroll area (M13 brings the drawer).
@@ -303,16 +347,17 @@ fn mixer_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         engine::inserts::INSERT_COUNT,
         state.highlighted_insert()
     );
+    // The header and the body both edit the state; the frame runs them one after the other.
+    let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
         ui,
         theme,
         ui.available_size_before_wrap(),
         View::Mixer.title(),
         Some(&sub),
+        |ui| view_header(ui, &mut cell.borrow_mut(), theme, View::Mixer, "F6"),
         |ui| {
-            neu::keycap(ui, theme, "F6");
-        },
-        |ui| {
+            let state = &mut **cell.borrow_mut();
             neu::toolbar(ui, theme, |ui| {
                 crate::ui::controls::plugin_pills(ui, state, theme)
             });
@@ -336,16 +381,16 @@ fn mixer_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 /// the FX rack.
 fn synth_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let sub = roll_view::header_sub(state);
+    let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
         ui,
         theme,
         ui.available_size_before_wrap(),
         View::Synth.title(),
         Some(&sub),
+        |ui| view_header(ui, &mut cell.borrow_mut(), theme, View::Synth, "F7"),
         |ui| {
-            neu::keycap(ui, theme, "F7");
-        },
-        |ui| {
+            let state = &mut **cell.borrow_mut();
             neu::toolbar(ui, theme, |ui| synth_panel::preset_strip(ui, state, theme));
             let avail = ui.available_size_before_wrap();
             let stacked = avail.x < SYNTH_STACK_BELOW;
@@ -416,16 +461,16 @@ fn song_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         if entries == 1 { "entry" } else { "entries" },
         if bars == 1 { "bar" } else { "bars" }
     );
+    let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
         ui,
         theme,
         ui.available_size_before_wrap(),
         View::Song.title(),
         Some(&sub),
+        |ui| view_header(ui, &mut cell.borrow_mut(), theme, View::Song, "F8"),
         |ui| {
-            neu::keycap(ui, theme, "F8");
-        },
-        |ui| {
+            let state = &mut **cell.borrow_mut();
             let size = ui.available_size_before_wrap();
             ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
                 ui.set_min_size(size);
@@ -439,16 +484,16 @@ fn song_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
 /// The VISUALIZER view: the panel (M14 puts it beside SONG).
 fn visual_window(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let sub = state.visual_preset().name.to_owned();
+    let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
         ui,
         theme,
         ui.available_size_before_wrap(),
         View::Visual.title(),
         Some(&sub),
+        |ui| view_header(ui, &mut cell.borrow_mut(), theme, View::Visual, "F11"),
         |ui| {
-            neu::keycap(ui, theme, "F11");
-        },
-        |ui| {
+            let state = &mut **cell.borrow_mut();
             let size = ui.available_size_before_wrap();
             ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
                 ui.set_min_size(size);

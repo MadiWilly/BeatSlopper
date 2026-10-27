@@ -507,3 +507,24 @@ of a full app like FL or Ableton. A just for fun project to make beats and have 
   behind after a re-route or a deleted track. Derived on every call, it follows track
   renames and routes for free and an unrouted insert falls back to `Insert N`.
 - The head's accessible name follows the displayed name; the rename editor starts from it.
+
+## 2026-10-27: Every module can pop out to its own window
+User request: the mixer, the views, the channel rack (every module) can be popped out, and
+one button brings them all back. `app::Panel` names the eight modules (browser, channel rack,
+piano roll, mixer, synth & FX, song, visualizer, keyboard); the toolbar, the mixer bar and the
+hint bar are the frame and stay. `crate::ui::popout` generalises the piano roll's M7 pop-out:
+- Each module's header has POP OUT (a ghost toggle, new `neu::Icon::PopOut`); in its own
+  window the same slot is DOCK (`neu::Icon::Dock`). Closing the window docks it too. DOCK ALL
+  appears in the toolbar's right group only while something is out, so the docked layout
+  (and the 840-wide toolbar) is unchanged.
+- The windows are immediate viewports drawn from `shell::show` every frame, whatever the
+  main view is (the old roll window was drawn from inside the roll view, so switching views
+  closed it). Real windows read their own keyboard (`handle_window_input`); embedded windows
+  (headless tests) skip it because the main window already read that input.
+- The main window reflows: a popped browser or rack gives its width to the workspace, a
+  popped keyboard its row; a popped view shows a placeholder (with the lit POP OUT, which
+  docks it) when its tab is selected. A popped view's F-key, tab, the mixer bar and F9 for
+  the browser bring its window to the front (`AppState::focus_request`) instead of switching
+  the main window; switching play mode never pulls a popped SONG or roll forward.
+- Not persisted: every launch starts docked (as the roll's pop-out was), so a stale window
+  position can never strand a module off screen.

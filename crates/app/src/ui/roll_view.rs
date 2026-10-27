@@ -19,9 +19,9 @@
 //! The roll's geometry comes from [`roll_model`] (feeding the model's own `size()` back in
 //! reproduces it, so tests can rebuild it from the rendered rect) and every edit the widget
 //! reports is applied by [`apply_roll_output`] through the undoable note methods on
-//! `AppState`. POP OUT ([`POP_OUT_LABEL`]) moves the roll into its own window
-//! ([`roll_window`]: an immediate viewport, or an embedded window headless); the view shows
-//! [`POPPED_LABEL`] meanwhile and DOCK ([`DOCK_LABEL`]) or POP OUT again bring it back.
+//! `AppState`. POP OUT ([`POP_OUT_LABEL`]) moves the whole window, toolbar included, into a
+//! window of its own ([`crate::ui::popout`]); the main window shows [`POPPED_LABEL`]
+//! meanwhile and DOCK ([`DOCK_LABEL`]) or POP OUT again bring it back.
 
 use egui::{Align, Layout, Role, Ui, Vec2, WidgetInfo, vec2};
 use engine::Note;
@@ -30,8 +30,9 @@ use neu::{
     RULER_HEIGHT, RollNote, TextKind, Theme, VELOCITY_LANE_HEIGHT,
 };
 
-use crate::app::AppState;
+use crate::app::{AppState, Panel};
 use crate::chords::CHORDS;
+use crate::ui::popout;
 
 /// Window title.
 pub const TITLE: &str = "Piano roll";
@@ -63,13 +64,13 @@ pub const BLACK_KEYS_LABEL: &str = "Black keys";
 pub const ROLL_HINT: &str = "Ctrl+drag selects · wheel scrolls pitch";
 /// Accessible name of the header button that moves the roll into its own window (lit while
 /// it is there).
-pub const POP_OUT_LABEL: &str = "Pop out";
-/// Label of the button in the roll window that brings the roll back.
-pub const DOCK_LABEL: &str = "Dock";
+pub const POP_OUT_LABEL: &str = Panel::Roll.pop_out_label();
+/// Accessible name of the button in the roll window that brings the roll back.
+pub const DOCK_LABEL: &str = Panel::Roll.dock_label();
 /// Title of the roll's own window.
-pub const ROLL_WINDOW_TITLE: &str = "BeatSlopper piano roll";
+pub const ROLL_WINDOW_TITLE: &str = Panel::Roll.window_title();
 /// What the view shows in place of the roll while it is in its own window.
-pub const POPPED_LABEL: &str = "The piano roll is open in its own window";
+pub const POPPED_LABEL: &str = Panel::Roll.popped_label();
 /// Size the roll window opens at.
 pub const ROLL_WINDOW_SIZE: Vec2 = vec2(1100.0, 620.0);
 
@@ -268,7 +269,6 @@ pub fn header_sub(state: &AppState) -> String {
 /// Renders the PIANO ROLL window into the available rect and applies any edit to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let sub = header_sub(state);
-    let popped = state.roll_popped;
     // The header and the body both edit the state; the frame runs them one after the other.
     let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
@@ -278,33 +278,13 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         TITLE,
         Some(&sub),
         |ui| {
-            let pop = neu::icon_button_kind(
-                ui,
-                theme,
-                Icon::Fullscreen,
-                vec2(24.0, 24.0),
-                ButtonKind::GhostToggle(popped),
-            );
-            pop.widget_info(|| {
-                WidgetInfo::selected(Role::Button, ui.is_enabled(), popped, POP_OUT_LABEL)
-            });
-            if pop
-                .on_hover_text("Open the roll in its own window (it can go full screen)")
-                .clicked()
-            {
-                cell.borrow_mut().set_roll_popped(!popped);
-            }
+            popout::header_control(ui, &mut cell.borrow_mut(), theme, Panel::Roll);
             neu::keycap(ui, theme, "F5");
         },
         |ui| {
             let state = &mut **cell.borrow_mut();
             toolbar(ui, state, theme);
-            if state.roll_popped {
-                popped_placeholder(ui, theme);
-                roll_window(ui.ctx(), state, theme);
-            } else {
-                body(ui, state, theme);
-            }
+            body(ui, state, theme);
         },
     );
 }
@@ -421,87 +401,6 @@ fn roll(ui: &mut Ui, state: &mut AppState, theme: &Theme, mut model: PianoRollMo
     let colour = theme.track_colour(state.edit_track_ui().colour);
     let out = neu::piano_roll_coloured(ui, theme, &mut model, &notes, &ghosts, colour);
     apply_roll_output(state, &model, out);
-}
-
-/// What the view shows while the roll is in its own window.
-fn popped_placeholder(ui: &mut Ui, theme: &Theme) {
-    ui.allocate_ui_with_layout(
-        ui.available_size_before_wrap(),
-        Layout::centered_and_justified(egui::Direction::TopDown),
-        |ui| {
-            neu::label(ui, theme, POPPED_LABEL)
-                .on_hover_text("Click POP OUT again, or DOCK in the window, to bring it back");
-        },
-    );
-}
-
-/// The roll in its own window ([`ROLL_WINDOW_TITLE`]) while [`AppState::roll_popped`]: an
-/// immediate viewport (a real OS window under eframe; an embedded `egui::Window` where the
-/// backend has no multi-window support, e.g. headless tests). Closing the window docks the
-/// roll again.
-fn roll_window(ctx: &egui::Context, state: &mut AppState, theme: &Theme) {
-    let id = egui::ViewportId::from_hash_of("beatslopper_piano_roll_window");
-    let builder = egui::ViewportBuilder::default()
-        .with_title(ROLL_WINDOW_TITLE)
-        .with_inner_size(ROLL_WINDOW_SIZE)
-        .with_min_inner_size(vec2(600.0, 300.0));
-    ctx.show_viewport_immediate(id, builder, |ctx, _class| {
-        // This window's keyboard: shortcuts (Space, R, Ctrl+Z, ...) and the piano keys work
-        // here as in the main window.
-        state.handle_window_input(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) {
-            state.set_roll_popped(false);
-        }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(theme.bg).inner_margin(4.0))
-            .show(ctx, |ui| roll_window_contents(ui, state, theme));
-    });
-}
-
-/// Inside the roll window: a window frame with the DOCK button, the roll fitted to the
-/// window and the CHORDS column.
-fn roll_window_contents(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let sub = header_sub(state);
-    let cell = std::cell::RefCell::new(state);
-    neu::window_frame_sized(
-        ui,
-        theme,
-        ui.available_size_before_wrap(),
-        TITLE,
-        Some(&sub),
-        |ui| {
-            if neu::button_kind(
-                ui,
-                theme,
-                DOCK_LABEL,
-                ButtonKind::Secondary,
-                ButtonSize::Small,
-            )
-            .on_hover_text("Put the roll back in the main window")
-            .clicked()
-            {
-                cell.borrow_mut().set_roll_popped(false);
-            }
-        },
-        |ui| {
-            let state = &mut **cell.borrow_mut();
-            let avail = ui.available_size_before_wrap();
-            let roll_room =
-                (avail.x - 2.0 * BODY_PAD - COLUMN_GAP - CHORD_COLUMN_WIDTH).max(KEY_COLUMN_WIDTH);
-            let height = (avail.y - 2.0 * BODY_PAD).max(
-                RULER_HEIGHT + VELOCITY_LANE_HEIGHT + MIN_ROLL_PITCHES as f32 * ROLL_ROW_HEIGHT,
-            );
-            let model = roll_model(state, vec2(fitted_roll_width(state, roll_room), height));
-            ui.add_space(BODY_PAD);
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.add_space(BODY_PAD);
-                roll(ui, state, theme, model);
-                ui.add_space(COLUMN_GAP);
-                chord_column(ui, state, theme, height);
-            });
-        },
-    );
 }
 
 /// The CHORDS column: a caps title and one small toggle per [`CHORDS`] entry (most common at

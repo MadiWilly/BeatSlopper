@@ -17,11 +17,11 @@
 use egui::{Align2, Rect, Response, Role, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
 use neu::{ButtonKind, Icon, TextKind, Theme};
 
-use crate::app::AppState;
+use crate::app::{AppState, Panel};
 use crate::presets;
 use crate::ui::preset_browser;
 use crate::ui::project_bar;
-use crate::ui::recent_panel;
+use crate::ui::{popout, recent_panel};
 
 /// Width of the open column.
 pub const WIDTH: f32 = 208.0;
@@ -45,9 +45,12 @@ const PRESET_LIST_MIN: f32 = 4.0 * preset_browser::ROW_HEIGHT + 100.0;
 const PROJECT_BODY_ROOM: f32 = 150.0;
 const RECENT_BODY_ROOM: f32 = 120.0;
 
-/// Renders the open column into the available rect (`WIDTH` wide, the full height).
+/// Renders the open column into the available rect (`WIDTH` wide, the full height; the whole
+/// window in its own window, where the header has DOCK instead of the chevron).
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
-    let size = vec2(WIDTH, ui.available_height());
+    let popped = state.is_popped(Panel::Browser);
+    let width = if popped { ui.available_width() } else { WIDTH };
+    let size = vec2(width, ui.available_height());
     // The header and the body both edit the state; the frame runs them one after the other.
     let cell = std::cell::RefCell::new(state);
     neu::window_frame_sized(
@@ -57,6 +60,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         "Browser",
         None,
         |ui| {
+            if popped {
+                popout::header_control(ui, &mut cell.borrow_mut(), theme, Panel::Browser);
+                neu::keycap(ui, theme, "F9");
+                return;
+            }
             let chevron = neu::header_button(ui, theme, Icon::ChevronLeft);
             chevron
                 .widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), COLLAPSE_LABEL));
@@ -69,6 +77,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
             {
                 cell.borrow_mut().browser_open = false;
             }
+            popout::header_control(ui, &mut cell.borrow_mut(), theme, Panel::Browser);
             neu::keycap(ui, theme, "F9");
         },
         |ui| body(ui, &mut cell.borrow_mut(), theme),

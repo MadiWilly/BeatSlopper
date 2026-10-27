@@ -56,11 +56,11 @@ use neu::{
     STEP_GROUP_GAP, StepCellSpec, TextKind, Theme, ValueEditOutput,
 };
 
-use crate::app::{AppState, EditKey, View, queued_blink_visible};
+use crate::app::{AppState, EditKey, Panel, View, queued_blink_visible};
 use crate::drag_paint::PaintRow;
 use crate::shortcuts::Shortcut;
 use crate::ui::controls::{fmt_level_db, fmt_pan};
-use crate::ui::tracks;
+use crate::ui::{popout, tracks};
 
 /// Height of a row's controls and the row pitch.
 pub const ROW_HEIGHT: f32 = 28.0;
@@ -273,7 +273,8 @@ pub fn body_height(state: &AppState) -> f32 {
 /// `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let size = ui.available_size_before_wrap();
-    let open = state.rack_open;
+    // In its own window the rack is always expanded.
+    let open = state.rack_open || state.is_popped(Panel::Rack);
     let height = if open { size.y } else { neu::WINDOW_HEADER };
     let compact = is_compact(size.x);
     let sub = header_sub(state);
@@ -296,8 +297,16 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     );
 }
 
-/// The header's right slot (right-to-left): close, the chevron, the F5 keycap.
+/// The header's right slot (right-to-left): close, the chevron, POP OUT, the F5 keycap; in
+/// the rack's own window DOCK and the keycap only.
 fn header_right(ui: &mut Ui, state: &mut AppState, theme: &Theme, compact: bool) {
+    if state.is_popped(Panel::Rack) {
+        popout::header_control(ui, state, theme, Panel::Rack);
+        if !compact {
+            neu::keycap(ui, theme, "F5");
+        }
+        return;
+    }
     let close = neu::header_button(ui, theme, Icon::Clear);
     close.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLOSE_LABEL));
     if close
@@ -316,6 +325,7 @@ fn header_right(ui: &mut Ui, state: &mut AppState, theme: &Theme, compact: bool)
     if chevron.on_hover_text(tip).clicked() {
         state.toggle_rack();
     }
+    popout::header_control(ui, state, theme, Panel::Rack);
     if !compact {
         neu::keycap(ui, theme, "F5");
     }

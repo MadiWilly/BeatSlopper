@@ -70,6 +70,10 @@ pub enum Icon {
     Fullscreen,
     /// A check mark.
     Check,
+    /// A window with an arrow leaving it at the top right: pop a module out to its own window.
+    PopOut,
+    /// A window with an arrow coming back into it: dock a module again.
+    Dock,
 }
 
 /// Which look a button has.
@@ -641,6 +645,8 @@ impl Icon {
             Icon::Browser => "Browser",
             Icon::Fullscreen => "Full screen",
             Icon::Check => "Check",
+            Icon::PopOut => "Pop out",
+            Icon::Dock => "Dock",
         }
     }
 }
@@ -874,6 +880,29 @@ pub fn paint_icon(painter: &Painter, icon: Icon, rect: Rect, stroke: Stroke) {
             polyline(&[(6.0, 13.0), (3.0, 13.0), (3.0, 10.0)]);
         }
         Icon::Check => polyline(&[(3.0, 8.5), (6.5, 12.0), (13.0, 4.5)]),
+        Icon::PopOut => {
+            // A window open at its top-right corner, the arrow leaving through the gap.
+            polyline(&[
+                (7.0, 3.0),
+                (3.0, 3.0),
+                (3.0, 13.0),
+                (13.0, 13.0),
+                (13.0, 9.0),
+            ]);
+            line((8.0, 8.0), (13.5, 2.5));
+            polyline(&[(9.5, 2.5), (13.5, 2.5), (13.5, 6.5)]);
+        }
+        Icon::Dock => {
+            polyline(&[
+                (7.0, 3.0),
+                (3.0, 3.0),
+                (3.0, 13.0),
+                (13.0, 13.0),
+                (13.0, 9.0),
+            ]);
+            line((13.5, 2.5), (7.5, 8.5));
+            polyline(&[(7.5, 4.5), (7.5, 8.5), (11.5, 8.5)]);
+        }
     }
 }
 
