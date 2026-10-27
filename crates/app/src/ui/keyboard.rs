@@ -21,8 +21,9 @@ use egui::{Role, Ui, WidgetInfo, vec2};
 use neu::slider::SliderSpec;
 use neu::{ButtonKind, Icon, PianoModel, TextKind, Theme};
 
-use crate::app::AppState;
+use crate::app::{AppState, Panel};
 use crate::input::{KeyMap, MAX_OCTAVE, MAX_VELOCITY, MIN_OCTAVE, MIN_VELOCITY};
+use crate::ui::popout;
 
 /// White keys shown (two octaves).
 pub const WHITE_KEYS: usize = 14;
@@ -83,7 +84,9 @@ pub fn header_sub(state: &AppState) -> String {
 /// [`COLLAPSED_HEIGHT`]) and applies any control or key changes to `state`.
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let size = ui.available_size_before_wrap();
-    let open = state.keyboard_open && size.y > COLLAPSED_HEIGHT + 0.5;
+    // In its own window the keys always show.
+    let open = (state.keyboard_open || state.is_popped(Panel::Keyboard))
+        && size.y > COLLAPSED_HEIGHT + 0.5;
     let sub = header_sub(state);
     // The header and the body both edit the state; the frame runs them one after the other.
     let cell = std::cell::RefCell::new(state);
@@ -102,9 +105,14 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     );
 }
 
-/// The header's controls, laid out right-to-left: close, the chevron, the audio line, the
-/// velocity group, the octave group.
+/// The header's controls, laid out right-to-left: close, the chevron, POP OUT (DOCK alone in
+/// the keyboard's own window), the audio line, the velocity group, the octave group.
 fn header_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, open: bool) {
+    if state.is_popped(Panel::Keyboard) {
+        popout::header_control(ui, state, theme, Panel::Keyboard);
+        header_info(ui, state, theme);
+        return;
+    }
     let close = neu::header_button(ui, theme, Icon::Clear);
     close.widget_info(|| WidgetInfo::labeled(Role::Button, ui.is_enabled(), CLOSE_LABEL));
     if close
@@ -126,6 +134,13 @@ fn header_controls(ui: &mut Ui, state: &mut AppState, theme: &Theme, open: bool)
     if chevron.on_hover_text(tip).clicked() {
         state.toggle_keyboard();
     }
+    popout::header_control(ui, state, theme, Panel::Keyboard);
+    header_info(ui, state, theme);
+}
+
+/// The rest of the header, right-to-left: the audio line, the velocity group, the octave
+/// group.
+fn header_info(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     let info = audio_info(state);
     neu::text_widget(ui, &info, TextKind::Small, theme.text_3)
         .widget_info(|| WidgetInfo::labeled(Role::Label, true, AUDIO_INFO_NAME));

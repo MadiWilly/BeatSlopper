@@ -115,6 +115,8 @@ fn buttons_render_every_kind_state_and_size_in_both_themes() {
                             Icon::Browser,
                             Icon::Fullscreen,
                             Icon::Check,
+                            Icon::PopOut,
+                            Icon::Dock,
                         ] {
                             neu::icon_button_kind(
                                 ui,

@@ -9,7 +9,8 @@
 //! rack, with [`tracks`] for the track rows' names and menu), [`roll_view`] (the piano roll
 //! window), [`mixer`], [`synth_panel`] + [`fx_rack`], [`song`] and [`visualizer`] (the other
 //! views, rehosted in windows until M13 / M14), [`keyboard`] (the strip), [`plugins`] (the
-//! pop-out windows) and [`controls`] (the bound controls and formatters).
+//! plugin windows), [`popout`] (any module in a window of its own: POP OUT / DOCK / DOCK
+//! ALL) and [`controls`] (the bound controls and formatters).
 
 use egui::Ui;
 use neu::Theme;
@@ -22,6 +23,7 @@ pub mod fx_rack;
 pub mod keyboard;
 pub mod mixer;
 pub mod plugins;
+pub mod popout;
 pub mod preset_browser;
 pub mod project_bar;
 pub mod recent_panel;

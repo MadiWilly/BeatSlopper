@@ -325,6 +325,113 @@ impl View {
     pub fn collapses_rack(self) -> bool {
         matches!(self, View::Synth | View::Song | View::Visual)
     }
+
+    /// The module that draws this view (and pops out with it).
+    #[must_use]
+    pub fn panel(self) -> Panel {
+        match self {
+            View::Roll => Panel::Roll,
+            View::Mixer => Panel::Mixer,
+            View::Synth => Panel::Synth,
+            View::Song => Panel::Song,
+            View::Visual => Panel::Visual,
+        }
+    }
+}
+
+/// A module of the shell that can leave the main window for a window of its own (POP OUT)
+/// and come back (DOCK, closing that window, or DOCK ALL in the toolbar): the browser, the
+/// channel rack, every view and the keyboard. The toolbar, the mixer bar and the hint bar
+/// are the frame and stay. Drawn by [`crate::ui::popout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Panel {
+    Browser,
+    Rack,
+    Roll,
+    Mixer,
+    Synth,
+    Song,
+    Visual,
+    Keyboard,
+}
+
+impl Panel {
+    /// Every panel, in the order their windows are drawn.
+    pub const ALL: [Panel; 8] = [
+        Panel::Browser,
+        Panel::Rack,
+        Panel::Roll,
+        Panel::Mixer,
+        Panel::Synth,
+        Panel::Song,
+        Panel::Visual,
+        Panel::Keyboard,
+    ];
+
+    /// Accessible name of the header button that pops the panel out (lit while it is out;
+    /// clicking it then docks it).
+    #[must_use]
+    pub const fn pop_out_label(self) -> &'static str {
+        match self {
+            Panel::Browser => "Pop out browser",
+            Panel::Rack => "Pop out channel rack",
+            Panel::Roll => "Pop out piano roll",
+            Panel::Mixer => "Pop out mixer",
+            Panel::Synth => "Pop out synth & FX",
+            Panel::Song => "Pop out song",
+            Panel::Visual => "Pop out visualizer",
+            Panel::Keyboard => "Pop out keyboard",
+        }
+    }
+
+    /// Accessible name of the button in the panel's own window that docks it.
+    #[must_use]
+    pub const fn dock_label(self) -> &'static str {
+        match self {
+            Panel::Browser => "Dock browser",
+            Panel::Rack => "Dock channel rack",
+            Panel::Roll => "Dock piano roll",
+            Panel::Mixer => "Dock mixer",
+            Panel::Synth => "Dock synth & FX",
+            Panel::Song => "Dock song",
+            Panel::Visual => "Dock visualizer",
+            Panel::Keyboard => "Dock keyboard",
+        }
+    }
+
+    /// Title of the panel's own window.
+    #[must_use]
+    pub const fn window_title(self) -> &'static str {
+        match self {
+            Panel::Browser => "BeatSlopper browser",
+            Panel::Rack => "BeatSlopper channel rack",
+            Panel::Roll => "BeatSlopper piano roll",
+            Panel::Mixer => "BeatSlopper mixer",
+            Panel::Synth => "BeatSlopper synth & FX",
+            Panel::Song => "BeatSlopper song",
+            Panel::Visual => "BeatSlopper visualizer",
+            Panel::Keyboard => "BeatSlopper keyboard",
+        }
+    }
+
+    /// What the main window shows in place of a popped-out view.
+    #[must_use]
+    pub const fn popped_label(self) -> &'static str {
+        match self {
+            Panel::Browser => "The browser is open in its own window",
+            Panel::Rack => "The channel rack is open in its own window",
+            Panel::Roll => "The piano roll is open in its own window",
+            Panel::Mixer => "The mixer is open in its own window",
+            Panel::Synth => "Synth & FX is open in its own window",
+            Panel::Song => "The song is open in its own window",
+            Panel::Visual => "The visualizer is open in its own window",
+            Panel::Keyboard => "The keyboard is open in its own window",
+        }
+    }
+
+    const fn bit(self) -> u16 {
+        1 << self as u16
+    }
 }
 
 /// Default width of the CHANNEL RACK window (WINNER: 664 = 652 content + 10 scrollbar + 2
@@ -818,10 +925,13 @@ pub struct AppState {
     /// How many points wider than its fitted width the piano roll is (persisted; the handle
     /// right of the roll drags it, `0..=MAX_ROLL_EXTRA_WIDTH`).
     pub roll_extra_width: f32,
-    /// Whether the piano roll is shown in its own window (the POP OUT pill) instead of the
-    /// SEQUENCER panel. Not persisted.
-    pub roll_popped: bool,
-    /// Shortcuts pressed in the roll's own window this frame ([`Self::handle_window_input`]),
+    /// The [`Panel`]s in windows of their own, one bit each ([`Self::is_popped`]). Not
+    /// persisted: every launch starts docked.
+    popped: u16,
+    /// A popped-out panel whose window should come to the front (its F-key, tab or the
+    /// mixer bar was used while it is out); taken when that window is drawn.
+    pub focus_request: Option<Panel>,
+    /// Shortcuts pressed in a popped-out window this frame ([`Self::handle_window_input`]),
     /// run by the app on its next tick (the window is drawn after the tick).
     pub pending_shortcuts: Vec<Shortcut>,
     /// Chain entry selected in the SONG CHAIN panel (`None` when the chain is empty).
@@ -1044,7 +1154,8 @@ impl AppState {
             roll_selection: Vec::new(),
             roll_black_keys: true,
             roll_extra_width: 0.0,
-            roll_popped: false,
+            popped: 0,
+            focus_request: None,
             pending_shortcuts: Vec::new(),
             song_selected: Some(0),
             mixer: MixerState::default(),
@@ -2102,10 +2213,14 @@ impl AppState {
         self.bank.mode = mode;
         self.engine_mode = mode;
         self.send(Message::SetPlayMode(mode));
-        self.set_view(match mode {
+        let view = match mode {
             PlayMode::Song => View::Song,
             PlayMode::Pattern => View::Roll,
-        });
+        };
+        // A popped-out SONG or PIANO ROLL is already on screen; no window jumps forward.
+        if !self.is_popped(view.panel()) {
+            self.set_view(view);
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2113,8 +2228,13 @@ impl AppState {
 
     /// Shows `view` in the main window. The SYNTH & FX, SONG and VISUALIZER views collapse
     /// the rack to its header and the PIANO ROLL re-expands it (WINNER section 5); the
-    /// MIXER keeps it. Leaving the roll drops the roll selection. Not an edit.
+    /// MIXER keeps it. Leaving the roll drops the roll selection. A view popped out to its
+    /// own window is brought to the front instead ([`Self::focus_request`]) and the main
+    /// window keeps what it shows. Not an edit.
     pub fn set_view(&mut self, view: View) {
+        if self.focus_if_popped(view.panel()) {
+            return;
+        }
         if view != View::Roll && self.view == View::Roll {
             self.clear_roll_selection();
         }
@@ -2140,9 +2260,12 @@ impl AppState {
         }
     }
 
-    /// F9 / the rail: shows or hides the BROWSER column.
+    /// F9 / the rail: shows or hides the BROWSER column (brings its window to the front
+    /// while it is popped out).
     pub fn toggle_browser(&mut self) {
-        self.browser_open = !self.browser_open;
+        if !self.focus_if_popped(Panel::Browser) {
+            self.browser_open = !self.browser_open;
+        }
     }
 
     /// The KEYBOARD strip's chevron: shows or hides its keys.
@@ -2699,10 +2822,53 @@ impl AppState {
         }
     }
 
-    /// Shows the piano roll in its own window (`true`) or back in the SEQUENCER panel.
+    /// Whether `panel` is in a window of its own.
+    #[must_use]
+    pub fn is_popped(&self, panel: Panel) -> bool {
+        self.popped & panel.bit() != 0
+    }
+
+    /// Pops `panel` out to its own window (`true`) or docks it back in the main window.
     /// View state, not an edit.
-    pub fn set_roll_popped(&mut self, popped: bool) {
-        self.roll_popped = popped;
+    pub fn set_popped(&mut self, panel: Panel, popped: bool) {
+        if popped {
+            self.popped |= panel.bit();
+        } else {
+            self.popped &= !panel.bit();
+            if self.focus_request == Some(panel) {
+                self.focus_request = None;
+            }
+        }
+    }
+
+    /// Whether any panel is in a window of its own (the toolbar shows DOCK ALL then).
+    #[must_use]
+    pub fn any_popped(&self) -> bool {
+        self.popped != 0
+    }
+
+    /// The panels in windows of their own, in [`Panel::ALL`] order.
+    pub fn popped_panels(&self) -> impl Iterator<Item = Panel> + use<> {
+        let popped = self.popped;
+        Panel::ALL
+            .into_iter()
+            .filter(move |p| popped & p.bit() != 0)
+    }
+
+    /// DOCK ALL: every popped-out panel back in the main window.
+    pub fn dock_all(&mut self) {
+        self.popped = 0;
+        self.focus_request = None;
+    }
+
+    /// Asks `panel`'s window to come to the front when it is popped out; `true` if it was
+    /// (the caller then leaves the main window alone).
+    fn focus_if_popped(&mut self, panel: Panel) -> bool {
+        let popped = self.is_popped(panel);
+        if popped {
+            self.focus_request = Some(panel);
+        }
+        popped
     }
 
     /// The piano roll's playhead in fractional steps of the edit pattern (`bar * 16 + step +
@@ -6388,11 +6554,45 @@ mod tests {
         assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH);
         state.set_roll_extra_width(f32::NAN);
         assert_eq!(state.roll_extra_width, MAX_ROLL_EXTRA_WIDTH, "NaN ignored");
-        assert!(!state.roll_popped);
+        assert!(!state.is_popped(Panel::Roll));
         let undo_steps = state.undo.len();
-        state.set_roll_popped(true);
-        assert!(state.roll_popped);
+        state.set_popped(Panel::Roll, true);
+        assert!(state.is_popped(Panel::Roll));
         assert_eq!(state.undo.len(), undo_steps, "view state only");
+    }
+
+    #[test]
+    fn panels_pop_out_one_by_one_and_dock_all_brings_them_back() {
+        let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+        assert!(!state.any_popped());
+        state.set_popped(Panel::Rack, true);
+        state.set_popped(Panel::Mixer, true);
+        assert!(state.is_popped(Panel::Rack) && state.is_popped(Panel::Mixer));
+        assert!(!state.is_popped(Panel::Roll));
+        assert_eq!(state.popped_panels().count(), 2);
+
+        // Switching views leaves the windows out; a popped view's key focuses its window
+        // instead of switching the main window.
+        state.set_view(View::Song);
+        assert!(state.is_popped(Panel::Rack) && state.is_popped(Panel::Mixer));
+        state.toggle_mixer_drawer();
+        assert_eq!(state.view, View::Song);
+        assert_eq!(state.focus_request, Some(Panel::Mixer));
+        state.focus_request = None;
+        state.set_view(View::Mixer);
+        assert_eq!(state.view, View::Song);
+        assert_eq!(state.focus_request, Some(Panel::Mixer));
+
+        state.set_popped(Panel::Rack, false);
+        assert!(!state.is_popped(Panel::Rack));
+        state.set_popped(Panel::Browser, true);
+        state.set_popped(Panel::Keyboard, true);
+        state.dock_all();
+        assert!(!state.any_popped());
+        assert_eq!(state.focus_request, None);
+        for panel in Panel::ALL {
+            assert!(!state.is_popped(panel), "{panel:?}");
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -7679,8 +7879,16 @@ mod insert_tests {
             "0 wraps to the last insert"
         );
         assert_eq!(state.route_name(0), "MASTER");
-        assert_eq!(state.route_name(6), "Synth", "the default route names the insert");
-        assert_eq!(state.route_name(14), "Insert 14", "nothing routed: the default name");
+        assert_eq!(
+            state.route_name(6),
+            "Synth",
+            "the default route names the insert"
+        );
+        assert_eq!(
+            state.route_name(14),
+            "Insert 14",
+            "nothing routed: the default name"
+        );
         assert_eq!(state.route_name(17), "MASTER");
     }
 
@@ -7694,7 +7902,11 @@ mod insert_tests {
         // Routing a second source adds a count; a third and fourth too.
         state.set_route(Channel::ALL[1], 1);
         assert_eq!(state.insert_display_name(1), "Kick +1");
-        assert_eq!(state.insert_display_name(2), "Insert 2", "its source moved away");
+        assert_eq!(
+            state.insert_display_name(2),
+            "Insert 2",
+            "its source moved away"
+        );
         state.set_route(Channel::ALL[2], 1);
         assert_eq!(state.insert_display_name(1), "Kick +2");
         // Straight to the master: the insert is free again.

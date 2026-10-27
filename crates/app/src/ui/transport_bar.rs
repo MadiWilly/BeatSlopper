@@ -97,6 +97,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
         let group = ui.horizontal(|ui| {
             midi_group(ui, state, theme, narrow);
             neu::toolbar_separator(ui, theme);
+            if state.any_popped() {
+                dock_all_button(ui, state, theme);
+            }
             view_group(ui, state, theme);
             neu::toolbar_separator(ui, theme);
             neu::theme_toggle(ui, theme, &mut state.mode);
@@ -426,6 +429,29 @@ fn midi_group(ui: &mut Ui, state: &mut AppState, theme: &Theme, narrow: bool) {
             |n| truncate_name(n, MIDI_LABEL_CHARS),
         );
         neu::text_widget(ui, &text, TextKind::Label, theme.text_2);
+    }
+}
+
+/// DOCK ALL (only while a module is in its own window): every popped-out module back in the
+/// main window.
+fn dock_all_button(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
+    let count = state.popped_panels().count();
+    let tip = if count == 1 {
+        "Bring the popped-out window back into the main window".to_owned()
+    } else {
+        format!("Bring all {count} popped-out windows back into the main window")
+    };
+    if neu::button_kind(
+        ui,
+        theme,
+        crate::ui::popout::DOCK_ALL_LABEL,
+        ButtonKind::Secondary,
+        neu::ButtonSize::Small,
+    )
+    .on_hover_text(tip)
+    .clicked()
+    {
+        state.dock_all();
     }
 }
 

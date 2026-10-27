@@ -464,5 +464,9 @@ fn routing_a_track_names_the_insert_head_after_it() {
     harness.get_by_label(&mixer::insert_head_name(15, "Kick"));
     // Kick left insert 1, which falls back to its default name.
     harness.get_by_label(&mixer::insert_head_name(1, "Insert 1"));
-    assert_eq!(harness.state().insert_ui(15).name, "Insert 15", "derived, not stored");
+    assert_eq!(
+        harness.state().insert_ui(15).name,
+        "Insert 15",
+        "derived, not stored"
+    );
 }

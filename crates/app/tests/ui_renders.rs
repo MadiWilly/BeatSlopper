@@ -1819,15 +1819,34 @@ fn ghosts_toggle_hides_the_other_tracks_notes() {
     assert!(!harness.state().layout().roll_ghosts, "persisted");
 }
 
+/// The whole shell over a bare `AppState` at 1280 x 800 with an empty edit track (the
+/// pop-out windows are embedded `egui::Window`s headless).
+fn shell_state_harness() -> Harness<'static, AppState> {
+    let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
+    state.clear_synth();
+    state.undo.clear();
+    state.dirty = false;
+    let theme = Theme::for_mode(ThemeMode::Dark);
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1280.0, 800.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            move |ui, state: &mut AppState| ui::show(ui, state, &theme),
+            state,
+        );
+    harness.run_steps(3);
+    harness
+}
+
 /// POP OUT moves the roll into its own window (an embedded window headless): the view shows
 /// a placeholder, the roll in the window still edits the pattern, and DOCK (or POP OUT
 /// again) brings it back.
 #[test]
 fn pop_out_moves_the_roll_to_its_own_window_and_dock_returns_it() {
-    let mut harness = roll_harness(ThemeMode::Dark);
+    let mut harness = shell_state_harness();
     harness.get_by_label(ui::roll_view::POP_OUT_LABEL).click();
     harness.run_steps(3);
-    assert!(harness.state().roll_popped);
+    assert!(harness.state().is_popped(app::app::Panel::Roll));
     harness.get_by_label(ui::roll_view::POPPED_LABEL);
     harness.get_by_label(ui::roll_view::ROLL_WINDOW_TITLE);
     assert_eq!(
@@ -1837,6 +1856,15 @@ fn pop_out_moves_the_roll_to_its_own_window_and_dock_returns_it() {
         1,
         "one CHORDS column: the window's"
     );
+    // The toolbar went along with it.
+    assert_eq!(
+        harness
+            .get_all_by_label(ui::roll_view::GHOSTS_LABEL)
+            .count(),
+        1,
+        "one GHOSTS toggle: the window's"
+    );
+    harness.get_by_label(ui::roll_view::ZOOM_IN_LABEL);
 
     // The roll in the window still draws notes.
     let (model, grid) = roll_geometry(&harness, harness.state());
@@ -1849,7 +1877,7 @@ fn pop_out_moves_the_roll_to_its_own_window_and_dock_returns_it() {
 
     harness.get_by_label(ui::roll_view::DOCK_LABEL).click();
     harness.run_steps(3);
-    assert!(!harness.state().roll_popped);
+    assert!(!harness.state().is_popped(app::app::Panel::Roll));
     assert!(
         harness
             .query_by_label(ui::roll_view::POPPED_LABEL)
@@ -1862,12 +1890,12 @@ fn pop_out_moves_the_roll_to_its_own_window_and_dock_returns_it() {
     // in the headless harness, so that click goes through accessibility).
     harness.get_by_label(ui::roll_view::POP_OUT_LABEL).click();
     harness.run_steps(3);
-    assert!(harness.state().roll_popped);
+    assert!(harness.state().is_popped(app::app::Panel::Roll));
     harness
         .get_by_label(ui::roll_view::POP_OUT_LABEL)
         .click_accesskit();
     harness.run_steps(3);
-    assert!(!harness.state().roll_popped);
+    assert!(!harness.state().is_popped(app::app::Panel::Roll));
 }
 
 /// Keys held on the computer keyboard reach the roll's model (its key column lights them).
