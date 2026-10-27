@@ -387,7 +387,7 @@ pub const PLUGINS_LABEL: &str = "Plugins";
 pub fn plugin_pills(ui: &mut Ui, state: &mut AppState, theme: &Theme) {
     neu::label(ui, theme, PLUGINS_LABEL);
     for kind in crate::plugins::PluginKind::ALL {
-        let open = state.is_plugin_open(kind);
+        let open = state.plugin_pill_on(kind);
         if neu::button_kind(
             ui,
             theme,

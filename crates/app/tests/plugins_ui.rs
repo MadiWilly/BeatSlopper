@@ -3,7 +3,7 @@
 //! the app state, dragging an EQ node moves the band, and the `AppState` setters keep the
 //! engine, the undo history and the two reverb views in sync.
 
-use app::plugins::{PluginEdit, PluginHost, PluginKind, PluginShared};
+use app::plugins::{EqTarget, PluginEdit, PluginHost, PluginKind, PluginShared};
 use app::ui::plugins::{eq_graph, eq_window, reverb_window};
 use app::{AppState, BeatSlopperApp};
 use egui::{Key, Vec2, pos2, vec2};
@@ -79,6 +79,12 @@ fn eq_window_renders_in_both_themes_without_edits() {
         let graph = shared.eq_graph_rect.expect("the graph was drawn");
         assert!(graph.width() > 300.0 && graph.height() >= eq_window::MIN_GRAPH_HEIGHT);
         assert!(shared.spectrum_updated.is_some(), "the analyser ran");
+        // The head names the EQ being edited: the master, or an insert slot's.
+        harness.get_by_label("ON MASTER");
+        harness.state_mut().eq_target = EqTarget::Slot { insert: 3, slot: 0 };
+        harness.state_mut().eq_target_label = "INSERT 3 · SLOT 1".to_owned();
+        harness.run_steps(2);
+        harness.get_by_label("ON INSERT 3 · SLOT 1");
     }
 }
 
@@ -114,7 +120,7 @@ fn clicking_an_eq_preset_pill_applies_it_through_the_app_state() {
     let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
     assert!(!state.dirty);
     for edit in edits {
-        state.apply_plugin_edit(edit);
+        state.apply_plugin_edit(edit, EqTarget::Master);
     }
     assert_eq!(state.eq, eq::PRESETS[1].state);
     assert_eq!(state.eq_preset, Some(1));
@@ -138,7 +144,7 @@ fn clicking_a_reverb_preset_pill_applies_it() {
 
     let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
     for edit in edits {
-        state.apply_plugin_edit(edit);
+        state.apply_plugin_edit(edit, EqTarget::Master);
     }
     assert_eq!(state.reverb, reverb::PRESETS[4].state);
     assert_eq!(
@@ -204,7 +210,7 @@ fn dragging_an_eq_node_moves_the_band() {
     // Through the app state: one undo step for the whole drag.
     let (mut state, _engine) = AppState::headless(ThemeMode::Dark);
     for edit in edits {
-        state.apply_plugin_edit(edit);
+        state.apply_plugin_edit(edit, EqTarget::Master);
     }
     assert_eq!(state.undo.len(), 1, "a drag coalesces into one undo step");
     assert!((state.eq.bands[band].freq - moved.freq).abs() < 1e-3);
@@ -296,7 +302,7 @@ fn app_state_setters_sync_engine_undo_and_both_reverb_views() {
     let project = state.build_project();
     assert_eq!(project.eq, eq::PRESETS[7].state);
     assert_eq!(project.reverb, reverb::PRESETS[2].state);
-    let back = engine::Project::from_json(&project.to_json_pretty()).unwrap();
+    let back = *app::project::parse_project(&project.to_json_pretty()).unwrap();
     assert_eq!(back, project);
     let (mut loaded, _e) = AppState::headless(ThemeMode::Light);
     loaded.apply_project(&back);
@@ -552,7 +558,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
     assert_eq!(project.params, from_engine.params);
     assert_eq!(project.reverb, heard);
     assert_eq!(project.param(ParamId::ReverbMix), 0.42);
-    let back = engine::Project::from_json(&project.to_json_pretty()).expect("round trip");
+    let back = *app::project::parse_project(&project.to_json_pretty()).expect("round trip");
     assert_eq!(back, project);
 
     // Loading sends the full state exactly once and reproduces what was heard.
@@ -603,7 +609,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
     v5["params"]["reverb_size"] = serde_json::json!(0.33);
     v5["params"]["reverb_damping"] = serde_json::json!(0.66);
     v5["params"]["reverb_mix"] = serde_json::json!(0.55);
-    let old = engine::Project::from_json(&v5.to_string()).expect("v5 loads");
+    let old = *app::project::parse_project(&v5.to_string()).expect("v5 loads");
     loaded.apply_project(&old);
     assert_eq!(
         loaded.reverb,
@@ -616,7 +622,7 @@ fn project_round_trip_keeps_window_state_and_the_last_rack_edit() {
     // everywhere (file, app mirrors, engine).
     let mut v6 = serde_json::to_value(&project).unwrap();
     v6["params"]["reverb_mix"] = serde_json::json!(0.99);
-    let fixed = engine::Project::from_json(&v6.to_string()).unwrap();
+    let fixed = *app::project::parse_project(&v6.to_string()).unwrap();
     assert_eq!(fixed.param(ParamId::ReverbMix), 0.42);
     loaded.apply_project(&fixed);
     assert_eq!(loaded.param(ParamId::ReverbMix), 0.42);

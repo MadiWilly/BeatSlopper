@@ -12,8 +12,9 @@ use common::{
 use engine::inserts::{INSERT_COUNT, MASTER};
 use engine::presets;
 use engine::{
-    Channel, ChannelParam, DrumRow, Engine, Eq3State, InsertParam, InsertState, MAX_TRACKS,
-    Message, MixerState, Note, ParamId, Project, SlotKind, SlotState, Strip, new_engine,
+    Channel, ChannelParam, DrumRow, Engine, Eq3State, EqParam, EqState, InsertParam, InsertState,
+    MAX_TRACKS, Message, MixerState, Note, ParamId, Project, SlotKind, SlotState, Strip,
+    new_engine,
 };
 
 /// One 16-step bar at 120 BPM / 48 kHz.
@@ -393,6 +394,89 @@ fn eq3_shelves_cut_lows_and_highs_on_the_insert() {
     assert_same(&settle_and_play_bar(&mut e), &dry, "flat EQ3");
 }
 
+// (4b) The parametric EQ plugin in a slot shapes only its own insert; the master EQ stays
+//      flat, the same EQ on another insert leaves the tone alone, and a loaded state, the
+//      messages and the direct setters all agree.
+
+#[test]
+fn parametric_eq_slot_shapes_only_its_insert() {
+    // MIDI 43 = 98 Hz; band 1 is the low shelf at 100 Hz.
+    let hz = |note: u8| 440.0 * 2.0_f32.powf((f32::from(note) - 69.0) / 12.0);
+    let cut = |e: &mut Engine, insert: u8| {
+        assert_eq!(
+            e.set_slot_eq(insert, 1, 1, EqParam::Gain, -12.0),
+            0.0,
+            "not loaded yet"
+        );
+        e.set_slot_kind(insert, 1, SlotKind::ParametricEq);
+        assert_eq!(e.set_slot_eq(insert, 1, 1, EqParam::Gain, -12.0), -12.0);
+    };
+    let low = tone_gain_db(43, |e| cut(e, 6));
+    let mut expected_state = EqState::FLAT;
+    expected_state.set(1, EqParam::Gain, -12.0);
+    let expected = expected_state.response_db(hz(43), SAMPLE_RATE);
+    assert!(
+        (low - expected).abs() < 0.5,
+        "98 Hz: {low} dB, analytic {expected}"
+    );
+    assert!(low < -5.0, "{low}");
+
+    // The same EQ on insert 7 (nothing routed there) leaves the tone on insert 6 untouched,
+    // and neither touches the master EQ.
+    let dry = settle_and_play_bar(&mut tone_engine(43, 0.5));
+    let mut e = tone_engine(43, 0.5);
+    cut(&mut e, 7);
+    assert_eq!(*e.eq(), EqState::FLAT);
+    assert_eq!(e.mixer().insert(7).slot(1).eq.bands[1].gain_db, -12.0);
+    assert_same(&settle_and_play_bar(&mut e), &dry, "EQ on another insert");
+
+    // Off fades it out; the output gain and the loaded-state path match the setters.
+    let off = tone_gain_db(43, |e| {
+        cut(e, 6);
+        e.set_slot_eq_on(6, 1, false);
+        assert!(!e.mixer().insert(6).slot(1).eq.on);
+    });
+    assert!(off.abs() < 0.1, "switched off: {off} dB");
+    let gained = tone_gain_db(71, |e| {
+        e.set_slot_kind(6, 0, SlotKind::ParametricEq);
+        assert_eq!(e.set_slot_eq_gain(6, 0, 6.0), 6.0);
+    });
+    assert!((gained - 6.0).abs() < 0.2, "output gain: {gained} dB");
+    let mut state = MixerState::default();
+    state.set_slot_kind(6, 1, SlotKind::ParametricEq);
+    state.set_slot_eq(6, 1, 1, EqParam::Gain, -12.0);
+    let loaded = tone_gain_db(43, |e| e.set_mixer_state(&state));
+    assert!((loaded - low).abs() < 0.05, "loaded {loaded} vs set {low}");
+    let (mut handle, mut e) = new_engine(SAMPLE_RATE);
+    assert!(handle.send(Message::SetSlotKind {
+        insert: 2,
+        slot: 0,
+        kind: SlotKind::ParametricEq,
+    }));
+    assert!(handle.send(Message::SetSlotEq {
+        insert: 2,
+        slot: 0,
+        band: 3,
+        param: EqParam::Freq,
+        value: 1500.0,
+    }));
+    assert!(handle.send(Message::SetSlotEqOn {
+        insert: 2,
+        slot: 0,
+        on: false,
+    }));
+    assert!(handle.send(Message::SetSlotEqGain {
+        insert: 2,
+        slot: 0,
+        db: 99.0,
+    }));
+    let _ = render(&mut e, 64);
+    let eq = e.mixer().insert(2).slot(0).eq;
+    assert_eq!(eq.bands[3].freq, 1500.0);
+    assert!(!eq.on);
+    assert_eq!(eq.gain_db, *EqParam::Gain.range().end());
+}
+
 // (5) Slot order matters: drive before lo-fi differs from lo-fi before drive.
 
 #[test]
@@ -487,7 +571,7 @@ fn v7_project_migrates_and_renders_sample_identical() {
     let project = Project::from_json(V7_DEMO_JSON).expect("the v7 fixture loads");
     assert!(V7_DEMO_JSON.contains("\"version\": 7"));
     assert!(!V7_DEMO_JSON.contains("\"inserts\""));
-    assert_eq!(project.version, 8);
+    assert_eq!(project.version, engine::project::FORMAT_VERSION);
     let m = &project.mixer;
     for (i, ch) in Channel::ALL.iter().enumerate() {
         assert_eq!(
@@ -508,9 +592,10 @@ fn v7_project_migrates_and_renders_sample_identical() {
     assert_eq!(m.insert(3).reverb_send, 0.3);
     assert_eq!(m.insert(1).reverb_send, 0.0);
     assert_eq!(m.insert(14), &InsertState::default_for(14));
-    // Re-saved it is a version-8 file with inserts and routes, and loads back equal.
+    // Re-saved it is a current-version file with inserts and routes, and loads back equal.
     let json = project.to_json_pretty();
-    assert!(json.starts_with("{\n  \"version\": 8,"));
+    let head = format!("{{\n  \"version\": {},", engine::project::FORMAT_VERSION);
+    assert!(json.starts_with(&head));
     assert!(json.contains("\"inserts\": [") && json.contains("\"routes\": ["));
     assert_eq!(Project::from_json(&json).unwrap(), project);
 

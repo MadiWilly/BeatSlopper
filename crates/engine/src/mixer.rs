@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::drums::DrumRow;
 use crate::dsp::db_to_gain;
+use crate::fx::eq::EqParam;
 use crate::inserts::{
     DEFAULT_ROUTES, INSERT_COUNT, InsertParam, InsertState, MASTER, MAX_INSERT, SlotKind,
     insert_index, insert_number,
@@ -557,6 +558,34 @@ impl MixerState {
         self.insert_mut(insert)
             .slot_mut(slot)
             .set(usize::from(index), value)
+    }
+
+    /// Sets value `param` of band `band` of the parametric EQ in slot `slot` of insert number
+    /// `insert` (clamped by the band). Returns the stored value, or `0.0` when the slot holds
+    /// another kind (nothing changes then).
+    pub fn set_slot_eq(
+        &mut self,
+        insert: u8,
+        slot: u8,
+        band: u8,
+        param: EqParam,
+        value: f32,
+    ) -> f32 {
+        self.insert_mut(insert)
+            .slot_mut(slot)
+            .set_eq(usize::from(band), param, value)
+    }
+
+    /// Switches the parametric EQ in slot `slot` of insert number `insert` on or off (nothing
+    /// for another kind).
+    pub fn set_slot_eq_on(&mut self, insert: u8, slot: u8, on: bool) {
+        self.insert_mut(insert).slot_mut(slot).set_eq_on(on);
+    }
+
+    /// Sets the output gain (dB) of the parametric EQ in slot `slot` of insert number
+    /// `insert`. Returns the stored value, or `0.0` for another kind.
+    pub fn set_slot_eq_gain(&mut self, insert: u8, slot: u8, gain_db: f32) -> f32 {
+        self.insert_mut(insert).slot_mut(slot).set_eq_gain(gain_db)
     }
 
     /// The insert number source `channel` feeds ([`MASTER`] = straight to the master).

@@ -58,7 +58,7 @@ pub fn with_insert_ui(text: &str, inserts: &[InsertUi; INSERT_COUNT]) -> String 
 /// test threads have 2 MiB and the main thread 1 MiB, and with the M11 inserts the project
 /// tests that load a file overflowed the former. Like `app::new_engine`, the work moves to a
 /// thread sized for it; a project open is rare, so the thread is cheap.
-fn parse_project(text: &str) -> Result<Box<Project>, ProjectError> {
+pub fn parse_project(text: &str) -> Result<Box<Project>, ProjectError> {
     std::thread::scope(|scope| {
         let spawned = std::thread::Builder::new()
             .name("beatslopper-project-parse".into())
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(project.bank.current, 1);
         let json = project.to_json_pretty();
         assert!(json.contains("\"mode\": \"song\""));
-        let back = Project::from_json(&json).unwrap();
+        let back = *parse_project(&json).unwrap();
         assert_eq!(back, project);
 
         let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
@@ -858,7 +858,9 @@ mod tests {
     // The mixer round trip is two tests (build / apply, then the file and the v3 fallback):
     // in one function the three states, their engines and the projects on the stack plus the
     // deserialiser's depth under `Project::from_json` (about 1.6 MiB in a debug build) sat a
-    // few KiB under a test thread's 2 MiB, and the M11 inserts tipped it over.
+    // few KiB under a test thread's 2 MiB, and the M11 inserts tipped it over. The tests here
+    // parse through `parse_project` (the app's own path, on a big-stack thread) since the
+    // parametric EQ slots grew the mixer again.
     #[test]
     fn mixer_round_trips_through_the_project() {
         use engine::Channel;
@@ -869,7 +871,7 @@ mod tests {
         assert_eq!(project.mixer, state.mixer);
         let json = project.to_json_pretty();
         assert!(json.contains("\"mixer\""));
-        let back = Project::from_json(&json).unwrap();
+        let back = *parse_project(&json).unwrap();
         assert_eq!(back.mixer, state.mixer);
 
         let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
@@ -901,7 +903,7 @@ mod tests {
         // A version-3 file (no `mixer`) loads with the default strips, whatever the mirror
         // held before.
         let v3_text = r#"{ "version": 3, "bpm": 99.0, "swing": 0.1, "preset_index": 2 }"#;
-        let old = Project::from_json(v3_text).unwrap();
+        let old = *parse_project(v3_text).unwrap();
         assert_eq!(old.version, engine::project::FORMAT_VERSION);
         assert_eq!(old.bpm, 99.0);
         assert_eq!(old.mixer, MixerState::default());
@@ -935,7 +937,7 @@ mod tests {
 
         let json = project.to_json_pretty();
         assert!(json.contains("\"notes\""));
-        assert_eq!(Project::from_json(&json).unwrap(), project);
+        assert_eq!(*parse_project(&json).unwrap(), project);
 
         let path = temp_path("notes.beatslopper.json");
         assert!(state.save_project_to(path.clone()));
@@ -963,7 +965,7 @@ mod tests {
                 { "note": 36, "accent": false }, { "note": null, "accent": false },
                 { "note": 43, "accent": true } ] } ] }
         }"#;
-        let old = Project::from_json(v4_text).unwrap();
+        let old = *parse_project(v4_text).unwrap();
         assert_eq!(old.version, engine::project::FORMAT_VERSION);
         loaded.apply_project(&old);
         assert_eq!(loaded.bpm, 110.0);
@@ -1032,7 +1034,7 @@ mod tests {
         assert_eq!(project.bank.patterns[0].notes(1).len(), 2);
         let json = project.to_json_pretty();
         assert!(json.contains("\"Pad\""));
-        let back = Project::from_json(&json).unwrap();
+        let back = *parse_project(&json).unwrap();
         assert_eq!(back, project);
 
         let (mut loaded, mut engine) = AppState::headless(ThemeMode::Light);
@@ -1095,7 +1097,7 @@ mod tests {
             "bank": { "patterns": [ { "length": 16, "notes": [
                 { "start": 0, "length": 2, "pitch": 40, "velocity": 0.9 } ] } ] }
         }"#;
-        let old = Project::from_json(v6_text).unwrap();
+        let old = *parse_project(v6_text).unwrap();
         loaded.apply_project(&old);
         assert_eq!(loaded.active_track_count(), 1);
         assert_eq!(loaded.track(0).name, "Synth");
@@ -1147,7 +1149,7 @@ mod insert_file_tests {
 
     use std::path::PathBuf;
 
-    use engine::{Channel, InsertParam, Project, SlotKind};
+    use engine::{Channel, InsertParam, SlotKind};
     use neu::ThemeMode;
 
     use super::*;
@@ -1186,7 +1188,7 @@ mod insert_file_tests {
         assert!(text.contains(&format!("\"{INSERT_UI_KEY}\"")));
         assert!(text.contains("\"Drums\""));
         // The engine's loader ignores the sidecar and reads the rest unchanged.
-        let project = Project::from_json(&text).unwrap();
+        let project = *parse_project(&text).unwrap();
         assert_eq!(project.mixer, state.mixer);
         assert_eq!(project.version, engine::project::FORMAT_VERSION);
         assert_eq!(insert_ui_of(&text).unwrap(), state.insert_ui);
@@ -1267,8 +1269,8 @@ mod insert_file_tests {
         // Splicing then parsing is the identity on the project part.
         let spliced = with_insert_ui(&text, &default_insert_ui());
         assert_eq!(
-            Project::from_json(&spliced).unwrap(),
-            Project::from_json(&text).unwrap()
+            *parse_project(&spliced).unwrap(),
+            *parse_project(&text).unwrap()
         );
         assert!(spliced.ends_with('\n'));
     }

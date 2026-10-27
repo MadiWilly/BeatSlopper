@@ -19,6 +19,15 @@
 //!   the project dirty and record undo. Keyboard shortcuts pressed while a plugin window has
 //!   focus are forwarded the same way, so Space still plays / stops.
 //!
+//! # Which EQ the window edits
+//!
+//! The one EQ window edits either the master EQ or the parametric EQ loaded into an insert's
+//! effect slot ([`EqTarget`], `AppState::eq_target`): the FX-rack pill points it at the
+//! master, a mixer slot's edit square at that slot. The target travels down with the
+//! mirror, the window names it in its header, and every queued edit is stamped with the
+//! target the window showed when it was made ([`PluginHost::take_edits`]), so an edit can
+//! never land on an EQ the user was not looking at, even if the target changed meanwhile.
+//!
 //! The windows' open flags are owned by `AppState::plugin_open` (the FX-rack pills toggle
 //! them; a window's close button queues [`PluginEdit::Close`]); their last position and size
 //! are tracked here and persisted ([`PluginWindows`], [`PLUGIN_WINDOWS_KEY`]) so they reopen
@@ -60,6 +69,8 @@ pub const ENVELOPE_MAX_SECONDS: f32 = 10.0;
 pub const WET_METER_DECAY_DB_PER_S: f32 = 30.0;
 /// Shown wet levels at or below this count as silent.
 pub const WET_METER_SILENT: f32 = 0.001;
+/// The EQ window's header label while it edits the master EQ.
+pub const MASTER_LABEL: &str = "MASTER";
 
 /// Which plugin window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -159,8 +170,20 @@ impl PluginWindows {
     }
 }
 
+/// The EQ the EQ window edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EqTarget {
+    /// The seven-band EQ on the master bus.
+    #[default]
+    Master,
+    /// The parametric EQ in effect slot `slot` (`0..3`) of insert number `insert`
+    /// (`1..=16`).
+    Slot { insert: u8, slot: u8 },
+}
+
 /// A change made in a plugin window, applied by the main frame through the `AppState`
-/// setters (engine message, dirty flag, undo).
+/// setters (engine message, dirty flag, undo). EQ edits apply to the [`EqTarget`] they were
+/// stamped with when queued.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PluginEdit {
     /// One EQ band value.
@@ -272,7 +295,11 @@ pub struct PluginShared {
     pub playing: bool,
 
     // ---- EQ ----
-    /// Mirror of `AppState::eq` (optimistically updated by the window's own edits).
+    /// The EQ the window shows and edits (mirror of `AppState::eq_target`).
+    pub eq_target: EqTarget,
+    /// What the window header calls the target (`"MASTER"`, `"INSERT 3 · KICK · SLOT 1"`).
+    pub eq_target_label: String,
+    /// Mirror of the targeted EQ (optimistically updated by the window's own edits).
     pub eq: EqState,
     /// The EQ preset last applied, for the list highlight and the MODIFIED marker.
     pub eq_preset: Option<usize>,
@@ -311,6 +338,8 @@ pub struct PluginShared {
     // ---- up ----
     /// Edits queued for the main frame.
     pub edits: Vec<PluginEdit>,
+    /// The [`EqTarget`] each queued edit was made for (in step with `edits`).
+    edit_targets: Vec<EqTarget>,
     /// Shortcuts pressed while a plugin window had focus.
     pub shortcuts: Vec<Shortcut>,
     /// Open flags (from the app) and the last known geometry (from the windows).
@@ -325,6 +354,8 @@ impl PluginShared {
             theme,
             sample_rate: 48_000.0,
             playing: false,
+            eq_target: EqTarget::Master,
+            eq_target_label: MASTER_LABEL.to_owned(),
             eq: EqState::default(),
             eq_preset: Some(0),
             eq_selected: 3,
@@ -343,6 +374,7 @@ impl PluginShared {
             envelope_job: None,
             envelope_pending: None,
             edits: Vec::new(),
+            edit_targets: Vec::new(),
             shortcuts: Vec::new(),
             windows: PluginWindows::default(),
         }
@@ -379,6 +411,7 @@ impl PluginShared {
             PluginEdit::Close(kind) => self.windows.get_mut(kind).open = false,
         }
         self.edits.push(edit);
+        self.edit_targets.push(self.eq_target);
     }
 
     /// `true` when the EQ differs from its selected preset (or no preset matches).
@@ -542,11 +575,16 @@ impl PluginHost {
         g
     }
 
-    /// Takes the queued edits and shortcuts (main frame).
-    pub fn take_edits(&mut self) -> (Vec<PluginEdit>, Vec<Shortcut>) {
+    /// Takes the queued edits, each with the [`EqTarget`] the window showed when it was made,
+    /// and the shortcuts (main frame).
+    pub fn take_edits(&mut self) -> (Vec<(PluginEdit, EqTarget)>, Vec<Shortcut>) {
         let mut s = self.lock();
+        let edits = std::mem::take(&mut s.edits);
+        let mut targets = std::mem::take(&mut s.edit_targets);
+        // Edits pushed straight into the pub queue (tests) count for the current target.
+        targets.resize(edits.len(), s.eq_target);
         (
-            std::mem::take(&mut s.edits),
+            edits.into_iter().zip(targets).collect(),
             std::mem::take(&mut s.shortcuts),
         )
     }
@@ -558,6 +596,8 @@ impl PluginHost {
         theme: &Theme,
         sample_rate: f32,
         playing: bool,
+        eq_target: EqTarget,
+        eq_target_label: &str,
         eq: &EqState,
         eq_preset: Option<usize>,
         reverb: &ReverbState,
@@ -572,6 +612,14 @@ impl PluginHost {
         }
         s.sample_rate = sample_rate;
         s.playing = playing;
+        if s.eq_target != eq_target {
+            // Another EQ: drop the drag of the one that was shown.
+            s.eq_target = eq_target;
+            s.eq_drag = None;
+        }
+        if s.eq_target_label != eq_target_label {
+            eq_target_label.clone_into(&mut s.eq_target_label);
+        }
         s.eq = *eq;
         s.eq_preset = eq_preset;
         s.reverb = *reverb;
@@ -715,8 +763,29 @@ mod tests {
         });
         host.lock().push_edit(PluginEdit::EqOn(false));
         host.lock().shortcuts.push(Shortcut::PlayStop);
+        // An edit made while the window showed an insert slot's EQ keeps that target even
+        // though the window was pointed back at the master before the main frame drained it.
+        let slot = EqTarget::Slot { insert: 3, slot: 1 };
+        host.lock().eq_target = slot;
+        host.lock().push_edit(PluginEdit::EqGain {
+            db: 2.0,
+            drag_started: true,
+        });
+        host.lock().eq_target = EqTarget::Master;
         let (edits, shortcuts) = host.take_edits();
-        assert_eq!(edits, vec![PluginEdit::EqOn(false)]);
+        assert_eq!(
+            edits,
+            vec![
+                (PluginEdit::EqOn(false), EqTarget::Master),
+                (
+                    PluginEdit::EqGain {
+                        db: 2.0,
+                        drag_started: true
+                    },
+                    slot
+                )
+            ]
+        );
         assert_eq!(shortcuts, vec![Shortcut::PlayStop]);
         assert!(host.take_edits().0.is_empty());
         let theme = Theme::light();
@@ -724,6 +793,8 @@ mod tests {
             &theme,
             44_100.0,
             true,
+            slot,
+            "INSERT 3 · SLOT 2",
             &eq::PRESETS[1].state,
             Some(1),
             &reverb::PRESETS[2].state,
@@ -736,6 +807,8 @@ mod tests {
         assert_eq!(s.theme.mode, neu::ThemeMode::Light);
         assert_eq!(s.sample_rate, 44_100.0);
         assert_eq!(s.eq, eq::PRESETS[1].state);
+        assert_eq!(s.eq_target, slot);
+        assert_eq!(s.eq_target_label, "INSERT 3 · SLOT 2");
         assert_eq!(s.reverb_preset, Some(2));
         assert_eq!(s.windows.open_flags(), [false, true]);
         drop(s);

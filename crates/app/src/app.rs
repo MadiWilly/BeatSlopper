@@ -125,7 +125,9 @@ use engine::{EqParam, EqState, InsertParam, ReverbParam, ReverbState, SlotKind};
 use neu::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 
-use crate::plugins::{PLUGIN_WINDOWS_KEY, PluginEdit, PluginHost, PluginKind, PluginWindows};
+use crate::plugins::{
+    EqTarget, MASTER_LABEL, PLUGIN_WINDOWS_KEY, PluginEdit, PluginHost, PluginKind, PluginWindows,
+};
 
 use crate::audio_io::AudioOutput;
 use crate::drag_paint::PaintStroke;
@@ -576,6 +578,10 @@ pub enum EditKey {
     Eq(u8),
     /// The EQ output gain.
     EqGain,
+    /// A band of the parametric EQ in an effect slot: `(insert, slot, band)`.
+    SlotEq(u8, u8, u8),
+    /// The output gain of the parametric EQ in an effect slot: `(insert, slot)`.
+    SlotEqGain(u8, u8),
     /// A reverb value edited from the plugin window.
     Reverb(ReverbParam),
     /// An insert's continuous value (level, pan, a send, an EQ3 knob; M11). Mute / solo and
@@ -1013,6 +1019,9 @@ pub struct AppState {
     pub eq: EqState,
     /// The EQ preset last applied (list highlight and MODIFIED marker).
     pub eq_preset: Option<usize>,
+    /// The EQ the EQ window edits: the master EQ, or the parametric EQ in an insert's effect
+    /// slot ([`AppState::open_slot_eq`]). Not an edit, not persisted.
+    pub eq_target: EqTarget,
     /// UI-side mirror of every reverb value; `size` / `damping` / `mix` always equal
     /// `params[ReverbSize / ReverbDamping / ReverbMix]`.
     pub reverb: ReverbState,
@@ -1188,6 +1197,7 @@ impl AppState {
             last_continuous_edit: None,
             eq: EqState::default(),
             eq_preset: Some(0),
+            eq_target: EqTarget::Master,
             reverb: ReverbState::default(),
             reverb_preset: None,
             plugin_open: [false; 2],
@@ -1549,8 +1559,204 @@ impl AppState {
         }
     }
 
-    /// Routes one edit made in a plugin window through the setters above.
-    pub fn apply_plugin_edit(&mut self, edit: PluginEdit) {
+    // -----------------------------------------------------------------------------------------
+    // The parametric EQ in an insert's effect slot (same setters, one EQ per slot).
+
+    /// Sets one value of band `band` of the parametric EQ in slot `slot` of insert `insert`
+    /// (clamped by the band) and sends `SetSlotEq`. Undo as [`AppState::set_eq_band`]. Returns
+    /// the stored value; nothing happens (and `0.0` is returned) unless the slot holds the EQ.
+    pub fn set_slot_eq_band(
+        &mut self,
+        insert: u8,
+        slot: u8,
+        band: usize,
+        param: EqParam,
+        value: f32,
+        drag_started: bool,
+    ) -> f32 {
+        let current = *self.mixer.insert(insert).slot(slot);
+        if current.kind != SlotKind::ParametricEq {
+            return 0.0;
+        }
+        let band = band % engine::fx::BAND_COUNT;
+        let mut probe = current.eq.bands[band];
+        let stored = probe.set(param, value);
+        if probe == current.eq.bands[band] {
+            return stored;
+        }
+        match param {
+            EqParam::On | EqParam::Kind => self.begin_edit(),
+            _ => {
+                self.begin_continuous_edit(EditKey::SlotEq(insert, slot, band as u8), drag_started)
+            }
+        }
+        self.mixer.insert_mut(insert).slot_mut(slot).eq.bands[band] = probe;
+        self.send(Message::SetSlotEq {
+            insert,
+            slot,
+            band: band as u8,
+            param,
+            value: stored,
+        });
+        stored
+    }
+
+    /// Switches the parametric EQ in a slot on or off (one undo step when it changes).
+    pub fn set_slot_eq_on(&mut self, insert: u8, slot: u8, on: bool) {
+        let current = self.mixer.insert(insert).slot(slot);
+        if current.kind != SlotKind::ParametricEq || current.eq.on == on {
+            return;
+        }
+        self.begin_edit();
+        self.mixer.set_slot_eq_on(insert, slot, on);
+        self.send(Message::SetSlotEqOn { insert, slot, on });
+    }
+
+    /// Sets the output gain (dB, clamped; undo coalesced per drag) of the parametric EQ in a
+    /// slot. Returns the stored value (`0.0` unless the slot holds the EQ).
+    pub fn set_slot_eq_gain(&mut self, insert: u8, slot: u8, db: f32, drag_started: bool) -> f32 {
+        let current = *self.mixer.insert(insert).slot(slot);
+        if current.kind != SlotKind::ParametricEq {
+            return 0.0;
+        }
+        let mut probe = current.eq;
+        let stored = probe.set_gain_db(db);
+        if stored != current.eq.gain_db {
+            self.begin_continuous_edit(EditKey::SlotEqGain(insert, slot), drag_started);
+            self.mixer.set_slot_eq_gain(insert, slot, stored);
+            self.send(Message::SetSlotEqGain {
+                insert,
+                slot,
+                db: stored,
+            });
+        }
+        stored
+    }
+
+    /// Replaces the whole parametric EQ in a slot (one undo step when it changes; EQ presets)
+    /// and sends every value.
+    pub fn set_slot_eq_state(&mut self, insert: u8, slot: u8, state: EqState) {
+        let mut state = state;
+        state.normalise();
+        let current = self.mixer.insert(insert).slot(slot);
+        if current.kind != SlotKind::ParametricEq || current.eq == state {
+            return;
+        }
+        self.begin_edit();
+        self.mixer.insert_mut(insert).slot_mut(slot).eq = state;
+        for msg in slot_eq_messages(insert, slot, &state) {
+            self.send(msg);
+        }
+    }
+
+    /// The EQ of `target`: the master EQ, or a slot's (`None` once that slot no longer holds
+    /// the parametric EQ).
+    #[must_use]
+    pub fn eq_of(&self, target: EqTarget) -> Option<EqState> {
+        match target {
+            EqTarget::Master => Some(self.eq),
+            EqTarget::Slot { insert, slot } => {
+                let s = self.mixer.insert(insert).slot(slot);
+                (s.kind == SlotKind::ParametricEq).then_some(s.eq)
+            }
+        }
+    }
+
+    /// The preset the EQ window highlights for its target: the one last applied on the
+    /// master, the preset a slot's EQ equals otherwise.
+    #[must_use]
+    pub fn eq_target_preset(&self) -> Option<usize> {
+        match self.eq_target {
+            EqTarget::Master => self.eq_preset,
+            target => self
+                .eq_of(target)
+                .and_then(|eq| engine::fx::eq::preset_index_of(&eq)),
+        }
+    }
+
+    /// What the EQ window header calls its target: `"MASTER"`, `"INSERT 3 · SLOT 1"`, or
+    /// with the insert's name when it has one other than `"Insert N"`:
+    /// `"INSERT 3 · SNARE · SLOT 1"`.
+    #[must_use]
+    pub fn eq_target_label(&self) -> String {
+        match self.eq_target {
+            EqTarget::Master => MASTER_LABEL.to_owned(),
+            EqTarget::Slot { insert, slot } => {
+                let name = self.insert_display_name(insert);
+                if name == default_insert_name(insert) {
+                    format!("INSERT {insert} · SLOT {}", slot + 1)
+                } else {
+                    format!(
+                        "INSERT {insert} · {} · SLOT {}",
+                        name.to_uppercase(),
+                        slot + 1
+                    )
+                }
+            }
+        }
+    }
+
+    /// The edit square of a slot holding the parametric EQ: points the EQ window at that slot
+    /// and opens it; pressed again while it already shows that slot, closes it. Not an edit.
+    pub fn open_slot_eq(&mut self, insert: u8, slot: u8) {
+        let target = EqTarget::Slot {
+            insert: engine::inserts::insert_number(engine::inserts::insert_index(insert)),
+            slot: engine::inserts::slot_index(slot) as u8,
+        };
+        let open = &mut self.plugin_open[PluginKind::Eq.index()];
+        if *open && self.eq_target == target {
+            *open = false;
+        } else {
+            self.eq_target = target;
+            *open = true;
+        }
+    }
+
+    /// `true` while the EQ window is open on the parametric EQ in slot `slot` of `insert`.
+    #[must_use]
+    pub fn is_slot_eq_open(&self, insert: u8, slot: u8) -> bool {
+        self.is_plugin_open(PluginKind::Eq) && self.eq_target == EqTarget::Slot { insert, slot }
+    }
+
+    /// Points the EQ window back at the master and closes it when its target slot no longer
+    /// holds the parametric EQ (an undo, a load, another kind picked).
+    fn clamp_eq_target(&mut self) {
+        if self.eq_of(self.eq_target).is_none() {
+            self.eq_target = EqTarget::Master;
+            self.plugin_open[PluginKind::Eq.index()] = false;
+        }
+    }
+
+    /// Routes one edit made in a plugin window through the setters above; EQ edits go to
+    /// `target`, the EQ the window showed when the edit was made (dropped if that slot no
+    /// longer holds the EQ).
+    pub fn apply_plugin_edit(&mut self, edit: PluginEdit, target: EqTarget) {
+        if let EqTarget::Slot { insert, slot } = target {
+            match edit {
+                PluginEdit::EqBand {
+                    band,
+                    param,
+                    value,
+                    drag_started,
+                } => {
+                    self.set_slot_eq_band(insert, slot, band, param, value, drag_started);
+                    return;
+                }
+                PluginEdit::EqOn(on) => return self.set_slot_eq_on(insert, slot, on),
+                PluginEdit::EqGain { db, drag_started } => {
+                    self.set_slot_eq_gain(insert, slot, db, drag_started);
+                    return;
+                }
+                PluginEdit::EqPreset(i) => {
+                    let i = i.min(engine::fx::eq::PRESETS.len().saturating_sub(1));
+                    if let Some(preset) = engine::fx::eq::PRESETS.get(i) {
+                        self.set_slot_eq_state(insert, slot, preset.state);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         match edit {
             PluginEdit::EqBand {
                 band,
@@ -1583,9 +1789,23 @@ impl AppState {
         self.plugin_open[kind.index()]
     }
 
-    /// Opens or closes the plugin window of `kind` (not an edit).
+    /// Opens or closes the plugin window of `kind` (not an edit). The EQ pill means the
+    /// master EQ: while the window shows an insert slot's EQ it switches to the master
+    /// instead of closing.
     pub fn toggle_plugin(&mut self, kind: PluginKind) {
+        if kind == PluginKind::Eq && self.eq_target != EqTarget::Master {
+            self.eq_target = EqTarget::Master;
+            self.plugin_open[kind.index()] = true;
+            return;
+        }
         self.plugin_open[kind.index()] = !self.plugin_open[kind.index()];
+    }
+
+    /// Whether the plugin pill of `kind` is lit: its window is open (for the EQ: on the
+    /// master EQ).
+    #[must_use]
+    pub fn plugin_pill_on(&self, kind: PluginKind) -> bool {
+        self.is_plugin_open(kind) && (kind != PluginKind::Eq || self.eq_target == EqTarget::Master)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1976,23 +2196,29 @@ impl AppState {
     }
 
     /// Opens (or closes, when already open) the knob view of slot `slot` of insert `insert`
-    /// (view state). An empty slot has no knobs to show, so it never opens.
+    /// (view state). An empty slot or the parametric EQ (edited in its window,
+    /// [`AppState::open_slot_eq`]) has no knobs to show, so it never opens.
     pub fn toggle_open_slot(&mut self, insert: u8, slot: u8) {
         let key = (insert, slot);
-        if self.open_slot == Some(key) || self.mixer.insert(insert).slot(slot).is_off() {
+        if self.open_slot == Some(key)
+            || self.mixer.insert(insert).slot(slot).kind.param_count() == 0
+        {
             self.open_slot = None;
         } else {
             self.open_slot = Some(key);
         }
     }
 
-    /// Drops the open slot view when its slot is off (after an undo, a load, a kind change).
+    /// Drops the open slot view when its slot is off or holds the parametric EQ (whose
+    /// controls are the EQ window, not knobs) after an undo, a load or a kind change; the EQ
+    /// window lets go of a slot that no longer holds the EQ.
     fn clamp_open_slot(&mut self) {
         if let Some((insert, slot)) = self.open_slot
-            && self.mixer.insert(insert).slot(slot).is_off()
+            && self.mixer.insert(insert).slot(slot).kind.param_count() == 0
         {
             self.open_slot = None;
         }
+        self.clamp_eq_target();
     }
 
     /// Reads the engine's latest block peaks and decays the shown meters towards them
@@ -4100,6 +4326,35 @@ pub fn eq_messages(eq: &EqState) -> Vec<Message> {
     out
 }
 
+/// The messages that put `eq` into the parametric EQ in slot `slot` of insert `insert`: as
+/// [`eq_messages`], with `SetSlotEqOn`, `SetSlotEqGain` and `SetSlotEq` (37 messages).
+#[must_use]
+pub fn slot_eq_messages(insert: u8, slot: u8, eq: &EqState) -> Vec<Message> {
+    let mut out = Vec::with_capacity(2 + eq.bands.len() * EqParam::ALL.len());
+    out.push(Message::SetSlotEqOn {
+        insert,
+        slot,
+        on: eq.on,
+    });
+    out.push(Message::SetSlotEqGain {
+        insert,
+        slot,
+        db: eq.gain_db,
+    });
+    for (i, band) in eq.bands.iter().enumerate() {
+        for param in EqParam::ALL {
+            out.push(Message::SetSlotEq {
+                insert,
+                slot,
+                band: i as u8,
+                param,
+                value: band.get(param),
+            });
+        }
+    }
+    out
+}
+
 /// The messages that put `reverb` into the engine: one `SetReverb` per [`ReverbParam`].
 #[must_use]
 pub fn reverb_messages(reverb: &ReverbState) -> Vec<Message> {
@@ -4160,6 +4415,9 @@ pub fn insert_messages(mixer: &MixerState) -> Vec<Message> {
                     index,
                     value: s.get(usize::from(index)),
                 });
+            }
+            if s.kind == SlotKind::ParametricEq {
+                out.extend(slot_eq_messages(n, slot, &s.eq));
             }
         }
     }
@@ -4365,9 +4623,10 @@ impl BeatSlopperApp {
     /// down to them and shows a viewport per open window. Part of [`tick`](Self::tick).
     pub fn sync_plugins(&mut self, ctx: &egui::Context) {
         let (edits, shortcuts) = self.plugins.take_edits();
-        for edit in edits {
-            self.state.apply_plugin_edit(edit);
+        for (edit, target) in edits {
+            self.state.apply_plugin_edit(edit, target);
         }
+        self.state.clamp_eq_target();
         if !self.smoke_test {
             for shortcut in shortcuts {
                 self.run_shortcut(shortcut);
@@ -4379,8 +4638,13 @@ impl BeatSlopperApp {
             &self.theme,
             self.state.sample_rate(),
             self.state.playing || self.state.playhead.playing,
-            &self.state.eq,
-            self.state.eq_preset,
+            self.state.eq_target,
+            &self.state.eq_target_label(),
+            &self
+                .state
+                .eq_of(self.state.eq_target)
+                .unwrap_or(self.state.eq),
+            self.state.eq_target_preset(),
             &self.state.reverb,
             self.state.reverb_preset,
             reverb_level,
@@ -8041,6 +8305,126 @@ mod insert_tests {
         assert_eq!(state.mixer, MixerState::default());
         sync(&mut state, &mut engine);
         assert_eq!(engine.mixer(), &MixerState::default());
+    }
+
+    #[test]
+    fn eq_in_an_insert_slot_edits_only_that_slot_and_undo_restores_it_in_the_engine() {
+        let (mut state, mut engine) = AppState::headless(ThemeMode::Dark);
+        let target = EqTarget::Slot { insert: 1, slot: 0 };
+        // Not loaded yet: the window cannot target it and slot edits do nothing.
+        assert_eq!(state.eq_of(target), None);
+        assert_eq!(
+            state.set_slot_eq_band(1, 0, 3, EqParam::Gain, 6.0, true),
+            0.0
+        );
+        assert_eq!(state.undo.len(), 0);
+
+        state.set_slot_kind(1, 0, SlotKind::ParametricEq);
+        state.open_slot_eq(1, 0);
+        assert_eq!(state.eq_target, target);
+        assert!(state.is_slot_eq_open(1, 0));
+        assert!(
+            !state.plugin_pill_on(PluginKind::Eq),
+            "the pill means the master EQ"
+        );
+        assert_eq!(state.eq_target_label(), "INSERT 1 · KICK · SLOT 1");
+        assert_eq!(state.eq_target_preset(), Some(0), "a fresh EQ is flat");
+        state.toggle_open_slot(1, 0);
+        assert_eq!(state.open_slot, None, "the EQ has no knob view");
+
+        // Window edits stamped with the slot land on the slot, never on the master.
+        let before = state.undo.len();
+        state.apply_plugin_edit(
+            PluginEdit::EqBand {
+                band: 3,
+                param: EqParam::Gain,
+                value: 4.0,
+                drag_started: true,
+            },
+            target,
+        );
+        state.apply_plugin_edit(
+            PluginEdit::EqBand {
+                band: 3,
+                param: EqParam::Gain,
+                value: 6.0,
+                drag_started: false,
+            },
+            target,
+        );
+        state.apply_plugin_edit(PluginEdit::EqOn(false), target);
+        state.apply_plugin_edit(
+            PluginEdit::EqGain {
+                db: -2.0,
+                drag_started: true,
+            },
+            target,
+        );
+        assert_eq!(
+            state.undo.len(),
+            before + 3,
+            "one band drag, on, one gain drag"
+        );
+        let eq = state.mixer.insert(1).slot(0).eq;
+        assert_eq!(eq.bands[3].gain_db, 6.0);
+        assert!(!eq.on);
+        assert_eq!(eq.gain_db, -2.0);
+        assert_eq!(state.eq, EqState::default(), "the master EQ is untouched");
+        state.apply_plugin_edit(PluginEdit::EqPreset(2), target);
+        assert_eq!(
+            state.mixer.insert(1).slot(0).eq,
+            engine::fx::eq::PRESETS[2].state
+        );
+        assert_eq!(state.eq_target_preset(), Some(2));
+        assert_eq!(state.eq_preset, Some(0), "the master's preset stays");
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert_eq!(*engine.eq(), EqState::default());
+
+        // Undo walks back through the slot EQ and the engine follows (insert_messages).
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(1).slot(0).eq.bands[3].gain_db, 6.0);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert!(state.undo());
+        assert!(state.undo());
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(1).slot(0).eq, EqState::FLAT);
+        sync(&mut state, &mut engine);
+        assert_eq!(engine.mixer(), &state.mixer);
+        assert!(state.is_slot_eq_open(1, 0), "the slot still holds the EQ");
+
+        // Undoing the load lets go of the slot: the window closes and points at the master.
+        assert!(state.undo());
+        assert_eq!(state.mixer.insert(1).slot(0).kind, SlotKind::Off);
+        assert_eq!(state.eq_target, EqTarget::Master);
+        assert!(!state.is_plugin_open(PluginKind::Eq));
+        // An edit stamped for a slot that no longer holds the EQ is dropped.
+        state.apply_plugin_edit(PluginEdit::EqOn(false), target);
+        assert!(state.eq.on && state.mixer.insert(1).slot(0).eq.on);
+
+        // The EQ pill switches an open slot EQ window to the master instead of closing it.
+        state.set_slot_kind(2, 1, SlotKind::ParametricEq);
+        state.open_slot_eq(2, 1);
+        state.toggle_plugin(PluginKind::Eq);
+        assert_eq!(state.eq_target, EqTarget::Master);
+        assert!(state.plugin_pill_on(PluginKind::Eq));
+        state.open_slot_eq(2, 1);
+        state.open_slot_eq(2, 1);
+        assert!(
+            !state.is_plugin_open(PluginKind::Eq),
+            "a second press closes it"
+        );
+        // Another kind picked over the EQ lets go of it as well.
+        state.open_slot_eq(2, 1);
+        state.set_slot_kind(2, 1, SlotKind::Drive);
+        assert_eq!(state.eq_target, EqTarget::Master);
+        assert!(!state.is_plugin_open(PluginKind::Eq));
+        // The slot's EQ travels in insert_messages: 37 more than an empty slot.
+        state.set_slot_kind(2, 1, SlotKind::Off);
+        let plain = insert_messages(&state.mixer).len();
+        state.set_slot_kind(2, 1, SlotKind::ParametricEq);
+        assert_eq!(insert_messages(&state.mixer).len(), plain + 37);
     }
 
     #[test]

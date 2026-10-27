@@ -19,8 +19,8 @@
 //!
 //! The sixteen inserts ([`crate::inserts::InsertState`]) are then processed in ascending
 //! number order: `slot 1 -> slot 2 -> slot 3` (each a [`crate::inserts::SlotKind`]:
-//! compressor, drive, lo-fi, chorus or an extra EQ3, all pre-allocated, only the chosen kind
-//! runs) `-> built-in EQ3 -> fader (level times mute/solo among the inserts, smoothed) -> pan
+//! compressor, drive, lo-fi, chorus, an extra EQ3 or the seven-band parametric EQ, all
+//! pre-allocated, only the chosen kind runs) `-> built-in EQ3 -> fader (level times mute/solo among the inserts, smoothed) -> pan
 //! -> post-fader sends into the shared delay / reverb buses`, and the result is added to the
 //! insert's `route`: a *higher* insert's bus (not processed yet, so groups and sub-groups
 //! work and feedback cannot happen) or the master sum. [`FxChain::process_bus`] returns
@@ -410,6 +410,39 @@ pub enum Message {
         channel: Channel,
         /// Insert number, or `0` for the master.
         insert: u8,
+    },
+    /// Set one value of a band of the parametric EQ in effect slot `slot` of insert `insert`
+    /// (clamped by the band, smoothed like the master EQ); ignored unless the slot holds
+    /// [`SlotKind::ParametricEq`].
+    SetSlotEq {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Slot index `0..3`.
+        slot: u8,
+        /// Band index `0..BAND_COUNT` (wraps).
+        band: u8,
+        /// Which value.
+        param: EqParam,
+        /// New value (as for [`Message::SetEq`]).
+        value: f32,
+    },
+    /// Switch the parametric EQ in a slot on or off (faded).
+    SetSlotEqOn {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Slot index `0..3`.
+        slot: u8,
+        /// `true` = on.
+        on: bool,
+    },
+    /// Output gain in dB (`-18..=18`) of the parametric EQ in a slot.
+    SetSlotEqGain {
+        /// Insert number `1..=16`.
+        insert: u8,
+        /// Slot index `0..3`.
+        slot: u8,
+        /// Gain, dB.
+        db: f32,
     },
 }
 
@@ -907,7 +940,7 @@ struct Buses {
 /// holds a left and a right instance (identical seeds, so the lo-fi wobble and noise stay
 /// centred; the left chorus instance's sine tap feeds the left channel and the right
 /// instance's cosine tap the right, which for a mono input equals the one-instance chorus of
-/// the track inserts).
+/// the track inserts). The parametric EQ is the master EQ's DSP, one instance per slot.
 #[derive(Debug, Clone, PartialEq)]
 struct SlotDsp {
     kind: SlotKind,
@@ -918,6 +951,7 @@ struct SlotDsp {
     lofi: [Lofi; 2],
     chorus: [Chorus; 2],
     eq3: Eq3,
+    eq: ParametricEq,
 }
 
 impl SlotDsp {
@@ -931,6 +965,7 @@ impl SlotDsp {
             lofi: [Lofi::new(sample_rate), Lofi::new(sample_rate)],
             chorus: [Chorus::new(sample_rate), Chorus::new(sample_rate)],
             eq3: Eq3::new(sample_rate),
+            eq: ParametricEq::new(sample_rate),
         }
     }
 
@@ -968,6 +1003,9 @@ impl SlotDsp {
                 }
             }
             SlotKind::Eq3 => self.eq3.retarget(&Eq3State::new(p[0], p[1], p[2], p[3])),
+            // Live EQ edits arrive band by band (`Engine::set_slot_eq`); the whole state only
+            // ever lands at once, on a snap.
+            SlotKind::ParametricEq => self.eq.set_state(&state.eq),
         }
     }
 
@@ -988,6 +1026,7 @@ impl SlotDsp {
             SlotKind::Lofi => self.lofi.iter_mut().for_each(Lofi::reset),
             SlotKind::Chorus => self.chorus.iter_mut().for_each(Chorus::reset),
             SlotKind::Eq3 => self.eq3.reset(),
+            SlotKind::ParametricEq => self.eq.reset(),
         }
     }
 
@@ -1015,6 +1054,7 @@ impl SlotDsp {
             SlotKind::Lofi => (self.lofi[0].process(l), self.lofi[1].process(r)),
             SlotKind::Chorus => (self.chorus[0].process(l).0, self.chorus[1].process(r).1),
             SlotKind::Eq3 => self.eq3.process(l, r),
+            SlotKind::ParametricEq => self.eq.process(l, r),
         }
     }
 }
@@ -1750,6 +1790,49 @@ impl Engine {
         stored
     }
 
+    /// Sets value `param` of band `band` of the parametric EQ in slot `slot` of insert
+    /// `insert` (clamped by the band; frequency and gain glide). Returns the stored value, or
+    /// `0.0` when the slot holds another kind (nothing changes then).
+    pub fn set_slot_eq(
+        &mut self,
+        insert: u8,
+        slot: u8,
+        band: u8,
+        param: EqParam,
+        value: f32,
+    ) -> f32 {
+        let (i, s) = (insert_index(insert), slot_index(slot));
+        if self.mixer.inserts[i].slots[s].kind != SlotKind::ParametricEq {
+            return 0.0;
+        }
+        let stored = self.mixer.set_slot_eq(insert, slot, band, param, value);
+        self.inserts[i].slots[s]
+            .eq
+            .set(usize::from(band), param, stored);
+        stored
+    }
+
+    /// Switches the parametric EQ in slot `slot` of insert `insert` on or off (faded;
+    /// nothing for another kind).
+    pub fn set_slot_eq_on(&mut self, insert: u8, slot: u8, on: bool) {
+        let (i, s) = (insert_index(insert), slot_index(slot));
+        if self.mixer.inserts[i].slots[s].kind == SlotKind::ParametricEq {
+            self.mixer.set_slot_eq_on(insert, slot, on);
+            self.inserts[i].slots[s].eq.set_on(on);
+        }
+    }
+
+    /// Sets the output gain (dB, clamped, smoothed) of the parametric EQ in slot `slot` of
+    /// insert `insert`. Returns the stored value, or `0.0` for another kind.
+    pub fn set_slot_eq_gain(&mut self, insert: u8, slot: u8, gain_db: f32) -> f32 {
+        let (i, s) = (insert_index(insert), slot_index(slot));
+        if self.mixer.inserts[i].slots[s].kind != SlotKind::ParametricEq {
+            return 0.0;
+        }
+        let stored = self.mixer.set_slot_eq_gain(insert, slot, gain_db);
+        self.inserts[i].slots[s].eq.set_gain_db(stored)
+    }
+
     /// Routes source `channel` to insert number `insert` (`1..=16`) or the master (`0`;
     /// anything larger becomes `0`). Takes effect at the next sample. Returns the stored
     /// value.
@@ -2453,6 +2536,19 @@ impl Engine {
                 value,
             } => {
                 self.set_slot_param(insert, slot, index, value);
+            }
+            Message::SetSlotEq {
+                insert,
+                slot,
+                band,
+                param,
+                value,
+            } => {
+                self.set_slot_eq(insert, slot, band, param, value);
+            }
+            Message::SetSlotEqOn { insert, slot, on } => self.set_slot_eq_on(insert, slot, on),
+            Message::SetSlotEqGain { insert, slot, db } => {
+                self.set_slot_eq_gain(insert, slot, db);
             }
             Message::SetRoute { channel, insert } => {
                 self.set_route(channel, insert);
