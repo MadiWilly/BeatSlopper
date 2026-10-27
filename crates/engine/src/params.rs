@@ -32,7 +32,7 @@ pub enum ParamId {
     Osc1Wave,
     /// Oscillator 1 detune, cents.
     Osc1Detune,
-    /// Oscillator 1 level, `0.0..=1.0`.
+    /// Oscillator 1 level, `0.0..=1.0` (in pluck mode: the string's level).
     Osc1Mix,
     /// Oscillator 2 waveform index: 0 sine, 1 saw, 2 square, 3 triangle.
     Osc2Wave,
