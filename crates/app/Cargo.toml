@@ -30,3 +30,7 @@ midir.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true
+
+[target."cfg(windows)".build-dependencies]
+# Embeds assets/icon.ico in beatslopper.exe so Explorer and the desktop shortcut show it.
+winresource.workspace = true

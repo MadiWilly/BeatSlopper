@@ -105,6 +105,18 @@ To check that a build starts without opening an interactive session, run
 `cargo run --release -p app -- --smoke-test`: it opens the window, renders about 60 frames and
 exits with code 0.
 
+### 3. Optional (Windows): a desktop shortcut
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+This builds a release, installs it to `%LOCALAPPDATA%\Programs\BeatSlopper` and adds
+BeatSlopper to the Desktop and the Start menu. Re-run it to update (close BeatSlopper first);
+pass `-NoDesktopShortcut` for the Start menu entry only. The icon's source is
+`crates/app/assets/icon.svg`; after editing it, run `node scripts/make-icon.mjs` (needs Node
+and Microsoft Edge) to regenerate `icon.png` and `icon.ico`.
+
 ## Quick start: your first beat in five minutes
 
 1. **Start the transport.** Press `Space`. The playhead runs across the channel rack.

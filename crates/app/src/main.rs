@@ -2,8 +2,15 @@
 //!
 //! `--smoke-test` opens the window, renders about 60 frames, prints `smoke-test: ok` and
 //! closes with exit code 0 (even without an audio device). Any eframe error exits non-zero.
+//!
+//! Release builds use the Windows GUI subsystem, so launching from the desktop opens no
+//! console. Their output and exit code still come through `cargo run` and pipes (the gate's
+//! smoke test), but not when the exe is started by hand from a console; debug builds keep it.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use app::BeatSlopperApp;
 use app::window::{MIN_INNER_SIZE, REQUESTED_INNER_SIZE};
@@ -35,10 +42,17 @@ fn native_options() -> eframe::NativeOptions {
             .with_title(app::window::BASE_TITLE)
             .with_app_id("beatslopper")
             .with_inner_size(REQUESTED_INNER_SIZE)
-            .with_min_inner_size(MIN_INNER_SIZE),
+            .with_min_inner_size(MIN_INNER_SIZE)
+            .with_icon(app_icon()),
         persist_window: true,
         ..Default::default()
     }
+}
+
+/// Title-bar and taskbar icon; without it eframe shows the egui logo.
+fn app_icon() -> Arc<egui::IconData> {
+    let png = include_bytes!("../assets/icon.png");
+    Arc::new(eframe::icon_data::from_png_bytes(png).expect("assets/icon.png is a valid PNG"))
 }
 
 fn main() -> ExitCode {
@@ -68,5 +82,11 @@ mod tests {
         assert!(parse_args(["--smoke-test".to_string()]).smoke_test);
         assert!(!parse_args(Vec::<String>::new()).smoke_test);
         assert!(parse_args(["--bogus".to_string(), "--smoke-test".to_string()]).smoke_test);
+    }
+
+    #[test]
+    fn app_icon_decodes() {
+        let icon = app_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
     }
 }
