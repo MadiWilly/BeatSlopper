@@ -507,3 +507,35 @@ of a full app like FL or Ableton. A just for fun project to make beats and have 
   behind after a re-route or a deleted track. Derived on every call, it follows track
   renames and routes for free and an unrouted insert falls back to `Insert N`.
 - The head's accessible name follows the displayed name; the rename editor starts from it.
+
+## 2026-10-27: The Sound Pack (1 000 generated presets) and the plucked-string level fix
+- The user asked for "1000 new synths, open source or non-copyright" and for guitars that
+  "actually work, they are too quiet". Read as 1 000 presets for the existing engine (no new
+  synth engines). docs/PRESET_PACK.md has the research and how the pack is built.
+- **Original presets, not imported ones.** No permissively licensed synth preset bank exists
+  that maps onto this engine. Surge XT and the other open banks are GPL-family, and the
+  commercial banks are proprietary. The pack is built from textbook synthesis techniques
+  (uncopyrightable), translated into this engine's parameters. No third-party patch data is
+  in the repository.
+- **Generated and checked in.** `examples/gen_preset_pack.rs` holds about 145 archetypes and
+  21 variations. It renders every candidate, levels it, checks the tests/presets.rs contract
+  with a margin, the name and the four-parameter distance, and writes `presets/pack.rs` as
+  `&'static` literals. `LIBRARY` is now a const concatenation of the hand-made core and the
+  pack, so `LIBRARY`, `LIBRARY_COUNT`, indices and project files are unchanged, and the
+  library's 91 presets keep their positions. A runtime-built list was rejected: it would have
+  made `LIBRARY_COUNT` non-const and leaked strings at start-up.
+- **Ten new categories after `Risers`**: Keys, Organs, Brass & Winds, Strings, Bells &
+  Mallets, Guitars, Synth Leads, Synth Bass, Pads & Atmos, Arps & Stabs. Their chips are
+  Pianos, Organs, Brass, Strings, Bells, Guitars, Syn Lead, Syn Bass, Atmos, Arps. The chip
+  is "Pianos", not "Keys", because "Keys" is a classic preset's accessible name.
+- **Plucked-string level.** `Pluck::pluck` normalises each burst to the level that survives
+  the first 30 ms of loop filtering, and soft-clips it. Osc 1's mix is now the string's
+  level in pluck mode; every existing pluck preset already set it to 1.0, so nothing
+  changes for them. A re-pluck halves the ringing period first (pick damping), so 16th
+  notes on a long-ringing guitar stay within 6 dB of one hit instead of piling up. Four lofi guitars were re-voiced for level (Nylon, Muted Pluck, Ukulele,
+  Slow Swell).
+- **`[profile.dev.package.engine] opt-level = 2`.** The preset tests render about 1 100
+  presets. Unoptimised that took minutes; it now takes about 20 s. Debug builds of the app
+  also get a DSP engine that renders comfortably in real time.
+- **The browser list stays unvirtualised** (kittests query every row by name). Rows off
+  screen only reserve space, and their tags and tooltip are built only when they show.

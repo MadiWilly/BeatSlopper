@@ -14,7 +14,8 @@
 //!   open, 1.5x at 1 = dull) and the decay time ([`T60_LONGEST`] seconds at 0 down to
 //!   [`T60_SHORTEST`] at 1, independent of pitch). Brightness sets the excitation lowpass the
 //!   same way (0.5x the fundamental at 0, raw noise at 1).
-//! - Re-plucking adds a new burst without clearing the line, so repeated notes stay smooth.
+//! - Re-plucking adds a new burst without clearing the line (the period it lands on is first
+//!   halved, as a pick damps the string), so repeated notes stay smooth and do not pile up.
 
 use crate::dsp::flush_denormal;
 use crate::synth::noise::Noise;
@@ -36,6 +37,23 @@ const EXC_RATIO_DARK: f32 = 0.5;
 const EXC_RATIO_RAW: f32 = 2048.0;
 /// Cap on the level compensation of a dark excitation burst.
 const MAX_EXC_GAIN: f32 = 4.0;
+/// RMS a pluck's burst is scaled to, measured after the loop lowpasses of the first
+/// [`LEVEL_WINDOW`] seconds (see [`Pluck::pluck`]).
+pub const PLUCK_RMS: f32 = 1.0;
+/// Most trips through the loop lowpass the level measurement accounts for.
+const LEVEL_PASSES: usize = 32;
+/// The level measurement accounts for the loop trips of this long a window, seconds (so a
+/// high note, which circulates more often and loses its overtones sooner, is measured after
+/// more trips than a low one).
+const LEVEL_WINDOW: f32 = 0.03;
+/// Repetitions of the burst run through the measurement filters (the last one is measured).
+const LEVEL_REPEATS: usize = 3;
+/// Cap on the level-normalising gain of a burst.
+const MAX_LEVEL_GAIN: f32 = 16.0;
+/// Ceiling of the soft clip on the level-normalised burst.
+const MAX_BURST_PEAK: f32 = 4.0;
+/// Gain on the period a new pluck lands on (the pick damps a string that is still ringing).
+const PICK_DAMP: f32 = 0.5;
 /// Shortest delay (samples) the loop accepts.
 const MIN_DELAY: f32 = 2.0;
 /// Time constant of the loop's DC blocker, in circulations of the loop. Expressed per period
@@ -210,26 +228,82 @@ impl Pluck {
     }
 
     /// Plucks the string: adds a noise burst one period long (lowpassed by the brightness,
-    /// made zero-mean so the loop carries no DC) onto the most recently written period of
-    /// the line. The line is not cleared, so a string that is still ringing is re-excited
-    /// smoothly. Costs one period of samples, no allocation.
+    /// made zero-mean so the loop carries no DC, level-normalised, see below) onto the most
+    /// recently written period of the line. The line is not cleared, so a string that is
+    /// still ringing is re-excited smoothly (its last period halved first, see
+    /// [`PICK_DAMP`]). Costs a few periods of samples, no allocation.
+    ///
+    /// **Level:** a raw burst spreads its energy over every harmonic up to Nyquist, and the
+    /// loop lowpass removes most of it within a few circulations, so without care a dull or
+    /// low string came out 20 dB or more under a bright one, and every pluck drew a
+    /// different random level. The burst is therefore scaled so that what survives the
+    /// first [`LEVEL_WINDOW`] seconds of trips through the loop lowpass (the part of the note
+    /// the ear hears as its level) has the RMS [`PLUCK_RMS`], whatever the damping, brightness, pitch or
+    /// noise draw. The gain is capped at [`MAX_LEVEL_GAIN`], and the scaled burst goes through
+    /// a soft clip that keeps its peak under [`MAX_BURST_PEAK`].
     pub fn pluck(&mut self) {
         let len = self.buf.len();
         let n = (self.period.round() as usize).clamp(2, len);
         let start = (self.write + len - n) % len;
-        let mut state = 0.0_f32;
+        // The burst is drawn several times from the same noise state (mean, level, write), so
+        // it needs no buffer of its own.
+        let seed = self.noise;
+        let (exc_coeff, exc_gain, lp_coeff) = (self.exc_coeff, self.exc_gain, self.lp_coeff);
+        let burst = |noise: &mut Noise, state: &mut f32| {
+            *state += exc_coeff * (noise.white() - *state);
+            *state * exc_gain
+        };
+
+        let (mut noise, mut state) = (seed, 0.0_f32);
         let mut sum = 0.0_f32;
-        for k in 0..n {
-            state += self.exc_coeff * (self.noise.white() - state);
-            let s = state * self.exc_gain;
-            let i = (start + k) % len;
-            self.buf[i] += s;
-            sum += s;
+        for _ in 0..n {
+            sum += burst(&mut noise, &mut state);
         }
         let mean = sum / n as f32;
+
+        // Level: the zero-mean burst, repeated (the loop is periodic), through one cascaded copy
+        // of the loop lowpass per trip in LEVEL_WINDOW; measured on the last repetition, once the
+        // filters have settled.
+        let passes = ((self.hz * LEVEL_WINDOW).round() as usize).clamp(1, LEVEL_PASSES);
+        let mut lp = [0.0_f32; LEVEL_PASSES];
+        let mut energy = 0.0_f32;
+        for rep in 0..LEVEL_REPEATS {
+            let (mut noise, mut state) = (seed, 0.0_f32);
+            for _ in 0..n {
+                let mut x = burst(&mut noise, &mut state) - mean;
+                for s in &mut lp[..passes] {
+                    *s += lp_coeff * (x - *s);
+                    x = *s;
+                }
+                if rep == LEVEL_REPEATS - 1 {
+                    energy += x * x;
+                }
+            }
+        }
+        let level = (energy / n as f32).sqrt();
+        let gain = if level > 1.0e-9 {
+            (PLUCK_RMS / level).min(MAX_LEVEL_GAIN)
+        } else {
+            1.0
+        };
+
+        // Write the scaled burst through a soft clip (a bright burst into a damped string is
+        // mostly transient, so a large gain would otherwise spike its first period) onto the
+        // ringing period, damped first as a pick damps the string (repeated notes would
+        // otherwise pile up), then take out the little mean the clip leaves.
+        let (mut noise, mut state) = (seed, 0.0_f32);
+        let mut sum = 0.0_f32;
         for k in 0..n {
+            let x = (burst(&mut noise, &mut state) - mean) * gain;
+            let s = MAX_BURST_PEAK * (x / MAX_BURST_PEAK).tanh();
             let i = (start + k) % len;
-            self.buf[i] -= mean;
+            self.buf[i] = self.buf[i] * PICK_DAMP + s;
+            sum += s;
+        }
+        self.noise = noise;
+        let clip_mean = sum / n as f32;
+        for k in 0..n {
+            self.buf[(start + k) % len] -= clip_mean;
         }
     }
 
@@ -361,6 +435,47 @@ mod tests {
         assert!(bright(0.0) < bright(1.0) * 0.5);
     }
 
+    /// The burst is level-normalised: across damping, brightness and C2..C5 the first 300 ms
+    /// stay within a narrow band (un-normalised, a dull low string came out more than 20 dB
+    /// under a bright one), and different noise draws of the same pluck sound equally loud.
+    #[test]
+    fn pluck_level_is_consistent_across_settings_pitches_and_draws() {
+        let level = |damping: f32, bright: f32, note: f32, seed: u32| {
+            let mut p = Pluck::new(SR, seed);
+            p.set_damping(damping);
+            p.set_brightness(bright);
+            p.set_freq(note_to_hz(note));
+            p.pluck();
+            let out = render(&mut p, (SR * 0.3) as usize);
+            assert!(
+                out.iter()
+                    .all(|s| s.is_finite() && s.abs() <= 1.5 * MAX_BURST_PEAK)
+            );
+            20.0 * rms(&out).log10()
+        };
+        let mut all = Vec::new();
+        for damping in [0.0, 0.5, 0.9] {
+            for bright in [0.3, 0.7, 1.0] {
+                for note in [36.0, 48.0, 60.0, 72.0] {
+                    let draws: Vec<f32> = (1..6)
+                        .map(|s| level(damping, bright, note, s * 7919))
+                        .collect();
+                    let lo = draws.iter().copied().fold(f32::MAX, f32::min);
+                    let hi = draws.iter().copied().fold(f32::MIN, f32::max);
+                    assert!(
+                        hi - lo < 4.5,
+                        "damping {damping} bright {bright} note {note}: {draws:?}"
+                    );
+                    all.extend(draws);
+                }
+            }
+        }
+        let lo = all.iter().copied().fold(f32::MAX, f32::min);
+        let hi = all.iter().copied().fold(f32::MIN, f32::max);
+        assert!(hi - lo < 13.0, "level band {lo:.1} .. {hi:.1} dB");
+        assert!(lo > -16.0, "quietest pluck {lo:.1} dB");
+    }
+
     #[test]
     fn replucking_does_not_clear_and_weird_inputs_are_safe() {
         let mut p = Pluck::new(SR, 5);
@@ -369,13 +484,21 @@ mod tests {
         let _ = render(&mut p, 2000);
         let before: Vec<f32> = p.buf.clone();
         p.pluck();
-        let added: Vec<f32> = p.buf.iter().zip(&before).map(|(a, b)| a - b).collect();
-        let changed = added.iter().filter(|s| s.abs() > 0.0).count();
+        let changed: Vec<usize> = (0..before.len())
+            .filter(|&i| p.buf[i] != before[i])
+            .collect();
         assert!(
-            (100..=110).contains(&changed),
-            "burst one period long: {changed}"
+            (100..=110).contains(&changed.len()),
+            "burst one period long: {}",
+            changed.len()
         );
-        let mean = added.iter().sum::<f32>() / 109.0;
+        assert!(before.iter().any(|s| s.abs() > 1.0e-3), "still ringing");
+        // The period the burst lands on is damped by PICK_DAMP; the rest of the line is kept.
+        let burst: Vec<f32> = changed
+            .iter()
+            .map(|&i| p.buf[i] - before[i] * PICK_DAMP)
+            .collect();
+        let mean = burst.iter().sum::<f32>() / burst.len() as f32;
         assert!(mean.abs() < 1e-4, "burst is zero-mean: {mean}");
         assert!(p.tick().is_finite());
         p.set_freq(f32::NAN);

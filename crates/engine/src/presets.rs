@@ -8,17 +8,24 @@
 //! Two lists live here (M9):
 //! - [`ALL`]: the original eight M2 presets, unchanged in name and values (the synth panel's
 //!   preset row still indexes it).
-//! - [`LIBRARY`]: the preset library, grouped by [`Category`] (at least ten per category),
-//!   browsed with [`by_category`], [`search`], [`find`] and [`index_of`]. Every entry was
-//!   designed by DSP reasoning (the build machine has no speakers) and is held to measurable
-//!   properties by `tests/presets.rs`: in range, renders finite and non-silent, peak at most
-//!   1.0 after the limiter, and decays within 8 s of release unless tagged `"drone"`
-//!   ([`Preset::is_drone`]). Presets with vinyl noise ([`Preset::has_vinyl_noise`]) decay to
-//!   their noise bed instead, because the lo-fi insert's hiss is not gated by the voices.
+//! - [`LIBRARY`]: the preset library, grouped by [`Category`] (at least ten per category):
+//!   the 91 hand-designed M9 presets of the first eight categories, then the generated Sound
+//!   Pack ([`PACK`], 1 000 presets in ten more categories; `examples/gen_preset_pack.rs`
+//!   builds it from documented archetypes and checks every entry by rendering it, see
+//!   docs/PRESET_PACK.md). Browsed with [`by_category`], [`search`], [`find`] and
+//!   [`index_of`]. Every entry was designed by DSP reasoning (the build machine has no
+//!   speakers) and is held to measurable properties by `tests/presets.rs`: in range,
+//!   renders finite and non-silent, peak at most 1.0 after the limiter, and decays within
+//!   8 s of release unless tagged `"drone"` ([`Preset::is_drone`]). Presets with vinyl
+//!   noise ([`Preset::has_vinyl_noise`]) decay to their noise bed instead, because the lo-fi
+//!   insert's hiss is not gated by the voices.
 
 use crate::engine::Engine;
 use crate::params::ParamId;
 use crate::track::TrackId;
+
+mod pack;
+pub use pack::PACK;
 
 /// Preset browser category (M9). The order is the browser's tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,11 +46,32 @@ pub enum Category {
     EdmPads,
     /// Risers, downlifters, impacts, echoes, textures.
     Risers,
+    // ----- the Sound Pack (generated, see [`PACK`] and docs/PRESET_PACK.md) -----
+    /// Pianos, electric pianos, clavs, harpsichords, celestas.
+    Keys,
+    /// Drawbar, church, reed and combo organs.
+    Organs,
+    /// Brass sections, solo horns, flutes, reeds and pipes.
+    BrassWinds,
+    /// Ensembles, solo strings, pizzicato and swells.
+    Strings,
+    /// FM bells, mallets, chimes and metallic hits.
+    BellsMallets,
+    /// Plucked strings on the Karplus-Strong voice: acoustic, electric, bass, harp, world.
+    Guitars,
+    /// Mono, poly, chip, FM and acid leads.
+    SynthLeads,
+    /// Analog, sub, FM, reese and acid basses.
+    SynthBass,
+    /// Pads, choirs, washes and evolving beds.
+    PadsAtmos,
+    /// Arpeggiator plucks, chord stabs and sequencer sounds.
+    ArpsStabs,
 }
 
 impl Category {
     /// Every category in browser order.
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 18] = [
         Category::LofiKeys,
         Category::LofiGuitars,
         Category::LofiPads,
@@ -52,6 +80,16 @@ impl Category {
         Category::EdmPlucks,
         Category::EdmPads,
         Category::Risers,
+        Category::Keys,
+        Category::Organs,
+        Category::BrassWinds,
+        Category::Strings,
+        Category::BellsMallets,
+        Category::Guitars,
+        Category::SynthLeads,
+        Category::SynthBass,
+        Category::PadsAtmos,
+        Category::ArpsStabs,
     ];
 
     /// Display label for the category selector.
@@ -66,6 +104,16 @@ impl Category {
             Category::EdmPlucks => "EDM Plucks",
             Category::EdmPads => "EDM Pads",
             Category::Risers => "Risers & FX",
+            Category::Keys => "Keys",
+            Category::Organs => "Organs",
+            Category::BrassWinds => "Brass & Winds",
+            Category::Strings => "Strings",
+            Category::BellsMallets => "Bells & Mallets",
+            Category::Guitars => "Guitars",
+            Category::SynthLeads => "Synth Leads",
+            Category::SynthBass => "Synth Bass",
+            Category::PadsAtmos => "Pads & Atmos",
+            Category::ArpsStabs => "Arps & Stabs",
         }
     }
 
@@ -426,8 +474,8 @@ pub const ALL: &[Preset] = &[BASS, SUB, LEAD, PLUCK, PAD, KEYS, ACID, BELL];
 // die within 8 s and 1.0 does not (drone). Wave indices: 0 sine, 1 saw, 2 square, 3
 // triangle. Filter types: 0 LP, 1 BP, 2 HP. LFO target: 0 pitch, 1 cutoff.
 
-/// The preset library, grouped by [`Category`] in [`Category::ALL`] order.
-pub static LIBRARY: &[Preset] = &[
+/// The hand-designed part of the library (M9): the first eight categories.
+const CORE: &[Preset] = &[
     // ----- Lofi Keys -----------------------------------------------------------------------
     // Dusty Rhodes: FM electric piano (sine carrier, 1:1 sine modulator at index ~1.8) with a
     // hammer click from the pitch envelope, a mellowing filter envelope, 11-bit / half-rate
@@ -679,9 +727,10 @@ pub static LIBRARY: &[Preset] = &[
         ],
     },
     // ----- Lofi Guitars --------------------------------------------------------------------
-    // Nylon Guitar: Karplus-Strong string, bright excitation (0.8), medium-short damping so
-    // the body rings about a second, a key-tracked lowpass with no envelope, a light slow
-    // chorus, a little vinyl, and a short release so the note stops when the key lifts.
+    // Nylon Guitar: Karplus-Strong string, bright excitation (0.8), medium damping so the
+    // body rings about a second and a half, a touch of amp warmth for body, a key-tracked
+    // lowpass with no envelope, a light slow chorus, a little vinyl, and a short release so
+    // the note stops when the key lifts.
     Preset {
         name: "Nylon Guitar",
         category: Category::LofiGuitars,
@@ -690,13 +739,13 @@ pub static LIBRARY: &[Preset] = &[
         ],
         values: values![
             Osc1Wave: 1.0, Osc1Mix: 1.0, Osc2Mix: 0.0, SubLevel: 0.0, NoiseLevel: 0.0, FmAmount: 0.0,
-            OscMode: 1.0, PluckDamping: 0.55, PluckBright: 0.8,
+            OscMode: 1.0, PluckDamping: 0.4, PluckBright: 0.8,
             FilterType: 0.0, FilterCutoff: 5000.0, FilterResonance: 0.05, FilterEnvAmount: 0.0,
             FilterAttack: 0.001, FilterDecay: 0.25, FilterSustain: 0.2, FilterRelease: 0.3, FilterKeyTrack: 0.5,
             AmpAttack: 0.001, AmpDecay: 0.3, AmpSustain: 1.0, AmpRelease: 0.35,
             LfoTarget: 1.0, LfoRate: 0.3, LfoDepth: 0.0, Glide: 0.0,
             PitchEnvAmount: 0.0, PitchEnvDecay: 0.1, VelToCutoff: 0.4, VelToAmp: 1.0,
-            DriveAmount: 0.0, DriveMix: 0.0,
+            DriveAmount: 0.15, DriveMix: 0.3,
             LofiBits: 12.0, LofiRate: 1.0, LofiWobble: 0.1, LofiNoise: 0.15, LofiTone: 8000.0, LofiMix: 0.4,
             ChorusRate: 0.6, ChorusDepth: 0.2, ChorusMix: 0.2, SidechainAmount: 0.0,
             DelayTime: 1.0, DelayFeedback: 0.25, DelayMix: 0.08, ReverbSize: 0.55, ReverbDamping: 0.5, ReverbMix: 0.25,
@@ -724,8 +773,9 @@ pub static LIBRARY: &[Preset] = &[
             DelayTime: 1.0, DelayFeedback: 0.3, DelayMix: 0.2, ReverbSize: 0.5, ReverbDamping: 0.5, ReverbMix: 0.3,
         ],
     },
-    // Muted Pluck Gtr: palm-muted string: damping 0.9 (quarter-second ring), darker
-    // excitation, a 2.5 kHz lowpass and a very short release; dry-ish with vinyl dust.
+    // Muted Pluck Gtr: palm-muted string: damping 0.85 (third-of-a-second ring), dark
+    // excitation and amp grit, a 2.5 kHz lowpass and a very short release; dry-ish with
+    // vinyl dust.
     Preset {
         name: "Muted Pluck Gtr",
         category: Category::LofiGuitars,
@@ -734,13 +784,13 @@ pub static LIBRARY: &[Preset] = &[
         ],
         values: values![
             Osc1Wave: 1.0, Osc1Mix: 1.0, Osc2Mix: 0.0, SubLevel: 0.0, NoiseLevel: 0.0, FmAmount: 0.0,
-            OscMode: 1.0, PluckDamping: 0.9, PluckBright: 0.5,
+            OscMode: 1.0, PluckDamping: 0.85, PluckBright: 0.35,
             FilterType: 0.0, FilterCutoff: 2500.0, FilterResonance: 0.1, FilterEnvAmount: 0.2,
             FilterAttack: 0.001, FilterDecay: 0.1, FilterSustain: 0.0, FilterRelease: 0.2, FilterKeyTrack: 0.4,
             AmpAttack: 0.001, AmpDecay: 0.2, AmpSustain: 0.8, AmpRelease: 0.2,
             LfoTarget: 1.0, LfoRate: 0.3, LfoDepth: 0.0, Glide: 0.0,
             PitchEnvAmount: 0.0, PitchEnvDecay: 0.1, VelToCutoff: 0.5, VelToAmp: 1.0,
-            DriveAmount: 0.15, DriveMix: 0.3,
+            DriveAmount: 0.25, DriveMix: 0.4,
             LofiBits: 11.0, LofiRate: 2.0, LofiWobble: 0.15, LofiNoise: 0.25, LofiTone: 6000.0, LofiMix: 0.6,
             ChorusRate: 0.5, ChorusDepth: 0.15, ChorusMix: 0.1, SidechainAmount: 0.0,
             DelayTime: 0.0, DelayFeedback: 0.3, DelayMix: 0.1, ReverbSize: 0.4, ReverbDamping: 0.6, ReverbMix: 0.15,
@@ -796,8 +846,8 @@ pub static LIBRARY: &[Preset] = &[
             DelayTime: 2.0, DelayFeedback: 0.35, DelayMix: 0.25, ReverbSize: 0.55, ReverbDamping: 0.5, ReverbMix: 0.25,
         ],
     },
-    // Ukulele Lofi: short bright string through a 350 Hz highpass (thin little body) and
-    // 10-bit / half-rate lo-fi with crackle; a quick release.
+    // Ukulele Lofi: short, fairly bright string through a 350 Hz highpass (thin little body),
+    // a little amp warmth and 10-bit / half-rate lo-fi with crackle; a quick release.
     Preset {
         name: "Ukulele Lofi",
         category: Category::LofiGuitars,
@@ -806,13 +856,13 @@ pub static LIBRARY: &[Preset] = &[
         ],
         values: values![
             Osc1Wave: 1.0, Osc1Mix: 1.0, Osc2Mix: 0.0, SubLevel: 0.0, NoiseLevel: 0.0, FmAmount: 0.0,
-            OscMode: 1.0, PluckDamping: 0.7, PluckBright: 0.85,
+            OscMode: 1.0, PluckDamping: 0.65, PluckBright: 0.6,
             FilterType: 2.0, FilterCutoff: 350.0, FilterResonance: 0.2, FilterEnvAmount: 0.0,
             FilterAttack: 0.001, FilterDecay: 0.25, FilterSustain: 0.2, FilterRelease: 0.3, FilterKeyTrack: 0.5,
             AmpAttack: 0.001, AmpDecay: 0.3, AmpSustain: 1.0, AmpRelease: 0.3,
             LfoTarget: 1.0, LfoRate: 0.3, LfoDepth: 0.0, Glide: 0.0,
             PitchEnvAmount: 0.0, PitchEnvDecay: 0.1, VelToCutoff: 0.3, VelToAmp: 1.0,
-            DriveAmount: 0.05, DriveMix: 0.15,
+            DriveAmount: 0.15, DriveMix: 0.3,
             LofiBits: 10.0, LofiRate: 2.0, LofiWobble: 0.2, LofiNoise: 0.3, LofiTone: 9000.0, LofiMix: 0.6,
             ChorusRate: 0.6, ChorusDepth: 0.15, ChorusMix: 0.15, SidechainAmount: 0.0,
             DelayTime: 0.0, DelayFeedback: 0.3, DelayMix: 0.1, ReverbSize: 0.5, ReverbDamping: 0.5, ReverbMix: 0.25,
@@ -858,8 +908,9 @@ pub static LIBRARY: &[Preset] = &[
             DelayTime: 1.0, DelayFeedback: 0.5, DelayMix: 0.3, ReverbSize: 0.6, ReverbDamping: 0.5, ReverbMix: 0.3,
         ],
     },
-    // Slow Swell Gtr: volume-pedal swell: a long-ringing string under a 0.6 s amp attack
-    // and 1.5 s release, a slow deep chorus, a long reverb and a quarter-note echo.
+    // Slow Swell Gtr: volume-pedal swell: a long-ringing string (damping 0.1) under a 0.3 s
+    // amp attack and 1.5 s release, a little amp warmth, a slow deep chorus, a long reverb
+    // and a quarter-note echo.
     Preset {
         name: "Slow Swell Gtr",
         category: Category::LofiGuitars,
@@ -868,13 +919,13 @@ pub static LIBRARY: &[Preset] = &[
         ],
         values: values![
             Osc1Wave: 1.0, Osc1Mix: 1.0, Osc2Mix: 0.0, SubLevel: 0.0, NoiseLevel: 0.0, FmAmount: 0.0,
-            OscMode: 1.0, PluckDamping: 0.2, PluckBright: 0.6,
+            OscMode: 1.0, PluckDamping: 0.1, PluckBright: 0.6,
             FilterType: 0.0, FilterCutoff: 3000.0, FilterResonance: 0.1, FilterEnvAmount: 0.0,
             FilterAttack: 0.001, FilterDecay: 0.25, FilterSustain: 0.2, FilterRelease: 0.3, FilterKeyTrack: 0.4,
-            AmpAttack: 0.6, AmpDecay: 0.3, AmpSustain: 1.0, AmpRelease: 1.5,
+            AmpAttack: 0.3, AmpDecay: 0.3, AmpSustain: 1.0, AmpRelease: 1.5,
             LfoTarget: 1.0, LfoRate: 0.3, LfoDepth: 0.0, Glide: 0.0,
             PitchEnvAmount: 0.0, PitchEnvDecay: 0.1, VelToCutoff: 0.2, VelToAmp: 0.7,
-            DriveAmount: 0.0, DriveMix: 0.0,
+            DriveAmount: 0.15, DriveMix: 0.3,
             LofiBits: 12.0, LofiRate: 1.0, LofiWobble: 0.3, LofiNoise: 0.2, LofiTone: 7000.0, LofiMix: 0.5,
             ChorusRate: 0.3, ChorusDepth: 0.4, ChorusMix: 0.5, SidechainAmount: 0.0,
             DelayTime: 2.0, DelayFeedback: 0.45, DelayMix: 0.3, ReverbSize: 0.85, ReverbDamping: 0.4, ReverbMix: 0.5,
@@ -2682,6 +2733,29 @@ pub static LIBRARY: &[Preset] = &[
         ],
     },
 ];
+
+/// The preset library, grouped by [`Category`] in [`Category::ALL`] order: the hand-designed
+/// [`CORE`] (the first eight categories), then the generated Sound Pack [`PACK`] (the other
+/// ten).
+pub static LIBRARY: &[Preset] = &LIBRARY_ARRAY;
+
+static LIBRARY_ARRAY: [Preset; CORE.len() + PACK.len()] = concat(CORE, PACK);
+
+/// `a` followed by `b` (`N` must be their total length and `a` must not be empty).
+const fn concat<const N: usize>(a: &[Preset], b: &[Preset]) -> [Preset; N] {
+    let mut out = [a[0]; N];
+    let mut i = 0;
+    while i < a.len() {
+        out[i] = a[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < b.len() {
+        out[a.len() + j] = b[j];
+        j += 1;
+    }
+    out
+}
 
 /// Number of presets in [`LIBRARY`].
 pub const LIBRARY_COUNT: usize = LIBRARY.len();

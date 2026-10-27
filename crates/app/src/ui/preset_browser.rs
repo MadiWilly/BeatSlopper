@@ -1,13 +1,14 @@
 //! The preset browser (M9; the BROWSER column's PRESETS section since M12, WINNER section 5
 //! "BROWSER column") over the unified preset list (`crate::presets`: the eight classics,
-//! then the 91-preset library).
+//! then the 1 091-preset library, the 91 hand-made M9 presets and the 1 000 of the Sound
+//! Pack).
 //!
 //! - [`current_row`]: the section's always-visible second line: `<` (previous), the current
 //!   preset's name of the selected track (a button named [`head_name`]; a click opens the
 //!   section), the MODIFIED LED ([`MODIFIED_LABEL`]) and `>` (next). Previous / next step
 //!   within the category filter and wrap ([`AppState::step_preset`]).
 //! - [`show`]: the section body while [`AppState::preset_browser_open`]: the category chips
-//!   ([`CATEGORY_LABELS`]: `All` + the eight categories with short labels, wrapping), the
+//!   ([`CATEGORY_LABELS`]: `All` + the eighteen categories with short labels, wrapping), the
 //!   match count ([`count_text`]) and the scrolling row list of matching presets (the
 //!   selected one on the accent wash with the accent bar; `vinyl` / `drone` tags where the
 //!   preset hisses without a note or never dies away; in the `All` view the category as a
@@ -36,10 +37,13 @@ pub const NEXT_LABEL: &str = "Next preset";
 pub const SEARCH_HINT: &str = "search name or tag";
 /// The category row's first item: no category filter.
 pub const ALL_LABEL: &str = "All";
-/// The category chips: [`ALL_LABEL`] then the eight categories in `Category::ALL` order,
-/// shortened so three or four fit a 208 pt column row (the full labels are the tooltips).
-pub const CATEGORY_LABELS: [&str; 9] = [
+/// The category chips: [`ALL_LABEL`] then the eighteen categories in `Category::ALL` order
+/// (the eight M9 ones, then the ten of the Sound Pack), shortened so three or four fit a
+/// 208 pt column row (the full labels are the tooltips).
+pub const CATEGORY_LABELS: [&str; 19] = [
     ALL_LABEL, "Lo Keys", "Lo Gtr", "Lo Pads", "Leads", "EDM Bass", "Plucks", "EDM Pads", "Risers",
+    "Pianos", "Organs", "Brass", "Strings", "Bells", "Guitars", "Syn Lead", "Syn Bass", "Atmos",
+    "Arps",
 ];
 /// Tag shown on presets whose lo-fi insert hisses even with no note playing.
 pub const VINYL_TAG: &str = "vinyl";
@@ -322,8 +326,11 @@ fn entry(
     let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
     response
         .widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), selected, preset.name));
-    let tags = entry_tags(index, show_category);
+    // The list holds the whole library (1 000+ rows): rows off screen only reserve their
+    // space (and stay in the accessibility tree); their tags and tooltip are built only when
+    // they show.
     if ui.is_rect_visible(rect) {
+        let tags = entry_tags(index, show_category);
         let painter = ui.painter();
         if selected {
             painter.rect_filled(rect, 0.0, theme.accent_wash);
@@ -382,7 +389,20 @@ fn entry(
             colour,
         );
     }
-    let tooltip = if tags.is_empty() {
+    response
+        .on_hover_ui(|ui| {
+            ui.label(tooltip_text(index, show_category));
+        })
+        .clicked()
+}
+
+/// The tooltip of preset `index`'s row: name, category, the shown tags, then every tag.
+fn tooltip_text(index: usize, show_category: bool) -> String {
+    let Some(preset) = presets::get(index) else {
+        return String::new();
+    };
+    let tags = entry_tags(index, show_category);
+    let head = if tags.is_empty() {
         format!("{} · {}", preset.name, preset.category.label())
     } else {
         format!(
@@ -392,9 +412,7 @@ fn entry(
             tags.join(", ")
         )
     };
-    response
-        .on_hover_text(format!("{tooltip}\nTags: {}", preset.tags.join(", ")))
-        .clicked()
+    format!("{head}\nTags: {}", preset.tags.join(", "))
 }
 
 #[cfg(test)]

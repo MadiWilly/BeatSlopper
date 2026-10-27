@@ -38,8 +38,10 @@ What works today:
 - **Synth** - two band-limited oscillators (sine, saw, square with pulse width, triangle), unison up to
   7 voices, sub oscillator, noise, FM, a plucked-string mode, a multi-mode filter with its
   own envelope, key tracking, velocity, pitch envelope, LFO, glide; 16-voice polyphony per track.
-- **99 presets** in 8 categories (lofi keys, guitars and pads; EDM leads, bass, plucks, pads
-  and risers), searchable by name or tag.
+- **1 099 presets** in 18 categories, searchable by name or tag: 99 hand-made ones (lofi keys,
+  guitars and pads; EDM leads, bass, plucks, pads and risers) plus the 1 000-preset Sound Pack
+  (keys, organs, brass and winds, strings, bells and mallets, guitars, synth leads, synth bass,
+  pads and atmospheres, arps and stabs; see docs/PRESET_PACK.md).
 - **Procedural drum kit** - kick, snare, clap, closed and open hat, each with volume and tune.
 - **Channel rack step sequencer** - 16 steps per bar, accents, drag-painting, swing, per-row
   mute and solo.
@@ -214,7 +216,7 @@ faint ghosts.
 
 ### Presets and sound design (`F7`)
 
-- The BROWSER's PRESETS section lists all 99 presets. Type in the search box to filter by
+- The BROWSER's PRESETS section lists all 1 099 presets. Type in the search box to filter by
   name or tag (`Ctrl+Shift+P` jumps there), or pick a category chip.
 - The SYNTH & FX view shows every parameter of the selected track's synth beside the FX rack.
   Change anything and the preset shows a MODIFIED light; the sound is saved with the project.

@@ -26,3 +26,9 @@ winresource = "0.1"
 [profile.release]
 opt-level = 3
 debug = false
+
+# The engine is DSP: unoptimised it renders only a few times faster than real time, which
+# makes debug builds of the app stutter and the preset-library tests (1 000+ rendered
+# presets) take minutes. Optimise it in dev and test builds; everything else stays debug.
+[profile.dev.package.engine]
+opt-level = 2

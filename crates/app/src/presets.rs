@@ -2,12 +2,12 @@
 //!
 //! The engine keeps two lists (`engine::presets`): `ALL`, the original eight M2 presets
 //! (Bass, Sub, Lead, Pluck, Pad, Keys, Acid, Bell, the "classics"), and `LIBRARY`, the M9
-//! library of 91 categorised presets. The app addresses presets by one index into the
-//! *unified* list: the classics first (so preset 0 is still "Bass", the sound of a fresh
-//! track, and every index the pre-M9 code and project files used keeps its meaning), then
-//! the library in its order. Presets are plain `(ParamId, value)` data: the UI applies them
-//! through `Message::SetParam` / `SetTrackParam` (see `AppState::apply_preset`), never by
-//! touching the engine directly.
+//! library: 91 hand-made categorised presets, then the 1 000 of the Sound Pack. The app
+//! addresses presets by one index into the *unified* list: the classics first (so preset 0
+//! is still "Bass", the sound of a fresh track, and every index the pre-M9 code and project
+//! files used keeps its meaning), then the library in its order. Presets are plain
+//! `(ParamId, value)` data: the UI applies them through `Message::SetParam` /
+//! `SetTrackParam` (see `AppState::apply_preset`), never by touching the engine directly.
 //!
 //! The browser filters by [`Category`] (`None` = every category) and by a search query
 //! ([`matches`]: case-insensitive substring of the name or any tag, like the engine's

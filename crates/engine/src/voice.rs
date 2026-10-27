@@ -14,7 +14,8 @@
 //!   + osc 2 (own detune)                                       x Osc2Mix
 //!   + sub (sine, one octave below osc 1)                       x SubLevel
 //!   + noise (white | pink)                                     x NoiseLevel
-//! pluck mode: a Karplus-Strong string ([`Pluck`]) replaces all of the above.
+//! pluck mode: a Karplus-Strong string ([`Pluck`], level-normalised per pluck) replaces all
+//!   of the above                                               x Osc1Mix
 //!   -> SVF (LP | BP | HP; cutoff = base x 2^(filter env x FilterEnvAmount x 4 oct
 //!                        + (note - 60) / 12 x FilterKeyTrack
 //!                        + (vel - 1) x VelToCutoff x 2 oct + LFO) )
@@ -91,7 +92,7 @@ pub struct SynthParams {
     pub osc1_wave: Wave,
     /// Oscillator 1 detune, cents (`-50..=50`).
     pub osc1_detune: f32,
-    /// Oscillator 1 level, `0.0..=1.0`.
+    /// Oscillator 1 level, `0.0..=1.0` (in pluck mode: the string's level).
     pub osc1_mix: f32,
     /// Oscillator 2 waveform.
     pub osc2_wave: Wave,
@@ -811,7 +812,7 @@ impl Voice {
         self.mod_counter -= 1;
 
         let src = if self.pluck_mode {
-            self.pluck.tick()
+            self.pluck.tick() * p.osc1_mix
         } else {
             self.subtractive(p)
         };
