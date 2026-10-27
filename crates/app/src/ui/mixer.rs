@@ -22,8 +22,9 @@
 //!   `AppState::insert_display_name`; a click selects the insert,
 //!   Shift-click extends the selection, a double-click or the pencil renames inline), three
 //!   **slot pills** (`- - -` when empty, else the kind's name; a click opens the kind menu
-//!   Off / Comp / Drive / Lo-fi / Chorus / EQ3; a loaded slot has a 16 pt knob-glyph square
-//!   that swaps the strip's knob block for that slot's parameters), the knob block (3 x 2
+//!   Off / Comp / Drive / Lo-fi / Chorus / EQ3 / EQ; a loaded slot has a 16 pt knob-glyph
+//!   square that swaps the strip's knob block for that slot's parameters, or for the EQ, the
+//!   seven-band parametric EQ plugin, opens the EQ window on that slot), the knob block (3 x 2
 //!   `Sm` knobs with 9 pt caps labels: LOW / MID / HIGH and FREQ / DLY / REV, or the open
 //!   slot's parameters from `SlotKind::params()`), the **ROUTE** pill (`MASTER` or the
 //!   number of a higher insert; the picker only offers what the engine accepts), and the
@@ -959,10 +960,17 @@ fn head_id(ui: &Ui, insert: u8, part: &str) -> Id {
 }
 
 /// One slot row: the kind pill (`- - -` or the kind name; a click opens the kind menu) and,
-/// for a loaded slot, the edit square that shows its knobs in the grid.
+/// for a loaded slot, the edit square that shows its knobs in the grid. For the parametric
+/// EQ the square opens the EQ window on this slot instead (lit while it shows this slot),
+/// so the EQ shapes only this insert.
 fn slot_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, slot: u8, rect: Rect) {
     let kind = state.mixer.insert(insert).slot(slot).kind;
-    let open = state.open_slot == Some((insert, slot));
+    let is_eq = kind == SlotKind::ParametricEq;
+    let open = if is_eq {
+        state.is_slot_eq_open(insert, slot)
+    } else {
+        state.open_slot == Some((insert, slot))
+    };
     let pill_rect = Rect::from_min_size(rect.min, vec2(SLOT_PILL_WIDTH, ROW_H));
     let text = if kind == SlotKind::Off {
         EMPTY_SLOT_LABEL.to_owned()
@@ -1002,8 +1010,12 @@ fn slot_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, slot: 
     });
     if let Some(candidate) = picked {
         let stored = state.set_slot_kind(insert, slot, candidate);
-        // A freshly loaded effect shows its knobs at once.
-        if stored != SlotKind::Off {
+        // A freshly loaded effect shows its knobs (the EQ its window) at once.
+        if stored == SlotKind::ParametricEq {
+            if !state.is_slot_eq_open(insert, slot) {
+                state.open_slot_eq(insert, slot);
+            }
+        } else if stored != SlotKind::Off {
             state.open_slot = Some((insert, slot));
         }
     }
@@ -1029,15 +1041,18 @@ fn slot_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, slot: 
         }
         let label = slot_edit_name(insert, slot);
         edit.widget_info(|| WidgetInfo::selected(Role::Button, ui.is_enabled(), open, &label));
-        if edit
-            .on_hover_text(if open {
-                "Back to the EQ and sends"
+        let hint = match (is_eq, open) {
+            (true, true) => "Close this insert's EQ window",
+            (true, false) => "Open this EQ (it shapes only this insert)",
+            (false, true) => "Back to the EQ and sends",
+            (false, false) => "Show this effect's knobs",
+        };
+        if edit.on_hover_text(hint).clicked() {
+            if is_eq {
+                state.open_slot_eq(insert, slot);
             } else {
-                "Show this effect's knobs"
-            })
-            .clicked()
-        {
-            state.toggle_open_slot(insert, slot);
+                state.toggle_open_slot(insert, slot);
+            }
         }
     }
 }
@@ -1045,9 +1060,9 @@ fn slot_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, slot: 
 /// The 3 x 2 knob block at `origin`: the open slot's parameters when one of this insert's
 /// slots is open, else LOW / MID / HIGH and FREQ / DLY / REV.
 fn knob_grid(ui: &mut Ui, state: &mut AppState, theme: &Theme, insert: u8, origin: Pos2) {
-    let open = state
-        .open_slot
-        .filter(|(n, s)| *n == insert && !state.mixer.insert(insert).slot(*s).is_off());
+    let open = state.open_slot.filter(|(n, s)| {
+        *n == insert && state.mixer.insert(insert).slot(*s).kind.param_count() > 0
+    });
     for (index, &param) in GRID_PARAMS.iter().enumerate() {
         let col = index % GRID_COLS;
         let row = index / GRID_COLS;

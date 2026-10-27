@@ -7,8 +7,10 @@
 //! has a fader (`level_db`), pan, mute, solo, post-fader delay / reverb sends, a built-in
 //! three-band EQ ([`Eq3State`]), [`SLOT_COUNT`] effect slots ([`SlotState`]: a
 //! [`SlotKind`] plus a fixed array of [`SLOT_PARAMS`] values described by the kind's
-//! [`SlotParam`] table) and a `route` destination: `0` = master or a **higher** insert
-//! number, so groups and sub-groups work and feedback is impossible by construction
+//! [`SlotParam`] table, or for [`SlotKind::ParametricEq`] a whole [`EqState`]: the
+//! seven-band EQ plugin loaded on that insert alone) and a `route` destination: `0` =
+//! master or a **higher** insert number, so groups and sub-groups work and feedback is
+//! impossible by construction
 //! ([`InsertState::valid_route`]). The engine processes inserts in ascending number order
 //! (`crate::engine`), so an insert routed to a higher one is summed into a bus that has not
 //! been processed yet.
@@ -18,13 +20,15 @@
 //! insert state), so an unchecked message index never panics.
 //!
 //! Everything here is plain `Copy` data plus clamping; the DSP lives in `crate::engine`
-//! (slot instances) and `crate::fx` (`Compressor`, `Eq3`, `Drive`, `Lofi`, `Chorus`).
+//! (slot instances) and `crate::fx` (`Compressor`, `Eq3`, `Drive`, `Lofi`, `Chorus`,
+//! `ParametricEq`).
 
 use core::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
 
 use crate::dsp::db_to_gain;
+use crate::fx::eq::{EqParam, EqState};
 use crate::fx::eq3::{self, Eq3State};
 use crate::mixer::{Channel, DRUM_REVERB_SEND, MAX_LEVEL_DB, MIN_LEVEL_DB};
 
@@ -197,17 +201,22 @@ pub enum SlotKind {
     Chorus,
     /// An extra three-band EQ ([`EQ3_PARAMS`]).
     Eq3,
+    /// The seven-band parametric EQ plugin, on this insert alone. It has no
+    /// [`SlotParam`]s: its settings are the slot's [`SlotState::eq`], edited in the EQ
+    /// window.
+    ParametricEq,
 }
 
 impl SlotKind {
     /// Every kind, in the order of the slot picker.
-    pub const ALL: [SlotKind; 6] = [
+    pub const ALL: [SlotKind; 7] = [
         SlotKind::Off,
         SlotKind::Compressor,
         SlotKind::Drive,
         SlotKind::Lofi,
         SlotKind::Chorus,
         SlotKind::Eq3,
+        SlotKind::ParametricEq,
     ];
 
     /// Index in [`SlotKind::ALL`].
@@ -246,6 +255,7 @@ impl SlotKind {
             SlotKind::Lofi => "Lo-fi",
             SlotKind::Chorus => "Chorus",
             SlotKind::Eq3 => "EQ3",
+            SlotKind::ParametricEq => "EQ",
         }
     }
 
@@ -259,6 +269,7 @@ impl SlotKind {
             SlotKind::Lofi => "lofi",
             SlotKind::Chorus => "chorus",
             SlotKind::Eq3 => "eq3",
+            SlotKind::ParametricEq => "parametric_eq",
         }
     }
 
@@ -266,7 +277,7 @@ impl SlotKind {
     #[must_use]
     pub const fn params(self) -> &'static [SlotParam] {
         match self {
-            SlotKind::Off => &[],
+            SlotKind::Off | SlotKind::ParametricEq => &[],
             SlotKind::Compressor => &COMPRESSOR_PARAMS,
             SlotKind::Drive => &DRIVE_PARAMS,
             SlotKind::Lofi => &LOFI_PARAMS,
@@ -296,7 +307,9 @@ impl SlotKind {
 }
 
 /// One effect slot: its kind and the kind's parameter values (`params[i]` is described by
-/// `kind.params()[i]`; entries past the kind's count are unused and read `0.0`).
+/// `kind.params()[i]`; entries past the kind's count are unused and read `0.0`). A
+/// [`SlotKind::ParametricEq`] slot keeps its settings in `eq` instead (flat for every other
+/// kind).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SlotState {
@@ -304,6 +317,15 @@ pub struct SlotState {
     pub kind: SlotKind,
     /// Its parameter values.
     pub params: [f32; SLOT_PARAMS],
+    /// The EQ of a [`SlotKind::ParametricEq`] slot (left out of the file while flat, so the
+    /// other slots stay one line each).
+    #[serde(skip_serializing_if = "is_flat_eq")]
+    pub eq: EqState,
+}
+
+/// `true` for [`EqState::FLAT`] (serde's skip test for [`SlotState::eq`]).
+fn is_flat_eq(eq: &EqState) -> bool {
+    *eq == EqState::FLAT
 }
 
 impl Default for SlotState {
@@ -318,6 +340,7 @@ impl SlotState {
     pub const OFF: SlotState = SlotState {
         kind: SlotKind::Off,
         params: [0.0; SLOT_PARAMS],
+        eq: EqState::FLAT,
     };
 
     /// A slot of `kind` at the kind's default parameters.
@@ -326,6 +349,7 @@ impl SlotState {
         Self {
             kind,
             params: kind.default_params(),
+            eq: EqState::FLAT,
         }
     }
 
@@ -364,7 +388,35 @@ impl SlotState {
         }
     }
 
-    /// Clamps every used parameter into range and zeroes the unused ones.
+    /// Sets value `param` of EQ band `band` (wraps; clamped by the band). Returns the stored
+    /// value; on a slot of another kind nothing changes and `0.0` is returned.
+    pub fn set_eq(&mut self, band: usize, param: EqParam, value: f32) -> f32 {
+        if self.kind == SlotKind::ParametricEq {
+            self.eq.set(band, param, value)
+        } else {
+            0.0
+        }
+    }
+
+    /// Switches the slot's EQ on or off (only on a [`SlotKind::ParametricEq`] slot).
+    pub fn set_eq_on(&mut self, on: bool) {
+        if self.kind == SlotKind::ParametricEq {
+            self.eq.on = on;
+        }
+    }
+
+    /// Sets the slot's EQ output gain in dB (clamped). Returns the stored value; on a slot of
+    /// another kind nothing changes and `0.0` is returned.
+    pub fn set_eq_gain(&mut self, gain_db: f32) -> f32 {
+        if self.kind == SlotKind::ParametricEq {
+            self.eq.set_gain_db(gain_db)
+        } else {
+            0.0
+        }
+    }
+
+    /// Clamps every used parameter into range and zeroes the unused ones; the EQ is
+    /// normalised (and flat for every kind but [`SlotKind::ParametricEq`]).
     pub fn normalise(&mut self) {
         let table = self.kind.params();
         for (i, v) in self.params.iter_mut().enumerate() {
@@ -372,6 +424,11 @@ impl SlotState {
                 Some(p) => p.clamp(*v),
                 None => 0.0,
             };
+        }
+        if self.kind == SlotKind::ParametricEq {
+            self.eq.normalise();
+        } else {
+            self.eq = EqState::FLAT;
         }
     }
 
@@ -734,7 +791,7 @@ mod tests {
                 format!("\"{}\"", k.key())
             );
         }
-        assert_eq!(SlotKind::from_index(99), SlotKind::Eq3);
+        assert_eq!(SlotKind::from_index(99), SlotKind::ParametricEq);
         assert_eq!(SlotKind::from_value(f32::NAN), SlotKind::Off);
         assert_eq!(SlotKind::from_value(-3.0), SlotKind::Off);
         assert_eq!(SlotKind::Compressor.param_count(), 6);
@@ -743,6 +800,30 @@ mod tests {
         assert_eq!(SlotKind::Chorus.param_count(), 3);
         assert_eq!(SlotKind::Eq3.param_count(), 4);
         assert_eq!(SlotKind::Off.param_count(), 0);
+        assert_eq!(SlotKind::ParametricEq.param_count(), 0);
+        // The EQ plugin slot: band edits land in `eq`, other kinds refuse them and stay flat.
+        let mut s = SlotState::new(SlotKind::ParametricEq);
+        assert_eq!(s.eq, EqState::FLAT);
+        assert_eq!(s.set_eq(3, EqParam::Gain, 6.0), 6.0);
+        assert_eq!(s.eq.bands[3].gain_db, 6.0);
+        s.set_eq_on(false);
+        assert!(!s.eq.on);
+        assert_eq!(s.set_eq_gain(-3.0), -3.0);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"parametric_eq\""));
+        assert_eq!(serde_json::from_str::<SlotState>(&json).unwrap(), s);
+        assert!(
+            !serde_json::to_string(&SlotState::OFF)
+                .unwrap()
+                .contains("eq")
+        );
+        s.set_kind(SlotKind::ParametricEq);
+        assert_eq!(s.eq, EqState::FLAT, "loading the EQ starts it flat");
+        let mut d = SlotState::new(SlotKind::Drive);
+        assert_eq!(d.set_eq(3, EqParam::Gain, 6.0), 0.0);
+        d.eq.gain_db = 5.0;
+        d.normalise();
+        assert_eq!(d.eq, EqState::FLAT);
         let s = SlotState::new(SlotKind::Compressor);
         assert_eq!(s.get(0), -18.0);
         assert_eq!(s.get(1), 4.0);
@@ -825,6 +906,7 @@ mod tests {
         s.slots[1] = SlotState {
             kind: SlotKind::Compressor,
             params: [-100.0, 50.0, 0.0, 0.0, 0.0, 2.0],
+            eq: EqState::FLAT,
         };
         s.normalise(3);
         assert_eq!(s.route, 0);

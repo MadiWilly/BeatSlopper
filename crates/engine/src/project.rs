@@ -6,11 +6,11 @@
 //! Serialization happens on the UI thread only; the audio thread receives the loaded state
 //! through [`Project::apply_to`] (before the stream starts) or as small `Copy` messages.
 //!
-//! Layout ([`FORMAT_VERSION`] 8), human-readable and stable:
+//! Layout ([`FORMAT_VERSION`] 9), human-readable and stable:
 //!
 //! ```json
 //! {
-//!   "version": 8,
+//!   "version": 9,
 //!   "bpm": 120.0,
 //!   "swing": 0.0,
 //!   "bank": {
@@ -121,7 +121,10 @@ pub const FILE_EXTENSION: &str = "beatslopper.json";
 ///   is migrated with [`MixerState::migrate_pre_m11`]: strip `i` moves onto insert `i + 1`
 ///   (level, pan, mute, solo and sends), the strip is reset to neutral and the source routed
 ///   to that insert, so it sounds exactly as before.
-pub const FORMAT_VERSION: u32 = 8;
+/// - 9: insert effect slots can hold the parametric EQ plugin (kind `parametric_eq`, its
+///   bands in the slot's `eq`, an [`EqState`]). Additive: `eq` is `#[serde(default)]`, so a
+///   version-8 file loads unchanged.
+pub const FORMAT_VERSION: u32 = 9;
 
 /// Default keyboard octave of a fresh project.
 pub const DEFAULT_OCTAVE: i32 = 4;
@@ -818,7 +821,7 @@ mod tests {
         assert!(matches!(
             err,
             ProjectError::Version {
-                found: 9,
+                found: 10,
                 supported: FORMAT_VERSION
             }
         ));

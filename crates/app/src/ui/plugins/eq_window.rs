@@ -1,4 +1,5 @@
-//! The EQ window: head row (title, EQ ON), the graph ([`super::eq_graph`]), the selected
+//! The EQ window: head row (title, the EQ it edits: `ON MASTER` or `ON INSERT 3 · SLOT 1`,
+//! EQ ON), the graph ([`super::eq_graph`]), the selected
 //! band's controls (TYPE segmented, FREQ / GAIN / Q knobs, ON) with the OUTPUT gain knob, and
 //! the preset column with its MODIFIED lamp. Everything is the `neu` kit on a `neu::panel`.
 
@@ -12,7 +13,7 @@ use neu::{KnobSize, KnobSpec, Theme};
 use super::{
     COLUMN_GAP, KNOB_BLOCK_HEIGHT, PRESET_COLUMN_WIDTH, SECTION_GAP, fmt_q, knob_edit, preset_list,
 };
-use crate::plugins::{PluginEdit, PluginShared};
+use crate::plugins::{EqTarget, PluginEdit, PluginShared};
 use crate::ui::controls::{
     self, GROUP_GAP, KNOB_GAP, PANEL_HEAD_GAP, ROW_HEIGHT, fmt_hz, fmt_level_db,
 };
@@ -59,6 +60,17 @@ fn head(ui: &mut Ui, theme: &Theme, shared: &mut PluginShared) {
     ui.horizontal(|ui| {
         ui.set_min_height(ROW_HEIGHT);
         neu::title(ui, theme, "Parametric EQ");
+        // Which EQ this is: the master's, or the one loaded in an insert slot (that one
+        // shapes only its insert).
+        let on_master = shared.eq_target == EqTarget::Master;
+        neu::label(ui, theme, &format!("ON {}", shared.eq_target_label)).on_hover_text(
+            if on_master {
+                "The master EQ: shapes the whole mix"
+            } else {
+                "This EQ sits in an insert's effect slot and shapes only that insert. \
+                 The analyser still shows the master output."
+            },
+        );
         controls::right_aligned(ui, "eq_head_right", |ui| {
             ui.spacing_mut().item_spacing.x = KNOB_GAP;
             neu::slider::lamp(ui, theme, shared.eq.on, "Active");

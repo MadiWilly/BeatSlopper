@@ -1,18 +1,20 @@
 //! egui_kittest: the M11 FL-style MIXER panel. A source's number box routes it (and the
 //! engine mirror follows), a slot pill loads an effect whose knobs replace the EQ / send
-//! grid, a slot knob edit reaches the engine, the ROUTE pill only offers the master and
+//! grid (the parametric EQ opens the EQ window on that insert instead), a slot knob edit
+//! reaches the engine, the ROUTE pill only offers the master and
 //! higher inserts, the head selects (Shift extends) and selected faders move together, the
 //! pencil renames inline and the name survives the project text, undo takes a slot change
 //! back, meters and the gain-reduction bar render, Ctrl+L links the edit track, the rack
 //! rows' number boxes route too, and everything renders in both themes.
 
+use app::plugins::{EqTarget, PluginEdit, PluginKind};
 use app::ui;
 use app::ui::mixer;
 use app::{AppState, BeatSlopperApp};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use engine::{Channel, InsertParam, Meters, SlotKind};
+use engine::{Channel, EqParam, EqState, InsertParam, Meters, SlotKind};
 use neu::{Theme, ThemeMode};
 
 /// The panel alone, wide enough for every insert strip to be in view (the real panel shows
@@ -167,6 +169,48 @@ fn a_slot_pill_loads_an_effect_and_shows_its_knobs() {
     );
     harness.get_by_label(&mixer::insert_control_name(1, InsertParam::Eq3Low));
     sync(&mut harness, &mut engine);
+    assert_eq!(engine.mixer(), &harness.state().mixer);
+}
+
+#[test]
+fn an_eq_slot_opens_the_eq_window_on_that_insert() {
+    let (mut harness, mut engine) = panel_harness(ThemeMode::Dark);
+    harness.get_by_label(&mixer::slot_name(3, 1)).click();
+    harness.run_steps(2);
+    harness
+        .get_by_label(&mixer::kind_pick_name(SlotKind::ParametricEq))
+        .click();
+    harness.run_steps(2);
+    let target = EqTarget::Slot { insert: 3, slot: 1 };
+    let state = harness.state();
+    assert_eq!(state.mixer.insert(3).slot(1).kind, SlotKind::ParametricEq);
+    assert_eq!(state.eq_target, target, "the EQ window points at this slot");
+    assert!(state.is_plugin_open(PluginKind::Eq));
+    assert_eq!(
+        state.open_slot, None,
+        "no knob view: the window is the editor"
+    );
+    // The grid keeps the EQ3 / sends; the edit square closes and reopens the window.
+    harness.get_by_label(&mixer::insert_control_name(3, InsertParam::Eq3Low));
+    harness.get_by_label(&mixer::slot_edit_name(3, 1)).click();
+    harness.run_steps(2);
+    assert!(!harness.state().is_plugin_open(PluginKind::Eq));
+    harness.get_by_label(&mixer::slot_edit_name(3, 1)).click();
+    harness.run_steps(2);
+    assert!(harness.state().is_slot_eq_open(3, 1));
+    // An edit from the window lands on insert 3's EQ only.
+    harness.state_mut().apply_plugin_edit(
+        PluginEdit::EqBand {
+            band: 5,
+            param: EqParam::Gain,
+            value: -9.0,
+            drag_started: true,
+        },
+        target,
+    );
+    sync(&mut harness, &mut engine);
+    assert_eq!(engine.mixer().insert(3).slot(1).eq.bands[5].gain_db, -9.0);
+    assert_eq!(*engine.eq(), EqState::default());
     assert_eq!(engine.mixer(), &harness.state().mixer);
 }
 
@@ -464,5 +508,9 @@ fn routing_a_track_names_the_insert_head_after_it() {
     harness.get_by_label(&mixer::insert_head_name(15, "Kick"));
     // Kick left insert 1, which falls back to its default name.
     harness.get_by_label(&mixer::insert_head_name(1, "Insert 1"));
-    assert_eq!(harness.state().insert_ui(15).name, "Insert 15", "derived, not stored");
+    assert_eq!(
+        harness.state().insert_ui(15).name,
+        "Insert 15",
+        "derived, not stored"
+    );
 }

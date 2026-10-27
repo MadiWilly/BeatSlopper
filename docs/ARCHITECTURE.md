@@ -1588,13 +1588,17 @@ before. An insert at its defaults (slots off, flat EQ, 0 dB, centre) is bit-tran
   `Default` = `Off`): `ALL: [SlotKind; 6]`, `index()`, `from_index(usize)` (clamps),
   `from_value(f32)` (rounds; non-finite = Off), `label()` ("Off", "Comp", "Drive", "Lo-fi",
   "Chorus", "EQ3"), `key()`, `params() -> &'static [SlotParam]` (empty for Off),
-  `param_count()`, `default_params() -> [f32; 6]`.
+  `param_count()`, `default_params() -> [f32; 6]`. Since format 9 a seventh kind,
+  `ParametricEq` (label "EQ", key `parametric_eq`, no `SlotParam`s), loads the seven-band
+  plugin EQ into the slot so it shapes that insert alone; its settings are `SlotState::eq`.
 - `pub struct SlotState { pub kind: SlotKind, pub params: [f32; SLOT_PARAMS] }` (serde,
   `#[serde(default)]`, `Copy`, `Default` = `SlotState::OFF`): `new(kind)` (the kind's
   defaults), `set_kind(kind)` (resets the params to the new kind's defaults), `param(index)
   -> Option<&'static SlotParam>`, `get(index) -> f32` (`0.0` for an unused index), `set(index,
   value) -> f32` (clamped; an unused index changes nothing and returns `0.0`), `normalise()`,
-  `is_off()`.
+  `is_off()`. Format 9 adds `pub eq: EqState` (flat unless the kind is `ParametricEq`;
+  skipped in the file while flat) with `set_eq(band, param, value)`, `set_eq_on(on)` and
+  `set_eq_gain(db)` (each refused on another kind).
 - `pub enum InsertParam { Level, Pan, Mute, Solo, DelaySend, ReverbSend, Eq3Low, Eq3Mid,
   Eq3MidFreq, Eq3High, Route }` (serde snake_case): `ALL: [InsertParam; 11]`, `range()`
   (`Level` -60..=6 dB, `Pan` -1..=1, toggles and sends 0..=1, `Eq3*` gains -15..=15 dB,
@@ -1673,7 +1677,14 @@ before. An insert at its defaults (slots off, flat EQ, 0 dB, centre) is bit-tran
 - New `Message` variants (all `Copy`, `size_of::<Message>() <= 16` unchanged): `SetInsert {
   insert: u8, param: InsertParam, value: f32 }`, `SetSlotKind { insert: u8, slot: u8, kind:
   SlotKind }`, `SetSlotParam { insert: u8, slot: u8, index: u8, value: f32 }`, `SetRoute {
-  channel: Channel, insert: u8 }`. `SetMixer` is unchanged (source strips).
+  channel: Channel, insert: u8 }`. `SetMixer` is unchanged (source strips). Format 9 adds
+  `SetSlotEq { insert, slot, band, param: EqParam, value }`, `SetSlotEqOn { insert, slot, on }`
+  and `SetSlotEqGain { insert, slot, db }` (the master EQ's messages for a slot's EQ; ignored
+  unless that slot holds `ParametricEq`), with the setters `set_slot_eq`, `set_slot_eq_on`,
+  `set_slot_eq_gain`. Each slot pre-allocates a `ParametricEq`. In the app one EQ window edits
+  either the master or a slot (`plugins::EqTarget`, `AppState::eq_target`); a slot's edit
+  square points it there, the EQ pill back at the master, and every queued window edit carries
+  the target it was made for.
 - Direct setters (mirror the messages): `set_insert(insert, param, value) -> f32` (level,
   pan, mute, solo, sends glide over `MIXER_SMOOTH_MS`; a solo change re-targets every insert;
   the EQ3 values glide in the EQ; `Route` applies at the next sample and returns `0.0` when
